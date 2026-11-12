@@ -526,3 +526,11 @@ fn package_list_is_hidden_without_verbose() {
     assert!(text.contains("Resolved packages: 4 (use --verbose to list them)\n"));
     assert!(!text.contains("- simple 0.1.0 [root]"));
 }
+
+#[test]
+fn packages_missing_from_the_registry_cache_are_reported() {
+    // The fake cache has data for serde_json, serde and itoa only.
+    let text = stdout(&scan("workspace", &["--fail-on", "none"]));
+    assert!(text.contains("2 crates.io package(s) have no cached data"));
+    assert!(!stdout(&scan("simple", &["--fail-on", "none"])).contains("no cached data"));
+}

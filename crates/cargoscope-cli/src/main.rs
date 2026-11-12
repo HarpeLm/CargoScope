@@ -309,6 +309,21 @@ fn scan(options: &ScanOptions) -> ExitCode {
                 "no crates.io data: licenses and latest versions are unknown; run `cargoscope update {}`",
                 root.display()
             ));
+        } else {
+            let missing = package_info
+                .iter()
+                .zip(&inventory.packages)
+                .filter(|(info, package)| {
+                    info.latest_version.is_none()
+                        && crates_io::is_crates_io(package.source.as_deref())
+                })
+                .count();
+            if missing > 0 {
+                warnings.push(format!(
+                    "{missing} crates.io package(s) have no cached data (added since the last update?); run `cargoscope update {}`",
+                    root.display()
+                ));
+            }
         }
         for info in &mut package_info {
             if !checks.licenses {
