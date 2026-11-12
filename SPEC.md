@@ -15,7 +15,7 @@ Guiding principles (all four are binding): local operation without a mandatory a
 
 ## 2. Target Users and Problems
 
-**Primary user for v0.1: open-source Rust maintainers.** They are reachable for interviews, their repositories are public test material, and they already use tools such as cargo-deny or cargo-machete. Their problem: get a reproducible, explainable dependency check that works locally and in CI, without adding noise.
+**Primary user for v0.1: open-source Rust maintainers.** Their repositories are public test material, and they already use tools such as cargo-deny or cargo-machete. Their problem: get a reproducible, explainable dependency check that works locally and in CI, without adding noise.
 
 Secondary, served by the same features:
 
@@ -115,7 +115,7 @@ The first niche to win: **one report on a Rust project** combining inventory, ad
 
 The key feature inside the unified report is **"why is this package here, and how do I fix it"**: for each finding, show the dependency chain that pulls it in (`my-app → reqwest → hyper → h2`), the resolved version, whether a fixed version exists, and which direct dependency would have to change. This is the most concrete and most demonstrable differentiator.
 
-Stage 0 interviews (8–12 Rust maintainers) happen **before** substantial code beyond the core. They confirm which problems matter and which output formats people actually use.
+There is no interview phase: priorities are adjusted from feedback after publication.
 
 ### 5.2 Unused dependency detection without noise
 
@@ -145,7 +145,7 @@ By default only `likely-unused` appears; `--show-uncertain` shows the rest.
 
 **User control:** an ignore list in `cargoscope.toml` (or `[package.metadata.cargoscope]`) with a required reason, reported back as "ignored, reason: …", so exceptions stay visible.
 
-**Measurement:** a published fixture corpus of real Rust crates with manually verified labels. Precision is measured on each release, and a regression blocks the release. User-reported false positives become new fixtures.
+**Measurement:** v0.1 ships with a hand-labelled corpus of 20–30 varied Rust crates. From v0.2, labels are produced at scale by a compiler oracle run offline in a network-less sandbox: the rustc `unused_crate_dependencies` lint aggregated over targets and features, dependency-removal experiments with `cargo check --all-targets --all-features`, and manifest-only removal commits mined from Git history as human-confirmed cases. Part of the corpus is held out for evaluation. The compiler is only a judge during development; the shipped default analysis stays static. Precision is measured on each release, and a regression blocks the release. User-reported false positives become new fixtures.
 
 ## 6. Rust Architecture
 
@@ -278,19 +278,18 @@ The action uses minimal permissions and pinned versions.
 
 ## 10. Roadmap
 
-| Stage | Work | Exit Criterion |
+No dates: each version ships when its exit criteria are met. There is no interview phase; product direction comes from feedback after publication (issues, discussions, usage reports).
+
+| Version | Work | Exit criteria |
 |---|---|---|
-| 0 — Validation | Maintainer interviews, priority problems | Recurring need identified |
-| 1 — Rust Foundation | Workspace, CLI scan, model, Cargo inventory | Reproducible lockfile analysis and documented JSON |
-| 2 — Minimal Security | Advisory source, cache, provenance, CI thresholds | Traceable results and tested network errors |
-| 3 — Adoption without Migration | GitHub Action, GitLab example, simple install | User can try locally then add CI job |
-| 4 — Precision and Comparison | Repository corpus, human validation, benchmark | Published results and limits |
-| 5 — Second Ecosystem | Python recommended next; Node.js if demand justifies | Explicit coverage limits and fixtures |
-| 6 — Intelligence | Measurable maintenance, justified recommendations, graph | Each recommendation has evidence |
-| 7 — Shareable Report | Locally-generated HTML, optional badge | No upload required |
-| 8 — Controlled Fixes | `fix --dry-run`, diff, explicit application | No change without explicit confirmation |
-| 9 — Multi-Projects | Local JSON aggregation, repo and component filters | Multiple repos analyzed without central service |
-| 10 — 1.0 Stabilization | Compatibility, MSRV, versioning policy, security, docs | Compatibility contracts established |
+| v0.1 — Unified Rust report | Cargo inventory, RustSec advisories, crates.io versions, licenses, static unused analysis, dependency paths, text/JSON/SARIF, exit codes, `update`, all distribution channels, GitHub Action | Every MVP item works on the fixture corpus; JSON schema documented; hand-labelled corpus of 20–30 crates passes; installs from every channel verified |
+| v0.2 — Measured precision | Compiler oracle (`unused_crate_dependencies` lint, dependency-removal experiments, Git history) in a network-less sandbox on 100+ crates; public benchmark; opt-in `--precise` mode; GitLab CI example | Benchmark published with corpus, versions, commands and limits; precision regression blocks releases |
+| v0.3 — Comparison and policies | `compare` between reports, baselines, license and source policies, banned crates | Covers the main cargo-deny checks with tests against its behaviour |
+| v0.4 — Intelligence | Maintenance indicators with provenance, justified recommendations, exportable graph | Each recommendation links to evidence |
+| v0.5 — Shareable report | Locally generated HTML report, optional badge | No upload required, data redacted by default |
+| v0.6 — Controlled fixes | `fix --dry-run`, diff, explicit `fix --apply`, file validation | No change without explicit confirmation; tested on fixtures |
+| v0.7 — Multi-project | Local aggregation of JSON reports, filters by repository and component | Several repositories analyzed without a central service |
+| 1.0 — Stabilization | Compatibility, MSRV, versioning policy, security policy, documentation | Compatibility contracts and maintenance capacity established |
 
 ## 11. Risks and Responses
 
