@@ -8,11 +8,11 @@ cargo-machete analyses every `Cargo.toml` under a directory, including test fixt
 
 | | CargoScope (`likely-unused`, default output) | cargo-machete (default mode) |
 |---|---|---|
-| Dependencies reported | 170 | 516 |
-| Really unused | 168 | about 170 |
+| Dependencies reported | 170 (183 after the fix below) | 516 |
+| Really unused | 168 (181 after the fix) | about 170 |
 | Wrongly reported (dependency is used or needed) | **2** | **about 240** (190 to 280) |
 | Undecided after reading the code | 0 | about 106 |
-| Precision | **98.8%** | **about 41%** (33% to 53%) |
+| Precision | **98.8%** (98.9% after the fix) | **about 41%** (33% to 53%) |
 
 So on these repositories, cargo-machete reported about **100 times more false positives** than CargoScope's default output, and about the same number of really unused dependencies.
 
@@ -30,6 +30,6 @@ Ranges come from counting the undecided findings as wrong or as right, and from 
 
 - **The labels are not neutral.** The corpus labels were created from CargoScope's own findings, and CargoScope's rules were designed while looking at 30 of these repositories and fixed after each held-out set. On unseen code, CargoScope's measured precision was 90.4% to 93.6% (see [README.md](README.md)), not 98.8%.
 - **Labels come from reading code, not from the compiler.** "Used" sometimes means "intentionally declared" (feature selection, native linking), which a compiler would call unused.
-- **cargo-machete finds unused dependencies CargoScope misses.** The 7 in group 2 come from a CargoScope bug: in `deno_runtime::deno_node::X`, only the first segment names a crate, but CargoScope counted `deno_node` as used. CargoScope also reports 30 unused dependencies that cargo-machete misses.
+- **cargo-machete found unused dependencies CargoScope missed.** The 7 in group 2 came from a CargoScope bug: in `deno_runtime::deno_node::X`, only the first segment names a crate, but CargoScope counted `deno_node` as used. **Fixed in commit 6311b11**: the 7 are now reported (1 as `likely-unused`, 6 as `possibly-unused` for other reasons), and 13 more unused dependencies the bug hid became `likely-unused`, all correct after reading the code, with no new wrong finding. CargoScope also reports 30 unused dependencies that cargo-machete misses.
 - **Only cargo-machete's default mode is measured.** `--with-metadata` failed on 7 repositories and, on the 63 others, reported more findings in the same scope (706 instead of 409); those were not labelled.
 - cargo-machete describes itself as "fast yet imprecise", by design; it is much faster on large trees.
