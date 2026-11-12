@@ -676,7 +676,9 @@ fn policy_violations_are_reported_and_fail_the_scan() {
     assert!(text.contains("- [source] forked 0.1.0: git source https://github.com/someone/forked is not in [sources] allow-git\n"));
     assert!(text.contains("- [license] itoa 1.0.11: license is unknown"));
     assert!(text.contains("- [ban] serde 1.0.210: `serde` <2 is banned: testing bans\n    via policy-demo -> serde_json -> serde\n"));
-    assert!(text.contains("- [license] serde_json 1.0.128: license `MIT OR Apache-2.0` is not allowed by the policy\n"));
+    assert!(text.contains(
+        "- [license] serde_json 1.0.128: license `MIT OR Apache-2.0` is not allowed by the policy\n"
+    ));
     assert!(text.contains("5 policy violations"));
     assert_eq!(
         scan("policy", &["--fail-on", "none"]).status.code(),

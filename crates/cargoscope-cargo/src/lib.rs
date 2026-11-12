@@ -113,14 +113,14 @@ pub fn scan_cargo_project(project_root: &Path) -> Result<Inventory, ScanError> {
     Ok(inventory)
 }
 
-/// Looks for likely-unused dependencies in the root package and explicit
-/// workspace members of a project (SPEC.md section 5.2).
+/// The project packages to analyze (root package and workspace members), as
+/// `(directory, manifest label, parsed manifest)`, the root's
+/// `[workspace.dependencies]`, and warnings about skipped member patterns.
 ///
-/// Returns the findings, sorted by package then dependency, and warnings.
-pub fn find_unused(
-    project_root: &Path,
-    inventory: &Inventory,
-) -> Result<(Vec<UnusedFinding>, Vec<String>), ScanError> {
+/// # Errors
+///
+/// Returns an error for unreadable or invalid manifests.
+pub fn project_packages(project_root: &Path) -> Result<ProjectPackages, ScanError> {
     let root_manifest_path = project_root.join("Cargo.toml");
     let root_contents = read_manifest(&root_manifest_path)?;
     let parse = |path: &Path, contents: &str| {
@@ -132,7 +132,8 @@ pub fn find_unused(
     let root_manifest = parse(&root_manifest_path, &root_contents)?;
     let workspace_dependencies = root_manifest
         .get("workspace")
-        .and_then(|workspace| workspace.get("dependencies"));
+        .and_then(|workspace| workspace.get("dependencies"))
+        .cloned();
 
     let mut packages = Vec::new();
     if root_manifest.get("package").is_some() {
@@ -142,7 +143,7 @@ pub fn find_unused(
             root_manifest.clone(),
         ));
     }
-    let (members, mut warnings) = workspace::members(project_root, &root_manifest);
+    let (members, warnings) = workspace::members(project_root, &root_manifest);
     for member in members {
         let dir = project_root.join(&member);
         let path = dir.join("Cargo.toml");
@@ -155,6 +156,37 @@ pub fn find_unused(
             ));
         }
     }
+    Ok(ProjectPackages {
+        packages,
+        workspace_dependencies,
+        warnings,
+    })
+}
+
+/// See [`project_packages`].
+pub struct ProjectPackages {
+    /// `(directory, manifest label, parsed manifest)` of each package.
+    pub packages: Vec<(std::path::PathBuf, String, toml::Value)>,
+    /// `[workspace.dependencies]` of the root manifest.
+    pub workspace_dependencies: Option<toml::Value>,
+    /// Warnings about skipped workspace member patterns.
+    pub warnings: Vec<String>,
+}
+
+/// Looks for likely-unused dependencies in the root package and explicit
+/// workspace members of a project (SPEC.md section 5.2).
+///
+/// Returns the findings, sorted by package then dependency, and warnings.
+pub fn find_unused(
+    project_root: &Path,
+    inventory: &Inventory,
+) -> Result<(Vec<UnusedFinding>, Vec<String>), ScanError> {
+    let ProjectPackages {
+        packages,
+        workspace_dependencies,
+        mut warnings,
+    } = project_packages(project_root)?;
+    let workspace_dependencies = workspace_dependencies.as_ref();
 
     // Path dependencies inside the workspace are implicit members (bevy's
     // `crates/bevy_extract/macros`): their macros count too.
