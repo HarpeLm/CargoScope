@@ -15,11 +15,17 @@ Guiding principles (all four are binding): local operation without a mandatory a
 
 ## 2. Target Users and Problems
 
-- **Developers and small teams**: quickly understand what's installed and what deserves action.
-- **Open-source maintainers**: get reproducible checks that work locally and in CI.
-- **Platform, DevOps, and security teams**: aggregate risks across multiple repositories and prioritize fixes.
+**Primary user for v0.1: open-source Rust maintainers.** They are reachable for interviews, their repositories are public test material, and they already use tools such as cargo-deny or cargo-machete. Their problem: get a reproducible, explainable dependency check that works locally and in CI, without adding noise.
+
+Secondary, served by the same features:
+
+- **Rust developers and small teams**: quickly understand what's installed and what deserves action.
+
+Later (not targeted by v0.1):
+
+- **Platform, DevOps, and security teams**: aggregate risks across multiple Rust repositories and prioritize fixes.
 - **Multi-repo organizations**: spot the same risky component across several projects.
-- **Ecosystem contributors**: add or improve an adapter without rewriting the engine.
+- **Ecosystem contributors**: add an adapter for another ecosystem, once the Rust experience is proven.
 
 ## 3. Positioning Strategy and Adoption
 
