@@ -188,8 +188,11 @@ fn collect_sources(package_dir: &Path, manifest: &toml::Value) -> Sources {
         };
         for target in targets {
             if let Some(path) = target.get("path").and_then(toml::Value::as_str) {
-                add_file(
+                // Follow `mod name;` declarations, since such targets often
+                // live outside src/ (`crates/core/main.rs`, `main.rs`).
+                follow_modules(
                     &package_dir.join(path),
+                    0,
                     &mut sources.code,
                     &mut sources.skipped,
                 );
@@ -237,6 +240,94 @@ fn add_file(path: &Path, files: &mut Vec<PathBuf>, skipped: &mut usize) {
         return;
     }
     files.push(path.to_path_buf());
+}
+
+/// Adds `file` and, recursively, the files of the modules it declares with
+/// `mod name;` (as `name.rs` or `name/mod.rs`, or a `#[path = "..."]`).
+fn follow_modules(file: &Path, depth: usize, files: &mut Vec<PathBuf>, skipped: &mut usize) {
+    if depth > MAX_DEPTH || files.iter().any(|known| known == file) {
+        return;
+    }
+    let before = files.len();
+    add_file(file, files, skipped);
+    if files.len() == before {
+        return;
+    }
+    let Ok(text) = fs::read_to_string(file) else {
+        return;
+    };
+    let Ok(tokens) = TokenStream::from_str(&text) else {
+        return;
+    };
+    let Some(dir) = file.parent() else {
+        return;
+    };
+    // Children of `main.rs`, `lib.rs` and `mod.rs` live next to them; those
+    // of `foo.rs` live in `foo/`.
+    let stem = file
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("");
+    let module_dir = if matches!(stem, "main" | "lib" | "mod") || depth == 0 {
+        dir.to_path_buf()
+    } else {
+        dir.join(stem)
+    };
+    for (name, explicit_path) in declared_modules(tokens) {
+        let candidates = match explicit_path {
+            Some(path) => vec![dir.join(path)],
+            None => vec![
+                module_dir.join(format!("{name}.rs")),
+                module_dir.join(&name).join("mod.rs"),
+            ],
+        };
+        if let Some(found) = candidates.into_iter().find(|path| is_regular_file(path)) {
+            follow_modules(&found, depth + 1, files, skipped);
+        }
+    }
+}
+
+/// Top-level `mod name;` declarations, with their `#[path = "..."]` if any.
+fn declared_modules(tokens: TokenStream) -> Vec<(String, Option<String>)> {
+    let tokens: Vec<TokenTree> = tokens.into_iter().collect();
+    let mut modules = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        let TokenTree::Ident(keyword) = token else {
+            continue;
+        };
+        if keyword != "mod" {
+            continue;
+        }
+        let (Some(TokenTree::Ident(name)), Some(TokenTree::Punct(semicolon))) =
+            (tokens.get(index + 1), tokens.get(index + 2))
+        else {
+            continue;
+        };
+        if semicolon.as_char() != ';' {
+            continue;
+        }
+        let explicit_path = tokens[..index].iter().rev().find_map(|token| match token {
+            TokenTree::Group(group) => {
+                let inner: Vec<TokenTree> = group.stream().into_iter().collect();
+                match inner.as_slice() {
+                    [
+                        TokenTree::Ident(attribute),
+                        TokenTree::Punct(eq),
+                        TokenTree::Literal(path),
+                    ] if attribute == "path" && eq.as_char() == '=' => {
+                        Some(path.to_string().trim_matches('"').to_owned())
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        });
+        // Only an attribute directly before this `mod` counts.
+        let directly_before = index >= 2
+            && matches!(&tokens[index - 2], TokenTree::Punct(hash) if hash.as_char() == '#');
+        modules.push((name.to_string(), explicit_path.filter(|_| directly_before)));
+    }
+    modules
 }
 
 fn walk(dir: &Path, depth: usize, files: &mut Vec<PathBuf>, skipped: &mut usize) {
@@ -597,6 +688,43 @@ mod tests {
         super::collect_doc_text(tokens, &mut docs);
         let joined = docs.join("\n");
         assert!(text_mentions(&joined, "async_stream"));
+    }
+
+    #[test]
+    fn follows_module_declarations_from_a_custom_target_path() {
+        let root = std::env::temp_dir().join(format!("cargoscope-mods-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("core/flags")).expect("dirs");
+        std::fs::write(
+            root.join("core/main.rs"),
+            "mod flags;\n#[path = \"extra_impl.rs\"]\nmod extra;\nfn main() {}\n",
+        )
+        .expect("write");
+        std::fs::write(root.join("core/flags/mod.rs"), "mod parse;\n").expect("write");
+        std::fs::write(root.join("core/flags/parse.rs"), "use lexopt::Parser;\n").expect("write");
+        std::fs::write(root.join("core/extra_impl.rs"), "").expect("write");
+        let mut files = Vec::new();
+        let mut skipped = 0;
+        super::follow_modules(&root.join("core/main.rs"), 0, &mut files, &mut skipped);
+        let names: Vec<String> = files
+            .iter()
+            .map(|file| {
+                file.strip_prefix(&root)
+                    .expect("inside")
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "core/main.rs",
+                "core/flags/mod.rs",
+                "core/flags/parse.rs",
+                "core/extra_impl.rs"
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
