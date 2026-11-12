@@ -1,21 +1,27 @@
 [package]
-name = "cargoscope-cli"
+name = "cargoscope"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Command-line interface for CargoScope"
+homepage.workspace = true
+readme = "../../README.md"
+# The end-to-end tests need fixtures from the repository root.
+exclude = ["tests"]
+description = "Understand every dependency in your Rust project: advisories, unused dependencies, licenses, versions and why each one is there"
+keywords.workspace = true
+categories.workspace = true
 
 [[bin]]
 name = "cargoscope"
 path = "src/main.rs"
 
 [dependencies]
-cargoscope-advisory = { path = "../cargoscope-advisory" }
-cargoscope-cargo = { path = "../cargoscope-cargo" }
-cargoscope-core = { path = "../cargoscope-core" }
-cargoscope-report = { path = "../cargoscope-report" }
+cargoscope-advisory = { path = "../cargoscope-advisory", version = "0.1.0" }
+cargoscope-cargo = { path = "../cargoscope-cargo", version = "0.1.0" }
+cargoscope-core = { path = "../cargoscope-core", version = "0.1.0" }
+cargoscope-report = { path = "../cargoscope-report", version = "0.1.0" }
 
 [lints]
 workspace = true

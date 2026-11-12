@@ -5,10 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
 description = "Cargo manifest and lockfile parsing for CargoScope"
 
 [dependencies]
-cargoscope-core = { path = "../cargoscope-core" }
+cargoscope-core = { path = "../cargoscope-core", version = "0.1.0" }
 proc-macro2 = "1"
 toml = "0.8"
 

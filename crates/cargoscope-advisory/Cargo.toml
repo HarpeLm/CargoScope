@@ -5,10 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
 description = "RustSec advisory database access and caching for CargoScope"
 
 [dependencies]
-cargoscope-core = { path = "../cargoscope-core" }
+cargoscope-core = { path = "../cargoscope-core", version = "0.1.0" }
 cvss = "2"
 flate2 = "1"
 semver = "1"

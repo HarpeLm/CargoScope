@@ -89,6 +89,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "175812e0be2bccb6abe50bb8d566126198344f707e304f45c648fd8f2cc0365e"
 
 [[package]]
+name = "cargoscope"
+version = "0.1.0"
+dependencies = [
+ "cargoscope-advisory",
+ "cargoscope-cargo",
+ "cargoscope-core",
+ "cargoscope-report",
+ "jsonschema",
+ "serde_json",
+]
+
+[[package]]
 name = "cargoscope-advisory"
 version = "0.1.0"
 dependencies = [
@@ -109,18 +121,6 @@ dependencies = [
  "cargoscope-core",
  "proc-macro2",
  "toml",
-]
-
-[[package]]
-name = "cargoscope-cli"
-version = "0.1.0"
-dependencies = [
- "cargoscope-advisory",
- "cargoscope-cargo",
- "cargoscope-core",
- "cargoscope-report",
- "jsonschema",
- "serde_json",
 ]
 
 [[package]]
