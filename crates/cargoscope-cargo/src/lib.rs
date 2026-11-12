@@ -11,6 +11,7 @@ use cargoscope_core::{Inventory, Package, UnusedFinding};
 
 pub mod locations;
 pub mod unused;
+pub mod workspace;
 
 /// An error while reading or interpreting a Cargo project.
 #[derive(Debug)]
