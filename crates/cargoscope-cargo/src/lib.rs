@@ -154,8 +154,48 @@ pub fn find_unused(
         }
     }
 
+    // Path dependencies inside the workspace are implicit members (bevy's
+    // `crates/bevy_extract/macros`): their macros count too.
+    let mut macro_packages: Vec<(std::path::PathBuf, toml::Value)> = packages
+        .iter()
+        .map(|(dir, _, manifest)| (dir.clone(), manifest.clone()))
+        .collect();
+    let mut index = 0;
+    while index < macro_packages.len() && macro_packages.len() < 4_096 {
+        let (dir, manifest) = macro_packages[index].clone();
+        index += 1;
+        for dependency in unused::declared_dependencies(&manifest, workspace_dependencies) {
+            let Some((path, from_workspace)) = dependency.path else {
+                continue;
+            };
+            let base = if from_workspace {
+                project_root
+            } else {
+                dir.as_path()
+            };
+            let candidate = base.join(path);
+            let known = macro_packages
+                .iter()
+                .any(|(known, _)| known.canonicalize().ok() == candidate.canonicalize().ok());
+            let inside = candidate
+                .canonicalize()
+                .ok()
+                .zip(project_root.canonicalize().ok())
+                .is_some_and(|(candidate, root)| candidate.starts_with(root));
+            if known || !inside {
+                continue;
+            }
+            let Ok(contents) = read_manifest(&candidate.join("Cargo.toml")) else {
+                continue;
+            };
+            if let Ok(parsed) = toml::from_str::<toml::Value>(&contents) {
+                macro_packages.push((candidate, parsed));
+            }
+        }
+    }
+
     let mut workspace_macros = unused::WorkspaceMacros::default();
-    for (dir, _, manifest) in &packages {
+    for (dir, manifest) in &macro_packages {
         if let Some(name) = manifest
             .get("package")
             .and_then(|package| package.get("name"))
