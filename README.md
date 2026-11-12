@@ -68,6 +68,7 @@ cargoscope scan . --fail-on high                    # fail only on high or criti
 cargoscope scan . --fail-on none                    # never fail CI on findings
 cargoscope scan . --checks inventory,unused          # run only some checks (no download needed)
 cargoscope scan . --show-uncertain                  # also list possibly-unused dependencies
+cargoscope scan . --verbose                         # also list every resolved package
 ```
 
 By default, any security vulnerability fails the scan (exit code 1); vulnerabilities without a CVSS score count at every threshold, and informational advisories never fail. Set `CARGOSCOPE_CACHE_DIR` to choose where downloaded data is stored. Use `--fail-on none` to add CargoScope to CI alongside your existing tools without blocking builds. Exit codes: `0` OK, `1` threshold reached, `2` execution error.
