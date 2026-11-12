@@ -705,6 +705,22 @@ fn library_name(
         })
 }
 
+/// Dependencies that `[features]` forward features to (`"dep/feature"`,
+/// `"dep?/feature"`).
+fn features_forwarded_to(manifest: &toml::Value) -> BTreeSet<&str> {
+    manifest
+        .get("features")
+        .and_then(toml::Value::as_table)
+        .into_iter()
+        .flat_map(|features| features.values())
+        .filter_map(toml::Value::as_array)
+        .flatten()
+        .filter_map(toml::Value::as_str)
+        .filter_map(|entry| entry.split_once('/'))
+        .map(|(dependency, _)| dependency.trim_end_matches('?'))
+        .collect()
+}
+
 /// Names the library of `crate_name` plausibly uses when its `[lib] name`
 /// is unknown: `atuin-vt100` → `vt100`, `tui-textarea-2` → `tui_textarea`.
 fn library_name_guesses(crate_name: &str) -> Vec<String> {
@@ -865,6 +881,14 @@ pub fn check_package(
                     dependency.package
                 ));
             }
+        }
+        if dependency.kind != DependencyKind::Dev
+            && features_forwarded_to(package.manifest).contains(dependency.key.as_str())
+        {
+            exceptions.push(format!(
+                "named in [features] (`{}/...`): may be declared only to forward a feature",
+                dependency.key
+            ));
         }
         if dependency.kind != DependencyKind::Dev && references.in_docs(&ident) {
             exceptions.push(
@@ -1137,6 +1161,22 @@ mod tests {
         let references = super::scan_files(&[file]);
         assert!(references.in_docs("anyhow"));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn finds_dependencies_that_features_forward_to() {
+        let manifest: toml::Value = toml::from_str(
+            r#"
+            [features]
+            search = ["mdbook-html/search"]
+            tls = ["reqwest?/rustls-tls", "dep:openssl", "local"]
+            "#,
+        )
+        .expect("valid");
+        let forwarded: Vec<&str> = super::features_forwarded_to(&manifest)
+            .into_iter()
+            .collect();
+        assert_eq!(forwarded, vec!["mdbook-html", "reqwest"]);
     }
 
     #[test]
