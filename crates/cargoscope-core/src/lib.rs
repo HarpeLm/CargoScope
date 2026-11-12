@@ -330,6 +330,9 @@ pub struct Report {
     pub unused: Vec<UnusedFinding>,
     /// Date the RustSec database was downloaded (`YYYY-MM-DD`), if known.
     pub advisory_db_date: Option<String>,
+    /// Whether unused dependencies were checked with the compiler
+    /// (`scan --precise`) in addition to the static analysis.
+    pub unused_precise: bool,
     /// Policy violations; `None` when no policy is configured or checked.
     pub policy: Option<Vec<policy::Violation>>,
     /// Non-fatal problems to show the user, such as unreadable advisory files.

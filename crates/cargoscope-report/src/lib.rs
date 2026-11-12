@@ -72,7 +72,12 @@ pub fn render_text(project_root: &Path, report: &Report, options: TextOptions) -
         out.push_str("\nAdvisories: not checked\n");
     }
     if report.checks.unused {
-        render_unused_text(&mut out, &report.unused, options.show_uncertain);
+        render_unused_text(
+            &mut out,
+            &report.unused,
+            options.show_uncertain,
+            report.unused_precise,
+        );
     } else {
         out.push_str("\nUnused dependencies: not checked\n");
     }
@@ -258,7 +263,12 @@ fn render_inventory_text(out: &mut String, report: &Report) {
     }
 }
 
-fn render_unused_text(out: &mut String, unused: &[UnusedFinding], show_uncertain: bool) {
+fn render_unused_text(
+    out: &mut String,
+    unused: &[UnusedFinding],
+    show_uncertain: bool,
+    precise: bool,
+) {
     let active = || unused.iter().filter(|finding| finding.ignored.is_none());
     let likely = active()
         .filter(|finding| finding.confidence == UnusedConfidence::Likely)
@@ -266,7 +276,12 @@ fn render_unused_text(out: &mut String, unused: &[UnusedFinding], show_uncertain
     let possibly = active().count() - likely;
     let _ = writeln!(
         out,
-        "\nLikely-unused dependencies: {likely} (static analysis: candidates to verify)"
+        "\nLikely-unused dependencies: {likely} ({})",
+        if precise {
+            "confirmed by rustc where it compiled them, static analysis elsewhere"
+        } else {
+            "static analysis: candidates to verify"
+        }
     );
     for finding in active() {
         if finding.confidence == UnusedConfidence::Possibly && !show_uncertain {
@@ -665,6 +680,7 @@ mod tests {
             advisories,
             unused: Vec::new(),
             policy: None,
+            unused_precise: false,
             package_info: Vec::new(),
             registry_date: None,
             advisory_db_date: Some("2026-01-02".to_owned()),
@@ -792,6 +808,16 @@ mod tests {
             text.contains("1 possibly-unused dependency hidden; use --show-uncertain to list it\n")
         );
         assert!(text.contains("- once_cell ignored in Cargo.toml, reason: generated code\n"));
+    }
+
+    #[test]
+    fn precise_mode_changes_the_unused_heading() {
+        let mut report = with_unused();
+        report.unused_precise = true;
+        let text = render_text(Path::new("."), &report, VERBOSE);
+        assert!(text.contains(
+            "Likely-unused dependencies: 1 (confirmed by rustc where it compiled them, static analysis elsewhere)\n"
+        ));
     }
 
     #[test]

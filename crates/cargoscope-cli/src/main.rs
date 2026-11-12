@@ -507,6 +507,7 @@ fn scan(options: &ScanOptions) -> ExitCode {
         advisories,
         unused,
         policy: violations,
+        unused_precise: checks.unused && options.precise,
         advisory_db_date,
         warnings,
     };
