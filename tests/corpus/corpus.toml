@@ -365,6 +365,7 @@ labels = [
   { manifest = "actix-web-codegen/Cargo.toml", section = "dev-dependencies", dependency = "actix-utils", truth = "unused", note = "no occurrence in the package" },
   { manifest = "actix-web/Cargo.toml", section = "dependencies", dependency = "actix-codec", truth = "unused", note = "no occurrence in the package" },
   { manifest = "awc/Cargo.toml", section = "dev-dependencies", dependency = "actix-server", truth = "unused", note = "no occurrence in the package" },
+  { manifest = "awc/Cargo.toml", section = "dependencies", dependency = "percent-encoding", truth = "unused", note = "no occurrence in the package; was hidden by counting inner path segments as crates (labelled after the first-segment fix)" },
 ]
 
 [[repository]]
@@ -406,6 +407,7 @@ labels = [
   { manifest = "runtime/Cargo.toml", section = "dependencies", dependency = "async-trait", truth = "unused", note = "no occurrence in the package" },
   { manifest = "runtime/Cargo.toml", section = "dependencies", dependency = "fastwebsockets", truth = "unused", note = "no occurrence in the package" },
   { manifest = "runtime/Cargo.toml", section = "dependencies", dependency = "regex", truth = "unused", note = "no occurrence in the package" },
+  { manifest = "cli/rt/Cargo.toml", section = "dependencies", dependency = "deno_node", truth = "unused", note = "only used as deno_runtime::deno_node, a re-export (labelled after the first-segment fix)" },
 ]
 
 [[repository]]
@@ -473,6 +475,11 @@ labels = [
   { manifest = "crates/nu-test-support-macros/Cargo.toml", section = "dependencies", dependency = "heck", truth = "unused", note = "no occurrence in the package" },
   { manifest = "crates/nu-mcp/Cargo.toml", section = "dependencies", dependency = "bytes", truth = "unused", note = "only unrelated words or other packages mention it" },
   { manifest = "crates/nu-mcp/Cargo.toml", section = "dependencies", dependency = "indoc", truth = "unused", note = "no occurrence in the package" },
+  { manifest = "crates/nu-cli/Cargo.toml", section = "dependencies", dependency = "nu-config", truth = "unused", note = "no occurrence in the package; was hidden by counting inner path segments as crates (labelled after the first-segment fix)" },
+  { manifest = "crates/nu-json/Cargo.toml", section = "dev-dependencies", dependency = "nu-path", truth = "unused", note = "no occurrence in the package; was hidden by counting inner path segments as crates (labelled after the first-segment fix)" },
+  { manifest = "crates/nu-protocol/Cargo.toml", section = "dependencies", dependency = "web-time", truth = "unused", note = "no occurrence in the package; was hidden by counting inner path segments as crates (labelled after the first-segment fix)" },
+  { manifest = "crates/nu-std/Cargo.toml", section = "dependencies", dependency = "nu-engine", truth = "unused", note = "no occurrence in the package; was hidden by counting inner path segments as crates (labelled after the first-segment fix)" },
+  { manifest = "crates/nu-system/Cargo.toml", section = "dependencies", dependency = "web-time", truth = "unused", note = "no occurrence in the package; was hidden by counting inner path segments as crates (labelled after the first-segment fix)" },
 ]
 
 [[repository]]
@@ -506,6 +513,7 @@ labels = [
   { manifest = "pyo3-polars/example/derive_expression/expression_lib/Cargo.toml", section = "dependencies", dependency = "pyo3", truth = "unused", note = "no occurrence in the package" },
   { manifest = "pyo3-polars/example/extend_polars_python_dispatch/extend_polars/Cargo.toml", section = "dependencies", dependency = "polars-python", truth = "unused", note = "no occurrence in the package" },
   { manifest = "pyo3-polars/pyo3-polars-derive/Cargo.toml", section = "dev-dependencies", dependency = "polars-python", truth = "unused", note = "no occurrence in the package" },
+  { manifest = "crates/polars-python/Cargo.toml", section = "dependencies", dependency = "polars-row", truth = "unused", note = "no occurrence in the package; was hidden by counting inner path segments as crates (labelled after the first-segment fix)" },
 ]
 
 [[repository]]
@@ -547,6 +555,7 @@ labels = [
   { manifest = "crates/tauri-macos-sign/Cargo.toml", section = "dependencies", dependency = "hex", truth = "unused", note = "no occurrence in the package" },
   { manifest = "crates/tauri-driver/Cargo.toml", section = "dependencies", dependency = "futures", truth = "unused", note = "no occurrence in the package" },
   { manifest = "examples/api/src-tauri/tauri-plugin-sample/Cargo.toml", section = "dependencies", dependency = "log", truth = "unused", note = "no occurrence in the package" },
+  { manifest = "crates/tauri/Cargo.toml", section = "build-dependencies", dependency = "tauri-build", truth = "unused", note = "build.rs never uses it; only doc examples and the build feature mention it (labelled after the first-segment fix)" },
 ]
 
 [[repository]]
@@ -626,6 +635,7 @@ commit = "766683feaf9df7bb790071e7636825ea8c5642bd"
 set = "held-out-3"
 labels = [
   { manifest = "tonic-prost-build/Cargo.toml", section = "dependencies", dependency = "tempfile", truth = "unused", note = "no occurrence in the package" },
+  { manifest = "grpc/Cargo.toml", section = "dev-dependencies", dependency = "async-stream", truth = "unused", note = "no occurrence in the package; was hidden by counting inner path segments as crates (labelled after the first-segment fix)" },
 ]
 
 [[repository]]
@@ -653,6 +663,9 @@ labels = [
   { manifest = "integrations/actix/Cargo.toml", section = "dependencies", dependency = "leptos_macro", truth = "unused", note = "no occurrence in the package" },
   { manifest = "integrations/axum/Cargo.toml", section = "dependencies", dependency = "leptos_macro", truth = "unused", note = "only comments, URLs or other packages mention it" },
   { manifest = "router_macro/Cargo.toml", section = "dev-dependencies", dependency = "leptos_macro", truth = "unused", note = "only comments, URLs or other packages mention it" },
+  { manifest = "leptos_server/Cargo.toml", section = "dependencies", dependency = "send_wrapper", truth = "unused", note = "no occurrence in the package; was hidden by counting inner path segments as crates (labelled after the first-segment fix)" },
+  { manifest = "reactive_stores/Cargo.toml", section = "dependencies", dependency = "send_wrapper", truth = "unused", note = "no occurrence in the package; was hidden by counting inner path segments as crates (labelled after the first-segment fix)" },
+  { manifest = "integrations/utils/Cargo.toml", section = "dependencies", dependency = "reactive_graph", truth = "unused", note = "no occurrence in the package; was hidden by counting inner path segments as crates (labelled after the first-segment fix)" },
 ]
 
 [[repository]]
