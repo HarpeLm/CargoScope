@@ -218,9 +218,91 @@ pub struct PackageInfo {
     pub outdated: bool,
 }
 
+/// Which checks a scan runs. The inventory is always built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct Checks {
+    /// Match packages against the RustSec advisory database.
+    pub advisories: bool,
+    /// Look for likely-unused dependencies.
+    pub unused: bool,
+    /// Report licenses from the crates.io cache.
+    pub licenses: bool,
+    /// Report latest and yanked versions from the crates.io cache.
+    pub versions: bool,
+}
+
+impl Checks {
+    /// Every check, the default.
+    pub const ALL: Self = Self {
+        advisories: true,
+        unused: true,
+        licenses: true,
+        versions: true,
+    };
+
+    /// Names accepted by `--checks`, in report order.
+    pub const NAMES: [&'static str; 5] =
+        ["inventory", "advisories", "unused", "licenses", "versions"];
+
+    /// Parses a comma-separated list such as `inventory,advisories`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first unknown name.
+    pub fn parse(list: &str) -> Result<Self, String> {
+        let mut checks = Self {
+            advisories: false,
+            unused: false,
+            licenses: false,
+            versions: false,
+        };
+        for name in list
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            match name {
+                "inventory" => {}
+                "advisories" => checks.advisories = true,
+                "unused" => checks.unused = true,
+                "licenses" => checks.licenses = true,
+                "versions" => checks.versions = true,
+                other => return Err(other.to_owned()),
+            }
+        }
+        Ok(checks)
+    }
+
+    /// Names of the enabled checks, `inventory` included.
+    #[must_use]
+    pub fn enabled(self) -> Vec<&'static str> {
+        let flags = [
+            true,
+            self.advisories,
+            self.unused,
+            self.licenses,
+            self.versions,
+        ];
+        Self::NAMES
+            .iter()
+            .zip(flags)
+            .filter_map(|(name, enabled)| enabled.then_some(*name))
+            .collect()
+    }
+}
+
+impl Default for Checks {
+    fn default() -> Self {
+        Self::ALL
+    }
+}
+
 /// Everything a scan produced, ready to be rendered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
+    /// Checks that ran; data for the others is empty.
+    pub checks: Checks,
     /// Resolved packages and their dependency graph.
     pub inventory: Inventory,
     /// Advisories affecting resolved packages.
@@ -239,7 +321,19 @@ pub struct Report {
 
 #[cfg(test)]
 mod tests {
-    use super::{Inventory, Package};
+    use super::{Checks, Inventory, Package};
+
+    #[test]
+    fn parses_check_lists() {
+        let checks = Checks::parse("inventory, advisories,versions").expect("valid");
+        assert!(checks.advisories && checks.versions && !checks.unused && !checks.licenses);
+        assert_eq!(
+            checks.enabled(),
+            vec!["inventory", "advisories", "versions"]
+        );
+        assert_eq!(Checks::parse("inventory,typo"), Err("typo".to_owned()));
+        assert_eq!(Checks::default().enabled(), Checks::NAMES.to_vec());
+    }
 
     fn package(name: &str, root: bool, dependencies: Vec<usize>) -> Package {
         Package {

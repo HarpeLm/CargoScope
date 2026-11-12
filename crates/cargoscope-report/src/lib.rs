@@ -437,8 +437,8 @@ fn json_escape(value: &str) -> String {
 mod tests {
     use super::{json_escape, render_json, render_text};
     use cargoscope_core::{
-        AdvisoryFinding, AdvisoryKind, DependencyKind, Inventory, Package, PackageInfo, Report,
-        Severity, UnusedConfidence, UnusedFinding,
+        AdvisoryFinding, AdvisoryKind, Checks, DependencyKind, Inventory, Package, PackageInfo,
+        Report, Severity, UnusedConfidence, UnusedFinding,
     };
     use std::path::Path;
 
@@ -462,6 +462,7 @@ mod tests {
     // 0 app (root) -> 1 alpha (direct) -> 2 beta (transitive); 3 orphan
     fn sample(advisories: Vec<AdvisoryFinding>) -> Report {
         Report {
+            checks: Checks::ALL,
             inventory: Inventory {
                 packages: vec![
                     package("app", None, true, false, vec![1]),

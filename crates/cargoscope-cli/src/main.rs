@@ -9,7 +9,7 @@ use std::process::ExitCode;
 
 use cargoscope_advisory::crates_io::{self, RegistryCache};
 use cargoscope_advisory::{AdvisoryDatabase, DEFAULT_ARCHIVE_URL};
-use cargoscope_core::{AdvisoryFinding, AdvisoryKind, Report, Severity, VERSION};
+use cargoscope_core::{AdvisoryFinding, AdvisoryKind, Checks, Report, Severity, VERSION};
 use cargoscope_report::sarif::SarifLocations;
 
 const USAGE: &str = "Usage:
@@ -274,6 +274,7 @@ fn scan(options: &ScanOptions) -> ExitCode {
     }
 
     let report = Report {
+        checks: Checks::ALL,
         package_info,
         registry_date,
         inventory,
