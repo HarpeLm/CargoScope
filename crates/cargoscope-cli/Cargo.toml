@@ -12,6 +12,7 @@ name = "cargoscope"
 path = "src/main.rs"
 
 [dependencies]
+cargoscope-advisory = { path = "../cargoscope-advisory" }
 cargoscope-cargo = { path = "../cargoscope-cargo" }
 cargoscope-core = { path = "../cargoscope-core" }
 cargoscope-report = { path = "../cargoscope-report" }

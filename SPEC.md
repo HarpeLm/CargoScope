@@ -220,7 +220,7 @@ cargoscope scan . --show-uncertain
 
 ### Failure behaviour and exit codes
 
-By default, **any security advisory fails the scan**, as cargo-audit does. `--fail-on <none|low|medium|high|critical>` changes the threshold; `--fail-on none` never fails on findings. Unused-dependency and license findings never fail the scan unless explicitly requested.
+By default, **any security advisory fails the scan**, as cargo-audit does. `--fail-on <none|low|medium|high|critical>` changes the threshold; `--fail-on none` never fails on findings. Vulnerabilities without a CVSS score count at every threshold except `none`, since their severity is unknown. Informational advisories (`unmaintained`, `unsound`) are reported but never fail the scan. Unused-dependency and license findings never fail the scan unless explicitly requested.
 
 | Code | Meaning |
 |---|---|

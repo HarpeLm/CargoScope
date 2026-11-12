@@ -77,6 +77,80 @@ impl Inventory {
     }
 }
 
+/// Severity of a finding, on the CVSS qualitative scale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Severity {
+    /// CVSS score 0.0.
+    None,
+    /// CVSS score 0.1 to 3.9.
+    Low,
+    /// CVSS score 4.0 to 6.9.
+    Medium,
+    /// CVSS score 7.0 to 8.9.
+    High,
+    /// CVSS score 9.0 to 10.0.
+    Critical,
+}
+
+impl Severity {
+    /// Lowercase name used in reports and on the command line.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Critical => "critical",
+        }
+    }
+}
+
+/// What kind of advisory a finding comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdvisoryKind {
+    /// A security vulnerability.
+    Vulnerability,
+    /// An informational advisory, such as `unmaintained` or `unsound`.
+    Informational(String),
+}
+
+/// A known advisory affecting a resolved package.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdvisoryFinding {
+    /// Index of the affected package in [`Inventory::packages`].
+    pub package: usize,
+    /// Advisory identifier, such as a `RUSTSEC-` ID, taken from the data.
+    pub id: String,
+    /// Other identifiers (CVE, GHSA) listed by the advisory.
+    pub aliases: Vec<String>,
+    /// Advisory title.
+    pub title: String,
+    /// Publication date of the advisory (`YYYY-MM-DD`).
+    pub date: String,
+    /// Link to the original report, if any.
+    pub url: Option<String>,
+    /// Kind of advisory.
+    pub kind: AdvisoryKind,
+    /// Severity computed from the advisory's CVSS vector; `None` when it has none.
+    pub severity: Option<Severity>,
+    /// Version requirements that fix the advisory; empty when no fix exists.
+    pub patched: Vec<String>,
+}
+
+/// Everything a scan produced, ready to be rendered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Report {
+    /// Resolved packages and their dependency graph.
+    pub inventory: Inventory,
+    /// Advisories affecting resolved packages.
+    pub advisories: Vec<AdvisoryFinding>,
+    /// Date the RustSec database was downloaded (`YYYY-MM-DD`), if known.
+    pub advisory_db_date: Option<String>,
+    /// Non-fatal problems to show the user, such as unreadable advisory files.
+    pub warnings: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Inventory, Package};

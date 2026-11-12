@@ -9,6 +9,12 @@ description = "RustSec advisory database access and caching for CargoScope"
 
 [dependencies]
 cargoscope-core = { path = "../cargoscope-core" }
+cvss = "2"
+flate2 = "1"
+semver = "1"
+tar = "0.4"
+toml = "0.8"
+ureq = "2"
 
 [lints]
 workspace = true

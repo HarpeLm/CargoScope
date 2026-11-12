@@ -19,7 +19,7 @@ CargoScope is an open-source CLI, written in Rust, for Rust/Cargo projects. One 
 
 ## Status
 
-**Early development, not yet ready for production use.** Today, `cargoscope scan` inventories the packages resolved in `Cargo.lock` across explicit workspace members, and shows the dependency chain behind every transitive package. The rest of the v0.1 scope below is in progress.
+**Early development, not yet ready for production use.** Today, `cargoscope update` downloads the RustSec advisory database, and `cargoscope scan` reports matching advisories and inventories the packages resolved in `Cargo.lock`, with the dependency chain behind every advisory and transitive package. Exit codes and `--fail-on` work as described below. The rest of the v0.1 scope below is in progress.
 
 ## Quick Start
 
@@ -27,7 +27,10 @@ CargoScope is an open-source CLI, written in Rust, for Rust/Cargo projects. One 
 # Install from source (prebuilt binaries, crates.io, Homebrew, npm and PyPI come with v0.1)
 cargo install --path crates/cargoscope-cli
 
-# Scan the current project
+# Download the RustSec advisory database (the only command that uses the network)
+cargoscope update
+
+# Scan the current project, offline
 cargoscope scan .
 
 # JSON output
@@ -39,6 +42,13 @@ cargoscope scan . --format json
 ```
 CargoScope 0.1.0
 Target: .
+
+Advisories: 1 (RustSec database downloaded 2026-11-12)
+- RUSTSEC-2020-0071 [medium] time 0.1.45: Potential segfault in the time crate
+    via my-app -> chrono -> time
+    fix: upgrade to >= 0.2.23
+    https://github.com/time-rs/time/issues/293
+
 Resolved packages: 22
 - cargoscope-cargo 0.1.0 [root]
 - indexmap 2.14.2 [transitive] (registry+https://github.com/rust-lang/crates.io-index)
@@ -49,17 +59,15 @@ Resolved packages: 22
 
 Every transitive package shows the shortest dependency chain that pulls it in. The JSON report carries the same chain in a `path` field.
 
-## Planned v0.1 Usage
+## More Usage (some options still planned)
 
 ```sh
-cargoscope update                                   # download RustSec + crates.io data (only network access)
-cargoscope scan .                                   # full report, read-only, offline
 cargoscope scan . --format sarif --output results.sarif
 cargoscope scan . --fail-on none                    # never fail CI on findings
 cargoscope scan . --show-uncertain                  # include possibly-unused candidates
 ```
 
-By default, any security advisory fails the scan (exit code 1). Use `--fail-on none` to add CargoScope to CI alongside your existing tools without blocking builds. Exit codes: `0` OK, `1` threshold reached, `2` execution error.
+By default, any security vulnerability fails the scan (exit code 1); vulnerabilities without a CVSS score count at every threshold, and informational advisories never fail. Set `CARGOSCOPE_CACHE_DIR` to choose where downloaded data is stored. Use `--fail-on none` to add CargoScope to CI alongside your existing tools without blocking builds. Exit codes: `0` OK, `1` threshold reached, `2` execution error.
 
 ## Roadmap
 

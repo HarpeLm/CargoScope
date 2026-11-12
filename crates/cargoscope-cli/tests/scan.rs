@@ -10,7 +10,12 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 fn scan(name: &str, extra: &[&str]) -> Output {
+    scan_with_cache(name, extra, &fixture("advisory-cache"))
+}
+
+fn scan_with_cache(name: &str, extra: &[&str], cache: &std::path::Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", cache)
         .arg("scan")
         .arg(fixture(name))
         .args(extra)
@@ -24,7 +29,7 @@ fn stdout(output: &Output) -> String {
 
 #[test]
 fn simple_project_marks_direct_and_transitive_packages() {
-    let output = scan("simple", &[]);
+    let output = scan("simple", &["--fail-on", "none"]);
     assert_eq!(output.status.code(), Some(0));
     let text = stdout(&output);
     assert!(text.contains("Resolved packages: 4\n"));
@@ -54,7 +59,7 @@ fn renamed_dev_and_build_dependencies_are_direct() {
 
 #[test]
 fn json_output_is_versioned() {
-    let output = scan("simple", &["--format", "json"]);
+    let output = scan("simple", &["--format", "json", "--fail-on", "none"]);
     assert_eq!(output.status.code(), Some(0));
     let json = stdout(&output);
     assert!(json.starts_with("{\"format_version\":1,"));
@@ -90,4 +95,65 @@ fn missing_lockfile_is_an_execution_error() {
 #[test]
 fn unknown_option_is_an_execution_error() {
     assert_eq!(scan("simple", &["--nope"]).status.code(), Some(2));
+}
+
+#[test]
+fn reports_matching_advisories_with_path_and_fix() {
+    let output = scan("simple", &[]);
+    let text = stdout(&output);
+    assert!(text.contains("Advisories: 2 (RustSec database downloaded 2026-01-01)\n"));
+    assert!(text.contains(
+        "- CARGOSCOPE-TEST-0001 [high] serde_json 1.0.128: Fake vulnerability used by CargoScope tests\n    via simple -> serde_json\n    fix: upgrade to >= 1.0.200\n"
+    ));
+    assert!(text.contains(
+        "- CARGOSCOPE-TEST-0003 [unmaintained] itoa 1.0.11: Fake unmaintained notice used by CargoScope tests\n    via simple -> serde_json -> itoa\n    fix: no fixed version available\n"
+    ));
+    assert!(
+        !text.contains("CARGOSCOPE-TEST-0002"),
+        "withdrawn advisory reported"
+    );
+}
+
+#[test]
+fn unaffected_versions_are_not_reported() {
+    let output = scan("workspace", &[]);
+    assert_eq!(output.status.code(), Some(0));
+    let text = stdout(&output);
+    assert!(text.contains("Advisories: 0"));
+    assert!(text.contains("This does not mean the dependencies are safe."));
+}
+
+#[test]
+fn fail_on_threshold_controls_exit_code() {
+    assert_eq!(scan("simple", &[]).status.code(), Some(1));
+    assert_eq!(
+        scan("simple", &["--fail-on", "high"]).status.code(),
+        Some(1)
+    );
+    assert_eq!(
+        scan("simple", &["--fail-on", "critical"]).status.code(),
+        Some(0)
+    );
+    assert_eq!(
+        scan("simple", &["--fail-on", "none"]).status.code(),
+        Some(0)
+    );
+}
+
+#[test]
+fn json_output_includes_advisories() {
+    let json = stdout(&scan("simple", &["--format", "json"]));
+    assert!(json.contains(
+        "\"advisory_database\":{\"source\":\"RustSec\",\"downloaded_on\":\"2026-01-01\"}"
+    ));
+    assert!(json.contains("\"id\":\"CARGOSCOPE-TEST-0001\""));
+    assert!(json.contains("\"informational\":\"unmaintained\""));
+}
+
+#[test]
+fn missing_advisory_database_is_an_execution_error() {
+    let empty = std::env::temp_dir().join(format!("cargoscope-empty-cache-{}", std::process::id()));
+    let output = scan_with_cache("simple", &[], &empty);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("run `cargoscope update` first"));
 }
