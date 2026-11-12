@@ -17,6 +17,9 @@ fn scan_with_cache(name: &str, extra: &[&str], cache: &std::path::Path) -> Outpu
     Command::new(env!("CARGO_BIN_EXE_cargoscope"))
         .env("CARGOSCOPE_CACHE_DIR", cache)
         .arg("scan")
+        // Most tests check the package list, which the text report shows only
+        // in verbose mode; the flag has no effect on JSON and SARIF.
+        .arg("--verbose")
         .arg(fixture(name))
         .args(extra)
         .output()
@@ -507,4 +510,19 @@ fn glob_workspace_members_are_scanned_and_excludes_respected() {
     assert!(text.contains("- memchr [likely-unused] in [dependencies] of crates/util/Cargo.toml"));
     // The excluded member's unused `regex` must not be reported.
     assert!(!text.contains("regex"));
+}
+
+#[test]
+fn package_list_is_hidden_without_verbose() {
+    let output = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+        .args(["scan", "--fail-on", "none"])
+        .arg(fixture("simple"))
+        .output()
+        .expect("cargoscope binary runs");
+    let text = stdout(&output);
+    assert!(text.starts_with("CargoScope "));
+    assert!(text.contains("Summary: 1 vulnerability (1 informational), 0 likely-unused, 1 yanked, 1 outdated direct, 4 packages\n"));
+    assert!(text.contains("Resolved packages: 4 (use --verbose to list them)\n"));
+    assert!(!text.contains("- simple 0.1.0 [root]"));
 }
