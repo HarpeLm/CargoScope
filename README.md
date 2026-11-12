@@ -80,9 +80,9 @@ cargoscope/
 ├── crates/
 │   ├── cargoscope-cli/        # commands, options, exit codes
 │   ├── cargoscope-core/       # data model, orchestration, configuration
-│   ├── cargoscope-cargo/      # Cargo parsing, resolution, unused analysis (planned)
-│   ├── cargoscope-advisory/   # RustSec database and cache (planned)
-│   └── cargoscope-report/     # text, JSON, SARIF (planned)
+│   ├── cargoscope-cargo/      # Cargo parsing, resolution, unused analysis
+│   ├── cargoscope-advisory/   # RustSec database and cache (skeleton)
+│   └── cargoscope-report/     # text and JSON (SARIF planned)
 └── tests/                     # fixtures and integration tests
 ```
 

@@ -1,8 +1,12 @@
 [workspace]
 members = [
+    "crates/cargoscope-advisory",
+    "crates/cargoscope-cargo",
     "crates/cargoscope-cli",
     "crates/cargoscope-core",
+    "crates/cargoscope-report",
 ]
+exclude = ["tests/fixtures"]
 resolver = "2"
 
 [workspace.package]

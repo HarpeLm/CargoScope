@@ -3,17 +3,38 @@
 version = 4
 
 [[package]]
-name = "cargoscope-cli"
+name = "cargoscope-advisory"
 version = "0.1.0"
 dependencies = [
  "cargoscope-core",
 ]
 
 [[package]]
-name = "cargoscope-core"
+name = "cargoscope-cargo"
 version = "0.1.0"
 dependencies = [
+ "cargoscope-core",
  "toml",
+]
+
+[[package]]
+name = "cargoscope-cli"
+version = "0.1.0"
+dependencies = [
+ "cargoscope-cargo",
+ "cargoscope-core",
+ "cargoscope-report",
+]
+
+[[package]]
+name = "cargoscope-core"
+version = "0.1.0"
+
+[[package]]
+name = "cargoscope-report"
+version = "0.1.0"
+dependencies = [
+ "cargoscope-core",
 ]
 
 [[package]]

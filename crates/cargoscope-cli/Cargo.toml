@@ -12,7 +12,9 @@ name = "cargoscope"
 path = "src/main.rs"
 
 [dependencies]
+cargoscope-cargo = { path = "../cargoscope-cargo" }
 cargoscope-core = { path = "../cargoscope-core" }
+cargoscope-report = { path = "../cargoscope-report" }
 
 [lints]
 workspace = true

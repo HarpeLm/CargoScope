@@ -1,0 +1,14 @@
+[package]
+name = "cargoscope-advisory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "RustSec advisory database access and caching for CargoScope"
+
+[dependencies]
+cargoscope-core = { path = "../cargoscope-core" }
+
+[lints]
+workspace = true

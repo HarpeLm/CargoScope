@@ -80,12 +80,13 @@ fn parse_output_format(value: &str) -> Result<OutputFormat, String> {
 }
 
 fn scan(project_root: &Path, output_format: OutputFormat) -> ExitCode {
-    match cargoscope_core::scan_cargo_project(project_root) {
+    match cargoscope_cargo::scan_cargo_project(project_root) {
         Ok(inventory) => {
-            match output_format {
-                OutputFormat::Text => print_text(project_root, &inventory),
-                OutputFormat::Json => print_json(project_root, &inventory),
-            }
+            let report = match output_format {
+                OutputFormat::Text => cargoscope_report::render_text(project_root, &inventory),
+                OutputFormat::Json => cargoscope_report::render_json(project_root, &inventory),
+            };
+            print!("{report}");
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -93,79 +94,10 @@ fn scan(project_root: &Path, output_format: OutputFormat) -> ExitCode {
                 "CargoScope could not scan {}: {error}",
                 project_root.display()
             );
-            ExitCode::from(1)
+            // Exit code 2 = execution error (see SPEC.md, section 8).
+            ExitCode::from(2)
         }
     }
-}
-
-fn print_text(project_root: &Path, inventory: &cargoscope_core::Inventory) {
-    println!("CargoScope {}", cargoscope_core::VERSION);
-    println!("Target: {}", project_root.display());
-    println!("Resolved packages: {}", inventory.packages.len());
-
-    for package in &inventory.packages {
-        let scope = if package.direct {
-            "direct"
-        } else {
-            "transitive"
-        };
-        match &package.source {
-            Some(source) => println!(
-                "- {} {} [{scope}] ({source})",
-                package.name, package.version
-            ),
-            None => println!("- {} {} [{scope}]", package.name, package.version),
-        }
-    }
-}
-
-fn print_json(project_root: &Path, inventory: &cargoscope_core::Inventory) {
-    print!(
-        "{{\"format_version\":1,\"tool_version\":\"{}\",\"target\":\"{}\",\"packages\":[",
-        json_escape(cargoscope_core::VERSION),
-        json_escape(&project_root.display().to_string())
-    );
-
-    for (index, package) in inventory.packages.iter().enumerate() {
-        if index > 0 {
-            print!(",");
-        }
-
-        print!(
-            "{{\"name\":\"{}\",\"version\":\"{}\",\"direct\":{}",
-            json_escape(&package.name),
-            json_escape(&package.version),
-            package.direct
-        );
-        match &package.source {
-            Some(source) => print!(",\"source\":\"{}\"}}", json_escape(source)),
-            None => print!(",\"source\":null}}"),
-        }
-    }
-
-    println!("]}}");
-}
-
-fn json_escape(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-
-    for character in value.chars() {
-        match character {
-            '\\' => escaped.push_str("\\\\"),
-            '"' => escaped.push_str("\\\""),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            character if character.is_control() => {
-                use std::fmt::Write;
-                write!(escaped, "\\u{:04x}", character as u32)
-                    .expect("writing to String cannot fail");
-            }
-            character => escaped.push(character),
-        }
-    }
-
-    escaped
 }
 
 #[cfg(test)]
