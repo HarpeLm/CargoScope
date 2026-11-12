@@ -1,0 +1,14 @@
+[package]
+name = "cargoscope-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core domain types and analysis orchestration for CargoScope"
+
+[dependencies]
+toml = "0.8"
+
+[lints]
+workspace = true

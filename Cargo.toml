@@ -1,0 +1,19 @@
+[workspace]
+members = [
+    "crates/cargoscope-cli",
+    "crates/cargoscope-core",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/HarpeLm/CargoScope"
+homepage = "https://github.com/HarpeLm/CargoScope"
+keywords = ["dependencies", "security", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

@@ -1,0 +1,18 @@
+[package]
+name = "cargoscope-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Command-line interface for CargoScope"
+
+[[bin]]
+name = "cargoscope"
+path = "src/main.rs"
+
+[dependencies]
+cargoscope-core = { path = "../cargoscope-core" }
+
+[lints]
+workspace = true
