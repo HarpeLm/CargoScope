@@ -566,7 +566,7 @@ fn collect_doc_text(tokens: TokenStream, out: &mut Vec<String>, dir: Option<&Pat
                     && macro_name == "include_str"
                     && bang.as_char() == '!'
                 {
-                    let path = arguments.to_string();
+                    let path = arguments.stream().to_string();
                     let path = path.trim().trim_matches('"');
                     let file = dir.join(path);
                     let readable = fs::symlink_metadata(&file).is_ok_and(|metadata| {
