@@ -3,7 +3,10 @@
 use std::fmt::Write;
 use std::path::Path;
 
-use cargoscope_core::{AdvisoryFinding, AdvisoryKind, Inventory, Package, Report, VERSION};
+use cargoscope_core::{
+    AdvisoryFinding, AdvisoryKind, Inventory, Package, Report, UnusedConfidence, UnusedFinding,
+    VERSION,
+};
 
 /// Version of the JSON report format.
 pub const JSON_FORMAT_VERSION: u32 = 1;
@@ -40,7 +43,10 @@ fn chain(inventory: &Inventory, index: usize) -> Option<String> {
 /// Every advisory and every transitive package shows the shortest dependency
 /// chain that pulls the package in.
 #[must_use]
-pub fn render_text(project_root: &Path, report: &Report) -> String {
+///
+/// Possibly-unused dependencies are listed only when `show_uncertain` is set;
+/// otherwise only their number is shown.
+pub fn render_text(project_root: &Path, report: &Report, show_uncertain: bool) -> String {
     let inventory = &report.inventory;
     let mut out = String::new();
     // Writing to a String cannot fail.
@@ -80,6 +86,8 @@ pub fn render_text(project_root: &Path, report: &Report) -> String {
         out.push_str("No known advisory found. This does not mean the dependencies are safe.\n");
     }
 
+    render_unused_text(&mut out, &report.unused, show_uncertain);
+
     let _ = writeln!(out, "\nResolved packages: {}", inventory.packages.len());
     for (index, package) in inventory.packages.iter().enumerate() {
         let _ = write!(
@@ -110,6 +118,56 @@ pub fn render_text(project_root: &Path, report: &Report) -> String {
     }
 
     out
+}
+
+fn render_unused_text(out: &mut String, unused: &[UnusedFinding], show_uncertain: bool) {
+    let active = || unused.iter().filter(|finding| finding.ignored.is_none());
+    let likely = active()
+        .filter(|finding| finding.confidence == UnusedConfidence::Likely)
+        .count();
+    let possibly = active().count() - likely;
+    let _ = writeln!(
+        out,
+        "\nLikely-unused dependencies: {likely} (static analysis: candidates to verify)"
+    );
+    for finding in active() {
+        if finding.confidence == UnusedConfidence::Possibly && !show_uncertain {
+            continue;
+        }
+        let renamed = if finding.package == finding.dependency {
+            String::new()
+        } else {
+            format!(" (package `{}`)", finding.package)
+        };
+        let _ = writeln!(
+            out,
+            "- {}{renamed} [{}] in [{}] of {}",
+            finding.dependency,
+            finding.confidence.as_str(),
+            finding.kind.section(),
+            finding.manifest
+        );
+        for evidence in &finding.evidence {
+            let _ = writeln!(out, "    {evidence}");
+        }
+    }
+    if possibly > 0 && !show_uncertain {
+        let _ = writeln!(
+            out,
+            "{possibly} possibly-unused dependenc{} hidden; use --show-uncertain to list {}",
+            if possibly == 1 { "y" } else { "ies" },
+            if possibly == 1 { "it" } else { "them" }
+        );
+    }
+    for finding in unused.iter().filter(|finding| finding.ignored.is_some()) {
+        let _ = writeln!(
+            out,
+            "- {} ignored in {}, reason: {}",
+            finding.dependency,
+            finding.manifest,
+            finding.ignored.as_deref().unwrap_or_default()
+        );
+    }
 }
 
 /// Renders a versioned JSON report, terminated by a newline.
@@ -180,6 +238,26 @@ pub fn render_json(project_root: &Path, report: &Report) -> String {
     }
     out.push_str("],");
 
+    out.push_str("\"unused\":[");
+    for (position, finding) in report.unused.iter().enumerate() {
+        if position > 0 {
+            out.push(',');
+        }
+        let _ = write!(
+            out,
+            "{{\"dependency\":\"{}\",\"package\":\"{}\",\"section\":\"{}\",\"declared_by\":\"{}\",\"manifest\":\"{}\",\"confidence\":\"{}\",\"evidence\":{},\"ignored_reason\":{}}}",
+            json_escape(&finding.dependency),
+            json_escape(&finding.package),
+            finding.kind.section(),
+            json_escape(&finding.declared_by),
+            json_escape(&finding.manifest),
+            finding.confidence.as_str(),
+            json_string_array(&finding.evidence),
+            json_string_or_null(finding.ignored.as_deref()),
+        );
+    }
+    out.push_str("],");
+
     let _ = writeln!(
         out,
         "\"warnings\":{}}}",
@@ -247,7 +325,10 @@ fn json_escape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{json_escape, render_json, render_text};
-    use cargoscope_core::{AdvisoryFinding, AdvisoryKind, Inventory, Package, Report, Severity};
+    use cargoscope_core::{
+        AdvisoryFinding, AdvisoryKind, DependencyKind, Inventory, Package, Report, Severity,
+        UnusedConfidence, UnusedFinding,
+    };
     use std::path::Path;
 
     fn package(
@@ -285,6 +366,7 @@ mod tests {
                 ],
             },
             advisories,
+            unused: Vec::new(),
             advisory_db_date: Some("2026-01-02".to_owned()),
             warnings: Vec::new(),
         }
@@ -306,7 +388,7 @@ mod tests {
 
     #[test]
     fn text_report_lists_scope_source_and_path() {
-        let text = render_text(Path::new("."), &sample(Vec::new()));
+        let text = render_text(Path::new("."), &sample(Vec::new()), false);
         assert!(text.contains("Resolved packages: 4\n"));
         assert!(text.contains("- app 1.0.0 [root]\n"));
         assert!(text.contains("- alpha 1.0.0 [direct] (registry+https://example.test)\n"));
@@ -324,7 +406,7 @@ mod tests {
             AdvisoryKind::Vulnerability,
             vec![">= 1.2.0".to_owned()],
         )]);
-        let text = render_text(Path::new("."), &report);
+        let text = render_text(Path::new("."), &report, false);
         assert!(text.contains(
             "- TEST-0001 [high] beta 1.0.0: Beta is broken\n    via app -> alpha -> beta\n    fix: upgrade to >= 1.2.0\n    https://example.test/report\n"
         ));
@@ -336,7 +418,7 @@ mod tests {
             AdvisoryKind::Informational("unmaintained".to_owned()),
             Vec::new(),
         )]);
-        let text = render_text(Path::new("."), &report);
+        let text = render_text(Path::new("."), &report, false);
         assert!(text.contains("[unmaintained] beta 1.0.0"));
         assert!(text.contains("fix: no fixed version available"));
     }
@@ -358,7 +440,73 @@ mod tests {
         assert!(json.contains(
             "{\"name\":\"orphan\",\"version\":\"1.0.0\",\"scope\":\"transitive\",\"direct\":false,\"source\":null,\"path\":null}"
         ));
-        assert!(json.ends_with("\"warnings\":[]}\n"));
+        assert!(json.ends_with("\"unused\":[],\"warnings\":[]}\n"));
+    }
+
+    fn unused(
+        dependency: &str,
+        confidence: UnusedConfidence,
+        ignored: Option<&str>,
+    ) -> UnusedFinding {
+        UnusedFinding {
+            declared_by: "app".to_owned(),
+            manifest: "Cargo.toml".to_owned(),
+            dependency: dependency.to_owned(),
+            package: dependency.to_owned(),
+            kind: DependencyKind::Normal,
+            confidence,
+            evidence: vec!["no reference".to_owned()],
+            ignored: ignored.map(str::to_owned),
+        }
+    }
+
+    fn with_unused() -> Report {
+        let mut report = sample(Vec::new());
+        report.unused = vec![
+            unused("log", UnusedConfidence::Likely, None),
+            unused("openssl-sys", UnusedConfidence::Possibly, None),
+            unused(
+                "once_cell",
+                UnusedConfidence::Likely,
+                Some("generated code"),
+            ),
+        ];
+        report
+    }
+
+    #[test]
+    fn text_report_hides_uncertain_unused_by_default() {
+        let text = render_text(Path::new("."), &with_unused(), false);
+        assert!(
+            text.contains(
+                "Likely-unused dependencies: 1 (static analysis: candidates to verify)\n"
+            )
+        );
+        assert!(
+            text.contains(
+                "- log [likely-unused] in [dependencies] of Cargo.toml\n    no reference\n"
+            )
+        );
+        assert!(!text.contains("- openssl-sys"));
+        assert!(
+            text.contains("1 possibly-unused dependency hidden; use --show-uncertain to list it\n")
+        );
+        assert!(text.contains("- once_cell ignored in Cargo.toml, reason: generated code\n"));
+    }
+
+    #[test]
+    fn text_report_shows_uncertain_unused_on_request() {
+        let text = render_text(Path::new("."), &with_unused(), true);
+        assert!(text.contains("- openssl-sys [possibly-unused] in [dependencies] of Cargo.toml\n"));
+        assert!(!text.contains("hidden"));
+    }
+
+    #[test]
+    fn json_report_lists_every_unused_finding() {
+        let json = render_json(Path::new("."), &with_unused());
+        assert!(json.contains("{\"dependency\":\"log\",\"package\":\"log\",\"section\":\"dependencies\",\"declared_by\":\"app\",\"manifest\":\"Cargo.toml\",\"confidence\":\"likely-unused\",\"evidence\":[\"no reference\"],\"ignored_reason\":null}"));
+        assert!(json.contains("\"confidence\":\"possibly-unused\""));
+        assert!(json.contains("\"ignored_reason\":\"generated code\""));
     }
 
     #[test]

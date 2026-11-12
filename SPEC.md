@@ -123,17 +123,21 @@ The goal is precision over recall: missing a candidate is acceptable, a wrong on
 
 **Layered evidence, from cheap to precise:**
 
-1. **Textual scan** of `.rs` files for `use crate_name`, `crate_name::` and `extern crate` (normalizing `-` to `_` and honouring `package = "..."` renames).
-2. **Syntactic scan** with a Rust parser (`syn`) to ignore comments and strings and to detect paths inside macros where possible.
-3. **Optional compiler-based check** (opt-in, as `cargo-udeps` does), since it runs a build. It is never run by default because build scripts execute code.
+1. **Token scan** (default) of every `.rs` file in `src/`, `tests/`, `benches/`, `examples/` and custom target paths, using the `proc-macro2` lexer. Comments and string literals are ignored, while paths inside macro invocations and attributes are seen. A dependency counts as used when its key (with `-` read as `_`) appears as `name::`, after `use`, or after `extern crate`. Build dependencies are searched only in the build script. Dev-dependencies are also searched in doc comments, where doctests use them.
+2. **Text fallback**: a file that cannot be tokenized is searched as plain text, and every finding of that package is lowered to `possibly-unused`.
+3. **Optional compiler-based check** (opt-in `--precise`, v0.2), since it runs a build. It is never run by default because build scripts execute code.
 
-**Known false-positive sources, handled explicitly:**
+**Known false-positive sources, handled explicitly** (each lowers a finding to `possibly-unused` and is shown as evidence):
 
-- Crates used only through macros (`serde` derive, `tokio::main`, `thiserror`).
-- Usage in `build.rs` (`[build-dependencies]`), tests, benches and examples (`[dev-dependencies]`).
-- Optional dependencies enabled by features, and `cfg(target_os = ...)` / platform-specific usage.
-- Crates linked for side effects (allocators, `*-sys` crates, `links` keys).
-- Re-exports, workspace-inherited dependencies and crate renames.
+- `-sys` crates, often linked only for their native library.
+- Optional dependencies, which may only forward a feature.
+- Platform-specific dependencies (`[target.'cfg(...)'.dependencies]`).
+- Dependencies declared with `features` or `default-features` that are also transitive: they may exist only to select features.
+- Sources that `include!` code generated in `OUT_DIR` by a build script.
+- Dev-dependencies when no `tests/`, `benches/` or `examples/` file exists, or when the directory is a published package copy (`Cargo.toml.orig` present), since test files are often excluded from published packages.
+- Renames (`package = "..."`) and workspace inheritance (`workspace = true`) are resolved.
+
+A local module with the same name as a dependency counts as a use: this can hide an unused dependency, which is accepted (precision over recall).
 
 **Confidence levels, each with its evidence** (no arbitrary percentage):
 
@@ -143,7 +147,9 @@ The goal is precision over recall: missing a candidate is acceptable, a wrong on
 
 By default only `likely-unused` appears; `--show-uncertain` shows the rest.
 
-**User control:** an ignore list in `cargoscope.toml` (or `[package.metadata.cargoscope]`) with a required reason, reported back as "ignored, reason: …", so exceptions stay visible.
+**User control:** an ignore list in `[package.metadata.cargoscope]`, `ignore-unused = [{ name = "dep", reason = "..." }]`. The reason is required; an entry without one is not applied and produces a warning. Ignored dependencies are reported back as "ignored, reason: …", so exceptions stay visible. A standalone `cargoscope.toml` may come later.
+
+**First real-world check** (2026-11-12): on 49 popular crates.io packages (388 normal, 1 build and 245 dev dependencies), the analysis reports no `likely-unused` dependency. Published crates compile, so their normal dependencies are used: this is a check for false positives only, not a measure of recall. The labelled corpus remains to be built.
 
 **Measurement:** v0.1 ships with a hand-labelled corpus of 20–30 varied Rust crates. From v0.2, labels are produced at scale by a compiler oracle run offline in a network-less sandbox: the rustc `unused_crate_dependencies` lint aggregated over targets and features, dependency-removal experiments with `cargo check --all-targets --all-features`, and manifest-only removal commits mined from Git history as human-confirmed cases. Part of the corpus is held out for evaluation. The compiler is only a judge during development; the shipped default analysis stays static. Precision is measured on each release, and a regression blocks the release. User-reported false positives become new fixtures.
 

@@ -19,7 +19,7 @@ CargoScope is an open-source CLI, written in Rust, for Rust/Cargo projects. One 
 
 ## Status
 
-**Early development, not yet ready for production use.** Today, `cargoscope update` downloads the RustSec advisory database, and `cargoscope scan` reports matching advisories and inventories the packages resolved in `Cargo.lock`, with the dependency chain behind every advisory and transitive package. Exit codes and `--fail-on` work as described below. The rest of the v0.1 scope below is in progress.
+**Early development, not yet ready for production use.** Today, `cargoscope update` downloads the RustSec advisory database, and `cargoscope scan` reports matching advisories and inventories the packages resolved in `Cargo.lock`, with the dependency chain behind every advisory and transitive package. It also lists likely-unused dependencies found by static analysis, with the evidence behind each one. Exit codes and `--fail-on` work as described below. The rest of the v0.1 scope below is in progress.
 
 ## Quick Start
 
@@ -64,7 +64,7 @@ Every transitive package shows the shortest dependency chain that pulls it in. T
 ```sh
 cargoscope scan . --format sarif --output results.sarif
 cargoscope scan . --fail-on none                    # never fail CI on findings
-cargoscope scan . --show-uncertain                  # include possibly-unused candidates
+cargoscope scan . --show-uncertain                  # also list possibly-unused dependencies
 ```
 
 By default, any security vulnerability fails the scan (exit code 1); vulnerabilities without a CVSS score count at every threshold, and informational advisories never fail. Set `CARGOSCOPE_CACHE_DIR` to choose where downloaded data is stored. Use `--fail-on none` to add CargoScope to CI alongside your existing tools without blocking builds. Exit codes: `0` OK, `1` threshold reached, `2` execution error.
@@ -108,6 +108,17 @@ cargo test --workspace
 cargo clippy -- -W clippy::pedantic
 cargo run -p cargoscope-cli -- scan .
 ```
+
+## Ignoring an Unused-Dependency Finding
+
+```toml
+[package.metadata.cargoscope]
+ignore-unused = [
+  { name = "once_cell", reason = "used by code generated in build.rs" },
+]
+```
+
+A reason is required. Ignored dependencies stay visible in the report with their reason. Unused dependencies never fail the scan.
 
 ## License
 

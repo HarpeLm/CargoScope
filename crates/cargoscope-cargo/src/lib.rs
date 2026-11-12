@@ -7,7 +7,9 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
-use cargoscope_core::{Inventory, Package};
+use cargoscope_core::{Inventory, Package, UnusedFinding};
+
+pub mod unused;
 
 /// An error while reading or interpreting a Cargo project.
 #[derive(Debug)]
@@ -104,6 +106,77 @@ pub fn scan_cargo_project(project_root: &Path) -> Result<Inventory, ScanError> {
     let mut inventory = parse_cargo_lock(&contents);
     mark_roots(&mut inventory, &root_names);
     Ok(inventory)
+}
+
+/// Looks for likely-unused dependencies in the root package and explicit
+/// workspace members of a project (SPEC.md section 5.2).
+///
+/// Returns the findings, sorted by package then dependency, and warnings.
+pub fn find_unused(
+    project_root: &Path,
+    inventory: &Inventory,
+) -> Result<(Vec<UnusedFinding>, Vec<String>), ScanError> {
+    let root_manifest_path = project_root.join("Cargo.toml");
+    let root_contents = read_manifest(&root_manifest_path)?;
+    let parse = |path: &Path, contents: &str| {
+        toml::from_str::<toml::Value>(contents).map_err(|source| ScanError::ParseManifest {
+            path: path.to_path_buf(),
+            source,
+        })
+    };
+    let root_manifest = parse(&root_manifest_path, &root_contents)?;
+    let workspace_dependencies = root_manifest
+        .get("workspace")
+        .and_then(|workspace| workspace.get("dependencies"));
+
+    let mut packages = Vec::new();
+    if root_manifest.get("package").is_some() {
+        packages.push((
+            project_root.to_path_buf(),
+            "Cargo.toml".to_owned(),
+            root_manifest.clone(),
+        ));
+    }
+    let members =
+        parse_workspace_members(&root_contents).map_err(|source| ScanError::ParseManifest {
+            path: root_manifest_path.clone(),
+            source,
+        })?;
+    for member in members {
+        let dir = project_root.join(&member);
+        let path = dir.join("Cargo.toml");
+        let manifest = parse(&path, &read_manifest(&path)?)?;
+        if manifest.get("package").is_some() {
+            packages.push((
+                dir,
+                format!("{}/Cargo.toml", member.trim_end_matches('/')),
+                manifest,
+            ));
+        }
+    }
+
+    let mut findings = Vec::new();
+    let mut warnings = Vec::new();
+    for (dir, label, manifest) in &packages {
+        let name = manifest
+            .get("package")
+            .and_then(|package| package.get("name"))
+            .and_then(toml::Value::as_str)
+            .unwrap_or("unknown");
+        let (mut package_findings, package_warnings) = unused::check_package(
+            &unused::PackageToCheck {
+                name,
+                dir,
+                manifest_label: label,
+                manifest,
+            },
+            workspace_dependencies,
+            inventory,
+        );
+        findings.append(&mut package_findings);
+        warnings.extend(package_warnings);
+    }
+    Ok((findings, warnings))
 }
 
 fn read_manifest(path: &Path) -> Result<String, ScanError> {

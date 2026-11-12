@@ -38,6 +38,7 @@ name = "cargoscope-cargo"
 version = "0.1.0"
 dependencies = [
  "cargoscope-core",
+ "proc-macro2",
  "toml",
 ]
 

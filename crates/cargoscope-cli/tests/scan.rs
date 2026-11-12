@@ -157,3 +157,79 @@ fn missing_advisory_database_is_an_execution_error() {
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("run `cargoscope update` first"));
 }
+
+#[test]
+fn reports_likely_unused_dependencies_only_by_default() {
+    let output = scan("unused", &["--fail-on", "none"]);
+    assert_eq!(output.status.code(), Some(0));
+    let text = stdout(&output);
+    assert!(
+        text.contains("Likely-unused dependencies: 5 (static analysis: candidates to verify)\n")
+    );
+    for likely in [
+        "- log [likely-unused] in [dependencies]",
+        "- regex [likely-unused] in [dependencies]",
+        "- rand [likely-unused] in [dependencies]",
+        "- pretty_assertions [likely-unused] in [dev-dependencies]",
+        "- pkg-config [likely-unused] in [build-dependencies]",
+    ] {
+        assert!(text.contains(likely), "missing: {likely}");
+    }
+    let unused_section = text
+        .split("Likely-unused dependencies")
+        .nth(1)
+        .and_then(|rest| rest.split("Resolved packages").next())
+        .expect("unused section present");
+    for used in [
+        "serde_json",
+        "anyhow",
+        "tokio",
+        "json5x",
+        "unicode-width",
+        "tempfile",
+        "- cc ",
+    ] {
+        assert!(
+            !unused_section.contains(used),
+            "used dependency reported: {used}"
+        );
+    }
+    assert!(
+        text.contains("3 possibly-unused dependencies hidden; use --show-uncertain to list them\n")
+    );
+    assert!(
+        text.contains("- once_cell ignored in Cargo.toml, reason: kept for an upcoming feature\n")
+    );
+}
+
+#[test]
+fn show_uncertain_lists_possibly_unused_with_reasons() {
+    let text = stdout(&scan("unused", &["--fail-on", "none", "--show-uncertain"]));
+    assert!(text.contains("- chrono [possibly-unused]"));
+    assert!(text.contains("optional dependency: may only be used to forward a feature"));
+    assert!(text.contains("- openssl-sys [possibly-unused]"));
+    assert!(text.contains("- idna [possibly-unused]"));
+    assert!(
+        text.contains("also a transitive dependency: may be declared only to select its features")
+    );
+    assert!(!text.contains("hidden"));
+}
+
+#[test]
+fn unused_dependencies_never_fail_the_scan() {
+    // The fixture's only advisory is "high"; above that threshold, only
+    // unused dependencies remain, and they must not change the exit code.
+    assert_eq!(
+        scan("unused", &["--fail-on", "critical"]).status.code(),
+        Some(0)
+    );
+}
+
+#[test]
+fn json_output_includes_unused_dependencies() {
+    let json = stdout(&scan("unused", &["--format", "json", "--fail-on", "none"]));
+    assert!(json.contains("{\"dependency\":\"log\",\"package\":\"log\",\"section\":\"dependencies\",\"declared_by\":\"unused-demo\",\"manifest\":\"Cargo.toml\",\"confidence\":\"likely-unused\""));
+    assert!(json.contains("\"dependency\":\"chrono\",\"package\":\"chrono\",\"section\":\"dependencies\",\"declared_by\":\"unused-demo\",\"manifest\":\"Cargo.toml\",\"confidence\":\"possibly-unused\""));
+    assert!(json.contains("\"ignored_reason\":\"kept for an upcoming feature\""));
+    assert!(!json.contains("\"dependency\":\"serde_json\""));
+}

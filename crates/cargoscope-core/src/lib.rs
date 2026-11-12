@@ -138,6 +138,70 @@ pub struct AdvisoryFinding {
     pub patched: Vec<String>,
 }
 
+/// Manifest section a dependency is declared in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DependencyKind {
+    /// `[dependencies]`.
+    Normal,
+    /// `[dev-dependencies]`.
+    Dev,
+    /// `[build-dependencies]`.
+    Build,
+}
+
+impl DependencyKind {
+    /// Manifest section name.
+    #[must_use]
+    pub fn section(self) -> &'static str {
+        match self {
+            Self::Normal => "dependencies",
+            Self::Dev => "dev-dependencies",
+            Self::Build => "build-dependencies",
+        }
+    }
+}
+
+/// How sure CargoScope is that a dependency is unused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum UnusedConfidence {
+    /// No reference found and no known exception applies.
+    Likely,
+    /// No reference found, but a known pattern could explain the usage.
+    Possibly,
+}
+
+impl UnusedConfidence {
+    /// Name used in reports.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Likely => "likely-unused",
+            Self::Possibly => "possibly-unused",
+        }
+    }
+}
+
+/// A declared dependency for which no usage was found in the sources.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnusedFinding {
+    /// Name of the project package (root or workspace member) declaring it.
+    pub declared_by: String,
+    /// Manifest of that package, relative to the scanned directory.
+    pub manifest: String,
+    /// Key used in the manifest, which is also the name used in code.
+    pub dependency: String,
+    /// Real crate name when the dependency is renamed with `package = "..."`.
+    pub package: String,
+    /// Manifest section.
+    pub kind: DependencyKind,
+    /// Confidence level.
+    pub confidence: UnusedConfidence,
+    /// Evidence: what was searched, and why the confidence is lowered if it is.
+    pub evidence: Vec<String>,
+    /// Reason given by the user when this finding is ignored in configuration.
+    pub ignored: Option<String>,
+}
+
 /// Everything a scan produced, ready to be rendered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
@@ -145,6 +209,8 @@ pub struct Report {
     pub inventory: Inventory,
     /// Advisories affecting resolved packages.
     pub advisories: Vec<AdvisoryFinding>,
+    /// Dependencies with no usage found, including ignored ones.
+    pub unused: Vec<UnusedFinding>,
     /// Date the RustSec database was downloaded (`YYYY-MM-DD`), if known.
     pub advisory_db_date: Option<String>,
     /// Non-fatal problems to show the user, such as unreadable advisory files.

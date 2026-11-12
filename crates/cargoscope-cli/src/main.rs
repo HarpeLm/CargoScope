@@ -13,7 +13,7 @@ use cargoscope_core::{AdvisoryFinding, AdvisoryKind, Report, Severity, VERSION};
 const USAGE: &str = "Usage:
   cargoscope update
       Download the RustSec advisory database (the only command that uses the network).
-  cargoscope scan [PATH] [--format text|json] [--fail-on THRESHOLD]
+  cargoscope scan [PATH] [--format text|json] [--fail-on THRESHOLD] [--show-uncertain]
       Report on a Cargo project, read-only and offline.
 
 Options for scan:
@@ -22,6 +22,8 @@ Options for scan:
                        Default: fail on any security vulnerability.
                        Vulnerabilities without a CVSS score always count.
                        Informational advisories (unmaintained, unsound) never fail.
+                       Unused dependencies never fail.
+  --show-uncertain     Also list possibly-unused dependencies.
 
 Environment:
   CARGOSCOPE_CACHE_DIR  Directory for downloaded data.
@@ -98,12 +100,14 @@ struct ScanOptions {
     path: PathBuf,
     format: OutputFormat,
     fail_on: FailOn,
+    show_uncertain: bool,
 }
 
 fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<ScanOptions, String> {
     let mut path = None;
     let mut format = OutputFormat::Text;
     let mut fail_on = FailOn::AnyVulnerability;
+    let mut show_uncertain = false;
 
     while let Some(argument) = arguments.next() {
         let (flag, inline_value) = match argument.split_once('=') {
@@ -121,6 +125,7 @@ fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<Sca
         match flag.as_str() {
             "--format" => format = parse_output_format(&value()?)?,
             "--fail-on" => fail_on = parse_fail_on(&value()?)?,
+            "--show-uncertain" if inline_value.is_none() => show_uncertain = true,
             other if other.starts_with('-') => return Err(format!("Unknown option: {other}")),
             _ if path.is_some() => return Err("Only one scan path may be provided.".to_owned()),
             _ => path = Some(PathBuf::from(argument)),
@@ -131,6 +136,7 @@ fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<Sca
         path: path.unwrap_or_else(|| PathBuf::from(".")),
         format,
         fail_on,
+        show_uncertain,
     })
 }
 
@@ -191,7 +197,10 @@ fn scan(options: &ScanOptions) -> ExitCode {
         };
 
     let check = database.check(&inventory);
-    let mut warnings = Vec::new();
+    let (unused, mut warnings) = match cargoscope_cargo::find_unused(root, &inventory) {
+        Ok(result) => result,
+        Err(error) => return execution_error(root, &error),
+    };
     if database.fetched_on.is_none() {
         warnings
             .push("the advisory database has no download date; run `cargoscope update`".to_owned());
@@ -206,11 +215,12 @@ fn scan(options: &ScanOptions) -> ExitCode {
     let report = Report {
         inventory,
         advisories: check.findings,
+        unused,
         advisory_db_date: database.fetched_on,
         warnings,
     };
     let rendered = match options.format {
-        OutputFormat::Text => cargoscope_report::render_text(root, &report),
+        OutputFormat::Text => cargoscope_report::render_text(root, &report, options.show_uncertain),
         OutputFormat::Json => cargoscope_report::render_json(root, &report),
     };
     print!("{rendered}");

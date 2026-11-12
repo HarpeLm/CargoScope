@@ -9,6 +9,7 @@ description = "Cargo manifest and lockfile parsing for CargoScope"
 
 [dependencies]
 cargoscope-core = { path = "../cargoscope-core" }
+proc-macro2 = "1"
 toml = "0.8"
 
 [lints]
