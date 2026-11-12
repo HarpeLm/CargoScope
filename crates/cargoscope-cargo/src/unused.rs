@@ -390,11 +390,23 @@ fn collect_modules(
                 if semicolon.as_char() != ';' {
                     continue;
                 }
-                // Only an attribute directly before this `mod` counts.
-                let explicit_path = (index >= 2
-                    && matches!(&tokens[index - 2], TokenTree::Punct(hash) if hash.as_char() == '#'))
-                .then(|| path_attribute(&tokens[index - 1]))
-                .flatten();
+                // Look through the attributes right before this `mod`
+                // (`#[path = "..."] #[expect(dead_code)] mod args;`), and
+                // only those: a `#[path]` of an earlier item does not count.
+                let mut explicit_path = None;
+                let mut position = index;
+                while position >= 2 {
+                    let is_attribute = matches!(&tokens[position - 2], TokenTree::Punct(hash) if hash.as_char() == '#')
+                        && matches!(&tokens[position - 1], TokenTree::Group(group) if group.delimiter() == proc_macro2::Delimiter::Bracket);
+                    if !is_attribute {
+                        break;
+                    }
+                    if let Some(path) = path_attribute(&tokens[position - 1]) {
+                        explicit_path = Some(path);
+                        break;
+                    }
+                    position -= 2;
+                }
                 if top_level || explicit_path.is_some() {
                     modules.push((name.to_string(), explicit_path));
                 }
@@ -1354,7 +1366,7 @@ mod tests {
     #[test]
     fn finds_path_modules_declared_inside_functions() {
         let tokens = TokenStream::from_str(
-            "mod top;\nfn build() {\n    #[path = \"src/theme.rs\"]\n    mod theme;\n    mod unknown;\n}\n#[inline]\nmod plain;\n",
+            "mod top;\nfn build() {\n    #[path = \"src/theme.rs\"]\n    mod theme;\n    mod unknown;\n}\n#[inline]\nmod plain;\n#[path = \"src/args.rs\"]\n#[expect(dead_code)]\nmod args;\n#[path = \"x.rs\"]\nfn f() {}\nmod after_fn;\n",
         )
         .expect("tokenizes");
         assert_eq!(
@@ -1363,6 +1375,8 @@ mod tests {
                 ("top".to_owned(), None),
                 ("theme".to_owned(), Some("src/theme.rs".to_owned())),
                 ("plain".to_owned(), None),
+                ("args".to_owned(), Some("src/args.rs".to_owned())),
+                ("after_fn".to_owned(), None),
             ]
         );
     }
