@@ -264,14 +264,14 @@ GitHub Actions (cargo-dist + maturin)
 - **npm**: a thin launcher package (handled by cargo-dist) that runs the prebuilt binary for the user's platform; no functional JavaScript.
 - **PyPI**: `maturin` packages the Rust CLI binary into a wheel, so `pip install cargoscope` or `uvx cargoscope scan .` works without a Rust toolchain.
 
-npm and PyPI publishing comes once the corresponding ecosystems are supported. Check package-name availability on every registry before any announcement.
+**All channels ship from v0.1**: GitHub Releases with installers, crates.io, Homebrew tap, npm and PyPI. npm and PyPI are distribution pipes only, so non-Rust users (for example a Python CI image) can run the tool without a Rust toolchain; they do not mean those ecosystems are analyzed. Check package-name availability on every registry before any announcement.
 
 ### Official GitHub Action (`cargoscope-action`)
 
-A dedicated repository with a composite `action.yml` that:
+Shipped with v0.1. A dedicated repository with a composite `action.yml` that:
 
 1. Downloads the prebuilt binary for the requested version from GitHub Releases instead of compiling.
-2. Caches the local OSV.dev advisory data between runs with `actions/cache`.
+2. Runs `cargoscope update` and caches the RustSec and crates.io data between runs with `actions/cache`.
 3. Runs `cargoscope scan . --format sarif` and can upload results to the GitHub Security tab via `github/codeql-action/upload-sarif`.
 
 The action uses minimal permissions and pinned versions.
