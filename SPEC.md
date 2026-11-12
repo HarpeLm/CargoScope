@@ -39,17 +39,22 @@ CargoScope must be tryable alongside existing tools and without file changes. It
 
 ### Competitive Landscape
 
+**Long-term goal: replacement.** CargoScope aims to eventually cover what Rust teams get today from cargo-audit, cargo-deny and cargo-machete, so that one tool is enough. Adoption still starts as a complement (see above): replacement is earned feature by feature, only when CargoScope's result for that check is measurably at least as good as the specialized tool.
+
+Tool features overlap and evolve. Verify current documentation before any public comparison.
+
 | Project | General Role or Strength | CargoScope Angle to Validate |
 |---|---|---|
-| OSV-Scanner | Vulnerability analysis from OSV data and ecosystem formats | Broader report on inventory, maintenance, and decisions, reusing relevant advisories |
-| cargo-deny | Cargo policies on licenses, sources, and advisories | Cross-ecosystem report and integration with specialized tools |
-| cargo-machete | Detection of likely-unused Cargo dependencies | Progressively extend this analysis to other languages, with documented limits |
-| depcheck | Detection of unused npm dependencies | Combine this check with inventory and other diagnostics |
-| pip-audit | Python vulnerability audit | Cross-cutting report and common CI integrations |
-| Renovate | Update automation, with dashboard and maintenance features | Help understand and prioritize fleet state; don't reimplement its automations without established advantage |
-| Dependabot | Alerts and updates, notably in GitHub | Local/exportable diagnostic and multi-platform view as complement |
-| Snyk | Developer security platform and risk management | Local and open-source option centered on an explainable report |
-| Trivy | Security scanner covering multiple artifact types and configurations | Dedicated path for application dependency intelligence |
+| cargo-audit | RustSec advisory checks on Cargo.lock | Same advisories, explained with transitive path and fix options |
+| cargo-deny | Policies on licenses, sources, bans and advisories | Cover its checks progressively, in one report with evidence |
+| cargo-machete | Fast detection of likely-unused dependencies | Lower false positives through layered evidence and confidence levels |
+| cargo-udeps | Compiler-based unused dependency detection | Static by default, compiler-accurate as opt-in `--precise` mode |
+| cargo-tree | Dependency tree display | "Why is it here" explanations attached to each finding |
+| OSV-Scanner | Multi-ecosystem vulnerability scanning from OSV data | Rust-specific depth instead of breadth |
+| Dependabot | Alerts and update PRs, notably in GitHub | Local, exportable diagnostic that runs anywhere |
+| Renovate | Update automation and dependency dashboard | Understand and prioritize; don't reimplement update automation |
+
+Any public comparison states source, date, tool versions and method. Download counts are not unique users.
 
 ## 4. Product Differentiators
 
