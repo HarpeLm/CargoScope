@@ -196,15 +196,49 @@ Manifests, lockfiles and sources are treated as untrusted input:
 
 ## 8. CLI UX
 
+### v0.1 commands
+
 ```sh
+# Download the RustSec database and refresh crates.io data (only network access)
+cargoscope update
+
+# Full report in the terminal, read-only, no network
 cargoscope scan .
+
+# JSON report for archiving or comparison
 cargoscope scan . --format json --output cargoscope-report.json
-cargoscope scan . --checks inventory,advisories --fail-on high
+
+# SARIF for GitHub code scanning
 cargoscope scan . --format sarif --output results.sarif
+
+# Choose checks and failure threshold
+cargoscope scan . --checks inventory,advisories,unused,licenses --fail-on high
+
+# Show uncertain unused candidates too
+cargoscope scan . --show-uncertain
+```
+
+### Failure behaviour and exit codes
+
+By default, **any security advisory fails the scan**, as cargo-audit does. `--fail-on <none|low|medium|high|critical>` changes the threshold; `--fail-on none` never fails on findings. Unused-dependency and license findings never fail the scan unless explicitly requested.
+
+| Code | Meaning |
+|---|---|
+| 0 | Scan completed, no finding at or above the threshold |
+| 1 | Scan completed, at least one finding at or above the threshold |
+| 2 | Execution error (unreadable file, missing advisory cache, invalid option) |
+
+Exit codes are a stable contract from v0.1.
+
+### Later
+
+```sh
+cargoscope compare baseline.json current.json
 cargoscope fix --dry-run
 cargoscope fix --apply
-cargoscope compare baseline.json current.json
 ```
+
+`--help` is useful on every command, and a verbose mode shows the evidence behind each finding. Advisory IDs in examples come from real data, never invented.
 
 ## 9. Distribution and Release
 
