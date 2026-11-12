@@ -210,7 +210,9 @@ fn collect_sources(package_dir: &Path, manifest: &toml::Value) -> Sources {
     };
     if let Some(path) = build_path.filter(|path| is_regular_file(path)) {
         sources.has_build_script = true;
-        add_file(&path, &mut sources.build, &mut sources.skipped);
+        // Build scripts often reuse code from src/ with `#[path] mod` or
+        // `include!("...")`.
+        follow_modules(&path, 0, &mut sources.build, &mut sources.skipped);
         if let Some(dir) = path.parent().filter(|dir| *dir != package_dir) {
             walk(dir, 0, &mut sources.build, &mut sources.skipped);
         }
@@ -273,7 +275,19 @@ fn follow_modules(file: &Path, depth: usize, files: &mut Vec<PathBuf>, skipped: 
     } else {
         dir.join(stem)
     };
+    for included in included_files(tokens.clone())
+        .into_iter()
+        .filter(|path| !path.contains(".."))
+    {
+        follow_modules(&dir.join(included), depth + 1, files, skipped);
+    }
     for (name, explicit_path) in declared_modules(tokens) {
+        if explicit_path
+            .as_deref()
+            .is_some_and(|path| path.contains(".."))
+        {
+            continue;
+        }
         let candidates = match explicit_path {
             Some(path) => vec![dir.join(path)],
             None => vec![
@@ -285,6 +299,33 @@ fn follow_modules(file: &Path, depth: usize, files: &mut Vec<PathBuf>, skipped: 
             follow_modules(&found, depth + 1, files, skipped);
         }
     }
+}
+
+/// Paths given to `include!("...")` with a plain string literal.
+fn included_files(tokens: TokenStream) -> Vec<String> {
+    let tokens: Vec<TokenTree> = tokens.into_iter().collect();
+    let mut files = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        match token {
+            TokenTree::Group(group) => files.extend(included_files(group.stream())),
+            TokenTree::Ident(ident) if ident == "include" => {
+                if let (Some(TokenTree::Punct(bang)), Some(TokenTree::Group(arguments))) =
+                    (tokens.get(index + 1), tokens.get(index + 2))
+                {
+                    let inner: Vec<TokenTree> = arguments.stream().into_iter().collect();
+                    if let ([TokenTree::Literal(path)], '!') = (inner.as_slice(), bang.as_char()) {
+                        let text = path.to_string();
+                        if let Some(path) = text.strip_prefix('"').and_then(|t| t.strip_suffix('"'))
+                        {
+                            files.push(path.to_owned());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    files
 }
 
 /// Top-level `mod name;` declarations, with their `#[path = "..."]` if any.
@@ -724,6 +765,35 @@ mod tests {
                 "core/extra_impl.rs"
             ]
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn follows_path_modules_and_includes_from_a_build_script() {
+        let root = std::env::temp_dir().join(format!("cargoscope-build-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src/cmd")).expect("dirs");
+        std::fs::write(
+            root.join("build.rs"),
+            "#[path = \"src/cmd/cmd.rs\"]\nmod cmd;\ninclude!(\"src/cli.rs\");\ninclude!(\"../outside.rs\");\nfn main() {}\n",
+        )
+        .expect("write");
+        std::fs::write(root.join("src/cmd/cmd.rs"), "").expect("write");
+        std::fs::write(root.join("src/cli.rs"), "").expect("write");
+        let mut files = Vec::new();
+        let mut skipped = 0;
+        super::follow_modules(&root.join("build.rs"), 0, &mut files, &mut skipped);
+        let mut names: Vec<String> = files
+            .iter()
+            .map(|file| {
+                file.strip_prefix(&root)
+                    .expect("inside")
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["build.rs", "src/cli.rs", "src/cmd/cmd.rs"]);
         let _ = std::fs::remove_dir_all(&root);
     }
 
