@@ -1,0 +1,113 @@
+name: CargoScope
+description: Report advisories, unused dependencies, licenses and versions of a Rust project, with SARIF for code scanning.
+author: CargoScope contributors
+branding:
+  icon: search
+  color: orange
+
+inputs:
+  version:
+    description: CargoScope version to install, such as 0.1.0, or "latest".
+    default: latest
+  path:
+    description: Directory of the Cargo project to scan.
+    default: "."
+  fail-on:
+    description: none, low, medium, high or critical. Empty means the CargoScope default (any vulnerability).
+    default: ""
+  checks:
+    description: Comma-separated checks (inventory, advisories, unused, licenses, versions). Empty means all.
+    default: ""
+  sarif:
+    description: Path of the SARIF file to write.
+    default: cargoscope.sarif
+  upload-sarif:
+    description: Upload the SARIF file to GitHub code scanning (needs `security-events: write`).
+    default: "true"
+
+outputs:
+  sarif:
+    description: Path of the SARIF file.
+    value: ${{ inputs.sarif }}
+  exit-code:
+    description: "CargoScope exit code: 0 OK, 1 threshold reached, 2 execution error."
+    value: ${{ steps.scan.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install CargoScope
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        # Prebuilt binary from the GitHub Release: no compilation.
+        if [ "$VERSION" = "latest" ]; then
+          base="https://github.com/HarpeLm/CargoScope/releases/latest/download"
+        else
+          base="https://github.com/HarpeLm/CargoScope/releases/download/v${VERSION#v}"
+        fi
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          powershell -NoProfile -ExecutionPolicy Bypass -Command "irm $base/cargoscope-installer.ps1 | iex"
+        else
+          curl --proto '=https' --tlsv1.2 -LsSf "$base/cargoscope-installer.sh" | sh
+        fi
+        echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
+
+    - name: Choose the data cache
+      id: cache-key
+      shell: bash
+      run: |
+        echo "CARGOSCOPE_CACHE_DIR=$RUNNER_TEMP/cargoscope-cache" >> "$GITHUB_ENV"
+        # A new key every day, so advisories are refreshed daily at most.
+        echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+    - name: Restore RustSec and crates.io data
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/cargoscope-cache
+        key: cargoscope-data-${{ runner.os }}-${{ steps.cache-key.outputs.day }}
+        restore-keys: cargoscope-data-${{ runner.os }}-
+
+    - name: Download advisory and registry data
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.path }}
+      run: cargoscope update "$PROJECT"
+
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.path }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        CHECKS: ${{ inputs.checks }}
+        SARIF: ${{ inputs.sarif }}
+      run: |
+        args=()
+        [ -n "$FAIL_ON" ] && args+=(--fail-on "$FAIL_ON")
+        [ -n "$CHECKS" ] && args+=(--checks "$CHECKS")
+        # Readable report in the job log; never fails this step.
+        cargoscope scan "$PROJECT" "${args[@]}" --fail-on none || true
+        set +e
+        cargoscope scan "$PROJECT" "${args[@]}" --format sarif --output "$SARIF"
+        code=$?
+        set -e
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        if [ "$code" = 2 ]; then
+          exit 2
+        fi
+
+    - name: Upload SARIF to code scanning
+      if: ${{ inputs.upload-sarif == 'true' && steps.scan.outputs.exit-code != '2' }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.sarif }}
+        category: cargoscope
+
+    - name: Apply the failure threshold
+      if: ${{ steps.scan.outputs.exit-code == '1' }}
+      shell: bash
+      run: |
+        echo "::error::CargoScope found advisories at or above the threshold."
+        exit 1
