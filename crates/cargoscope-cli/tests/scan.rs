@@ -496,3 +496,15 @@ fn skipped_checks_are_reported_as_not_checked() {
     .expect("valid JSON");
     assert_eq!(json["checks"], serde_json::json!(["inventory"]));
 }
+
+#[test]
+fn glob_workspace_members_are_scanned_and_excludes_respected() {
+    let text = stdout(&scan("workspace-glob", &["--fail-on", "none"]));
+    assert!(text.contains("- app 0.1.0 [root]\n"));
+    assert!(text.contains("- util 0.1.0 [root]\n"));
+    assert!(text.contains("- memchr 2.7.4 [direct]"));
+    // util never uses memchr: found because the glob member is analyzed.
+    assert!(text.contains("- memchr [likely-unused] in [dependencies] of crates/util/Cargo.toml"));
+    // The excluded member's unused `regex` must not be reported.
+    assert!(!text.contains("regex"));
+}
