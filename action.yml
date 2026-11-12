@@ -22,7 +22,7 @@ inputs:
     description: Path of the SARIF file to write.
     default: cargoscope.sarif
   upload-sarif:
-    description: Upload the SARIF file to GitHub code scanning (needs `security-events: write`).
+    description: "Upload the SARIF file to GitHub code scanning (needs `security-events: write`)."
     default: "true"
 
 outputs:
