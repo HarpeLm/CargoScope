@@ -121,7 +121,13 @@ fn checkout(repository: &Repository, dir: &Path, offline: bool) -> Result<(), St
     }
     if !dir.join("Cargo.lock").is_file() {
         let mut command = Command::new("cargo");
-        command.current_dir(dir).args(["generate-lockfile", "-q"]);
+        // A repository's rust-toolchain file must not make rustup install a
+        // toolchain: resolution works with the stable one.
+        command
+            .current_dir(dir)
+            .env("RUSTUP_TOOLCHAIN", "stable")
+            .env("RUSTUP_AUTO_INSTALL", "0")
+            .args(["generate-lockfile", "-q"]);
         if offline {
             command.arg("--offline");
         }
