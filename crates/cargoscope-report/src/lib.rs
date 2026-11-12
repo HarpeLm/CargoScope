@@ -55,6 +55,30 @@ pub fn render_text(project_root: &Path, report: &Report, show_uncertain: bool) -
     let _ = writeln!(out, "CargoScope {VERSION}");
     let _ = writeln!(out, "Target: {}", project_root.display());
 
+    if report.checks.advisories {
+        render_advisories_text(&mut out, report);
+    } else {
+        out.push_str("\nAdvisories: not checked\n");
+    }
+    if report.checks.unused {
+        render_unused_text(&mut out, &report.unused, show_uncertain);
+    } else {
+        out.push_str("\nUnused dependencies: not checked\n");
+    }
+    render_registry_text(&mut out, report);
+
+    let _ = writeln!(out, "\nResolved packages: {}", inventory.packages.len());
+    render_inventory_text(&mut out, report);
+
+    for warning in &report.warnings {
+        let _ = writeln!(out, "\nwarning: {warning}");
+    }
+
+    out
+}
+
+fn render_advisories_text(out: &mut String, report: &Report) {
+    let inventory = &report.inventory;
     let date = report.advisory_db_date.as_deref().unwrap_or("unknown date");
     let _ = writeln!(
         out,
@@ -87,11 +111,10 @@ pub fn render_text(project_root: &Path, report: &Report, show_uncertain: bool) -
     if report.advisories.is_empty() {
         out.push_str("No known advisory found. This does not mean the dependencies are safe.\n");
     }
+}
 
-    render_unused_text(&mut out, &report.unused, show_uncertain);
-    render_registry_text(&mut out, report);
-
-    let _ = writeln!(out, "\nResolved packages: {}", inventory.packages.len());
+fn render_inventory_text(out: &mut String, report: &Report) {
+    let inventory = &report.inventory;
     for (index, package) in inventory.packages.iter().enumerate() {
         let _ = write!(
             out,
@@ -128,12 +151,6 @@ pub fn render_text(project_root: &Path, report: &Report, show_uncertain: bool) -
             None => out.push_str("    not reachable from any root package\n"),
         }
     }
-
-    for warning in &report.warnings {
-        let _ = writeln!(out, "\nwarning: {warning}");
-    }
-
-    out
 }
 
 fn render_unused_text(out: &mut String, unused: &[UnusedFinding], show_uncertain: bool) {
@@ -202,8 +219,23 @@ fn render_registry_text(out: &mut String, report: &Report) {
         })
         .collect();
 
+    if report.checks.licenses {
+        render_licenses_text(out, &registry_packages, date);
+    } else {
+        out.push_str("\nLicenses: not checked\n");
+    }
+    if report.checks.versions {
+        render_versions_text(out, report, &registry_packages);
+    } else {
+        out.push_str("\nVersions: not checked\n");
+    }
+}
+
+type RegistryPackages<'a> = [(usize, &'a cargoscope_core::PackageInfo)];
+
+fn render_licenses_text(out: &mut String, registry_packages: &RegistryPackages<'_>, date: &str) {
     let mut licenses: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
-    for (_, info) in &registry_packages {
+    for (_, info) in registry_packages {
         *licenses
             .entry(info.license.as_deref().unwrap_or("unknown"))
             .or_default() += 1;
@@ -218,7 +250,13 @@ fn render_registry_text(out: &mut String, report: &Report) {
     for (license, count) in by_count {
         let _ = writeln!(out, "- {license}: {count}");
     }
+}
 
+fn render_versions_text(
+    out: &mut String,
+    report: &Report,
+    registry_packages: &RegistryPackages<'_>,
+) {
     let yanked: Vec<usize> = registry_packages
         .iter()
         .filter(|(_, info)| info.yanked == Some(true))
@@ -279,6 +317,18 @@ pub fn render_json(project_root: &Path, report: &Report) -> String {
         "{{\"format_version\":{JSON_FORMAT_VERSION},\"tool_version\":\"{}\",\"target\":\"{}\",",
         json_escape(VERSION),
         json_escape(&project_root.display().to_string())
+    );
+    let _ = write!(
+        out,
+        "\"checks\":{},",
+        json_string_array(
+            &report
+                .checks
+                .enabled()
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        )
     );
     let _ = write!(
         out,
