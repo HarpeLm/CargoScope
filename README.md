@@ -1,50 +1,37 @@
 # CargoScope
 
-**The Dependency Intelligence Engine** — discover, evaluate, and improve your project's dependencies.
+**Understand every dependency in your Rust project: why it's there, what it risks, and what to do.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
 
 ---
 
-CargoScope is an open-source tool written in Rust that helps developers understand their dependency tree: what's installed, what's risky, what's unmaintained, and what action to take. It produces clear, actionable reports that complement your existing tools (Dependabot, Renovate, Snyk, etc.) without replacing them.
+CargoScope is an open-source CLI, written in Rust, for Rust/Cargo projects. One command produces one report: inventory, security advisories, available versions, licenses, likely-unused dependencies, and the dependency chain behind each finding. No more running cargo-audit, cargo-deny, cargo-machete and cargo-tree separately and reconciling their output.
 
-## Why CargoScope?
+## Principles
 
-Most dependency tools answer one question at a time — vulnerabilities *or* licenses *or* updates. CargoScope aims to bring **inventory, known advisories, maintenance signals, unused dependency candidates, and transitive relationships** into a single, explainable report.
+- **Local, no account**: the first scan needs no account and no online service.
+- **Your code never leaves your machine**: nothing is uploaded.
+- **No silent writes**: CargoScope never modifies your files.
+- **Evidence first**: every finding shows its evidence, its source and the date of its data.
+- **No code execution**: CargoScope reads files directly and never runs `cargo`, build scripts or project code by default.
 
-- **Local-first** — no account required, no code uploaded, no silent file changes
-- **CI-ready** — JSON and SARIF output with configurable exit codes
-- **Multi-ecosystem** (roadmap) — starting with Cargo, then Python, Node.js, and Go
-- **Complementary** — works alongside your current security and update tools
+## Status
+
+**Early development, not yet ready for production use.** Today, `cargoscope scan` inventories the packages resolved in `Cargo.lock` (direct and transitive) across explicit workspace members. The rest of the v0.1 scope below is in progress.
 
 ## Quick Start
 
 ```sh
-# Install from source
+# Install from source (prebuilt binaries, crates.io, Homebrew, npm and PyPI come with v0.1)
 cargo install --path crates/cargoscope-cli
 
 # Scan the current project
 cargoscope scan .
 
-# JSON output for CI or archival
+# JSON output
 cargoscope scan . --format json
-```
-
-## Usage
-
-```sh
-# Scan a specific project directory
-cargoscope scan /path/to/project
-
-# Text output (default) — human-readable summary
-cargoscope scan .
-
-# JSON output — structured for CI pipelines and tooling
-cargoscope scan . --format json
-
-# Show version
-cargoscope --version
 ```
 
 ### Example Output
@@ -59,58 +46,57 @@ Resolved packages: 12
 ...
 ```
 
-## Architecture
+## Planned v0.1 Usage
 
-CargoScope is organized as a Cargo workspace with a clear separation between the CLI frontend and the analysis core:
-
-```
-cargoscope/
-├── Cargo.toml                 # Workspace root
-├── crates/
-│   ├── cargoscope-cli/        # CLI entry point, commands, output formatting
-│   └── cargoscope-core/       # Domain types, lockfile/manifest parsing, analysis
-└── tests/                     # Integration tests and fixtures (planned)
+```sh
+cargoscope update                                   # download RustSec + crates.io data (only network access)
+cargoscope scan .                                   # full report, read-only, offline
+cargoscope scan . --format sarif --output results.sarif
+cargoscope scan . --fail-on none                    # never fail CI on findings
+cargoscope scan . --show-uncertain                  # include possibly-unused candidates
 ```
 
-The analysis pipeline follows: **discover → parse → normalize → analyze → report**.
-
-As the project grows, the workspace will expand to include dedicated crates for reporting (`cargoscope-report`), advisory lookup (`cargoscope-advisory`), and ecosystem adapters (`cargoscope-python`, `cargoscope-npm`, etc.).
+By default, any security advisory fails the scan (exit code 1). Use `--fail-on none` to add CargoScope to CI alongside your existing tools without blocking builds. Exit codes: `0` OK, `1` threshold reached, `2` execution error.
 
 ## Roadmap
 
-| Phase | Focus | Status |
-|---|---|---|
-| **v0.1** | Cargo dependency inventory — direct and transitive | Current |
-| **v0.2** | Known advisory lookup (OSV), dependency graph edges | Next |
-| **v0.3** | CI integration — SARIF, GitHub Actions, exit codes | Planned |
-| **v0.4** | Unused dependency candidates, maintenance signals | Planned |
-| **v0.5** | Python ecosystem adapter | Planned |
-| **v1.0** | Stable CLI, versioned JSON schema, multi-project aggregation | Planned |
+| Version | Focus |
+|---|---|
+| **v0.1** | Unified Rust report: inventory, RustSec advisories, crates.io versions, licenses, unused candidates, dependency paths, text/JSON/SARIF, all distribution channels, GitHub Action |
+| **v0.2** | Measured precision: compiler-oracle benchmark, opt-in `--precise` mode |
+| **v0.3** | Report comparison, baselines, license and source policies |
+| **v0.4** | Maintenance indicators, justified recommendations, exportable graph |
+| **v0.5** | Locally generated HTML report |
+| **v0.6** | Controlled fixes (`fix --dry-run`, explicit `fix --apply`) |
+| **v0.7** | Multi-project aggregation of local reports |
+| **1.0** | Stable CLI, JSON schema and compatibility policy |
 
-See [SPEC.md](SPEC.md) for the full product specification and strategic positioning.
+CargoScope supports **Rust/Cargo only**. Other ecosystems are not planned until the Rust experience is clearly better than combining existing tools. See [SPEC.md](SPEC.md) for the full specification.
 
-## Status
+## Architecture
 
-**Early development** — v0.1.0. The first feature inventories packages resolved in a Rust project's `Cargo.lock`. Not yet ready for production use.
+```
+cargoscope/
+├── crates/
+│   ├── cargoscope-cli/        # commands, options, exit codes
+│   ├── cargoscope-core/       # data model, orchestration, configuration
+│   ├── cargoscope-cargo/      # Cargo parsing, resolution, unused analysis (planned)
+│   ├── cargoscope-advisory/   # RustSec database and cache (planned)
+│   └── cargoscope-report/     # text, JSON, SARIF (planned)
+└── tests/                     # fixtures and integration tests
+```
+
+Pipeline: **discover → parse → analyze → report**.
 
 ## Contributing
 
-Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions are welcome, especially false-positive reports for unused-dependency detection. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```sh
-# Run tests
 cargo test --workspace
-
-# Run with clippy
 cargo clippy -- -W clippy::pedantic
-
-# Run a local scan
 cargo run -p cargoscope-cli -- scan .
 ```
-
-### Good First Issues
-
-Look for issues labeled `good first issue` or `help wanted`. If you'd like to add support for a new language ecosystem, see the adapter guide in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

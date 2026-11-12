@@ -1,6 +1,6 @@
 # Contributing to CargoScope
 
-Thank you for your interest in contributing! CargoScope welcomes contributions of all kinds: bug reports, documentation improvements, new features, and ecosystem adapters.
+Thank you for your interest in contributing! CargoScope welcomes contributions of all kinds: bug reports, documentation improvements, new features, and fixtures.
 
 ## Getting Started
 
@@ -32,33 +32,29 @@ cargo clippy -- -W clippy::pedantic
 Use clear, descriptive commit messages:
 
 ```
-Add Python lockfile parser for requirements.txt
+Detect crates used only through derive macros
 
-Parse pinned versions from requirements.txt files, marking
-each as a direct dependency. Tested with fixtures covering
-comments, extras, and environment markers.
+Treat `#[derive(Serialize)]` and similar attributes as usage
+evidence for the providing crate. Tested with fixtures covering
+renamed crates and workspace-inherited dependencies.
 ```
 
 ## Issue Labels
 
 - `good first issue` — small, well-scoped tasks for newcomers
 - `help wanted` — tasks where community help is especially welcome
-- `language-adapter` — work on ecosystem-specific parsers
+- `false-positive` — a dependency wrongly reported as unused (please attach a minimal reproduction)
 - `bug` — confirmed bugs
 - `documentation` — improvements to docs, examples, or guides
 - `performance` — analysis speed or resource usage
 
-## Adding an Ecosystem Adapter
+## Reporting a False Positive
 
-If you'd like to add support for a new language ecosystem:
+CargoScope only supports Rust/Cargo. The most valuable contribution is a false-positive report for unused-dependency detection:
 
-1. Create a new crate under `crates/cargoscope-<ecosystem>/`.
-2. Implement parsing for the ecosystem's manifest and lockfile formats.
-3. Normalize results into the shared `Package` / `Dependency` model.
-4. Add fixture files and tests covering supported format versions.
-5. Document which files, format versions, and checks are supported.
-
-You don't need to understand the entire engine — adapters are independently testable.
+1. Open an issue with the `false-positive` label.
+2. Include the `Cargo.toml` excerpt and the code that uses the crate (or a link to a public repository and commit).
+3. Once confirmed, the case becomes a fixture in `tests/` so it never regresses.
 
 ## Security
 
