@@ -425,3 +425,44 @@ fn sarif_points_unused_dependencies_at_their_manifest_line() {
         .count();
     assert_eq!(count, 8);
 }
+
+#[test]
+fn inventory_only_scan_needs_no_advisory_database() {
+    let empty =
+        std::env::temp_dir().join(format!("cargoscope-inventory-only-{}", std::process::id()));
+    let output = scan_with_cache("simple", &["--checks", "inventory"], &empty);
+    assert_eq!(output.status.code(), Some(0));
+    let text = stdout(&output);
+    assert!(text.contains("- serde_json 1.0.128 [direct]"));
+    assert!(!text.contains("CARGOSCOPE-TEST-0001"));
+    assert!(!text.contains("no crates.io data"));
+}
+
+#[test]
+fn unknown_check_is_an_execution_error() {
+    let output = scan("simple", &["--checks", "inventory,typo"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Unknown check: typo"));
+}
+
+#[test]
+fn skipped_checks_leave_their_data_empty() {
+    let json: serde_json::Value = serde_json::from_slice(
+        &scan(
+            "unused",
+            &["--format", "json", "--checks", "inventory,licenses"],
+        )
+        .stdout,
+    )
+    .expect("valid JSON");
+    assert_eq!(json["advisories"], serde_json::json!([]));
+    assert_eq!(json["unused"], serde_json::json!([]));
+    let serde_json = json["packages"]
+        .as_array()
+        .expect("packages")
+        .iter()
+        .find(|package| package["name"] == "serde_json")
+        .expect("serde_json");
+    assert_eq!(serde_json["license"], "MIT OR Apache-2.0");
+    assert_eq!(serde_json["latest_version"], serde_json::Value::Null);
+}

@@ -29,6 +29,9 @@ Options for scan:
                        Informational advisories (unmaintained, unsound) never fail.
                        Unused dependencies never fail.
   --show-uncertain     Also list possibly-unused dependencies.
+  --checks LIST        Comma-separated checks to run (default: all):
+                       inventory, advisories, unused, licenses, versions.
+                       Without advisories, no advisory database is needed.
 
 Environment:
   CARGOSCOPE_CACHE_DIR  Directory for downloaded data.
@@ -109,6 +112,7 @@ struct ScanOptions {
     output: Option<PathBuf>,
     fail_on: FailOn,
     show_uncertain: bool,
+    checks: Checks,
 }
 
 fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<ScanOptions, String> {
@@ -117,6 +121,7 @@ fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<Sca
     let mut fail_on = FailOn::AnyVulnerability;
     let mut show_uncertain = false;
     let mut output = None;
+    let mut checks = Checks::ALL;
 
     while let Some(argument) = arguments.next() {
         let (flag, inline_value) = match argument.split_once('=') {
@@ -134,6 +139,14 @@ fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<Sca
         match flag.as_str() {
             "--format" => format = parse_output_format(&value()?)?,
             "--output" | "-o" => output = Some(PathBuf::from(value()?)),
+            "--checks" => {
+                checks = Checks::parse(&value()?).map_err(|unknown| {
+                    format!(
+                        "Unknown check: {unknown}. Use {}.",
+                        Checks::NAMES.join(", ")
+                    )
+                })?;
+            }
             "--fail-on" => fail_on = parse_fail_on(&value()?)?,
             "--show-uncertain" if inline_value.is_none() => show_uncertain = true,
             other if other.starts_with('-') => return Err(format!("Unknown option: {other}")),
@@ -148,6 +161,7 @@ fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<Sca
         output,
         fail_on,
         show_uncertain,
+        checks,
     })
 }
 
@@ -239,48 +253,79 @@ fn scan(options: &ScanOptions) -> ExitCode {
         Ok(inventory) => inventory,
         Err(error) => return execution_error(root, &error),
     };
-    let database =
-        match cargoscope_advisory::cache_dir().and_then(|dir| AdvisoryDatabase::open(&dir)) {
-            Ok(database) => database,
+    let checks = options.checks;
+    let mut warnings = Vec::new();
+
+    let (advisories, advisory_db_date) = if checks.advisories {
+        let database =
+            match cargoscope_advisory::cache_dir().and_then(|dir| AdvisoryDatabase::open(&dir)) {
+                Ok(database) => database,
+                Err(error) => return execution_error(root, &error),
+            };
+        let check = database.check(&inventory);
+        if database.fetched_on.is_none() {
+            warnings.push(
+                "the advisory database has no download date; run `cargoscope update`".to_owned(),
+            );
+        }
+        if !check.unreadable.is_empty() {
+            warnings.push(format!(
+                "{} advisory file(s) could not be read; results may be incomplete",
+                check.unreadable.len()
+            ));
+        }
+        (check.findings, database.fetched_on)
+    } else {
+        (Vec::new(), None)
+    };
+
+    let unused = if checks.unused {
+        match cargoscope_cargo::find_unused(root, &inventory) {
+            Ok((unused, unused_warnings)) => {
+                warnings.extend(unused_warnings);
+                unused
+            }
             Err(error) => return execution_error(root, &error),
-        };
-
-    let check = database.check(&inventory);
-    let (unused, mut warnings) = match cargoscope_cargo::find_unused(root, &inventory) {
-        Ok(result) => result,
-        Err(error) => return execution_error(root, &error),
+        }
+    } else {
+        Vec::new()
     };
-    if database.fetched_on.is_none() {
-        warnings
-            .push("the advisory database has no download date; run `cargoscope update`".to_owned());
-    }
-    if !check.unreadable.is_empty() {
-        warnings.push(format!(
-            "{} advisory file(s) could not be read; results may be incomplete",
-            check.unreadable.len()
-        ));
-    }
 
-    let registry = cargoscope_advisory::cache_dir().map(|dir| RegistryCache::open(&dir));
-    let (package_info, registry_date) = match registry {
-        Ok(registry) => (registry.info(&inventory), registry.fetched_on),
-        Err(_) => (vec![Default::default(); inventory.packages.len()], None),
-    };
-    if registry_date.is_none() {
-        warnings.push(format!(
-            "no crates.io data: licenses and latest versions are unknown; run `cargoscope update {}`",
-            root.display()
-        ));
+    let (mut package_info, mut registry_date) =
+        (vec![Default::default(); inventory.packages.len()], None);
+    if checks.licenses || checks.versions {
+        if let Ok(dir) = cargoscope_advisory::cache_dir() {
+            let registry = RegistryCache::open(&dir);
+            package_info = registry.info(&inventory);
+            registry_date = registry.fetched_on;
+        }
+        if registry_date.is_none() {
+            warnings.push(format!(
+                "no crates.io data: licenses and latest versions are unknown; run `cargoscope update {}`",
+                root.display()
+            ));
+        }
+        for info in &mut package_info {
+            if !checks.licenses {
+                info.license = None;
+            }
+            if !checks.versions {
+                *info = cargoscope_core::PackageInfo {
+                    license: info.license.take(),
+                    ..Default::default()
+                };
+            }
+        }
     }
 
     let report = Report {
-        checks: Checks::ALL,
+        checks,
         package_info,
         registry_date,
         inventory,
-        advisories: check.findings,
+        advisories,
         unused,
-        advisory_db_date: database.fetched_on,
+        advisory_db_date,
         warnings,
     };
     let rendered = match options.format {
