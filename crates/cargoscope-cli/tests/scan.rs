@@ -662,3 +662,72 @@ fn baseline_lets_known_advisories_pass() {
     let _ = std::fs::remove_file(baseline);
     let _ = std::fs::remove_file(empty);
 }
+
+#[test]
+fn policy_violations_are_reported_and_fail_the_scan() {
+    let output = scan("policy", &["--fail-on", "critical"]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "violations fail even above the advisory threshold"
+    );
+    let text = stdout(&output);
+    assert!(text.contains("Policy violations: 5\n"), "{text}");
+    assert!(text.contains("- [source] forked 0.1.0: git source https://github.com/someone/forked is not in [sources] allow-git\n"));
+    assert!(text.contains("- [license] itoa 1.0.11: license is unknown"));
+    assert!(text.contains("- [ban] serde 1.0.210: `serde` <2 is banned: testing bans\n    via policy-demo -> serde_json -> serde\n"));
+    assert!(text.contains("- [license] serde_json 1.0.128: license `MIT OR Apache-2.0` is not allowed by the policy\n"));
+    assert!(text.contains("5 policy violations"));
+    assert_eq!(
+        scan("policy", &["--fail-on", "none"]).status.code(),
+        Some(0)
+    );
+}
+
+#[test]
+fn policy_check_can_be_skipped_and_appears_in_json_and_sarif() {
+    let output = scan(
+        "policy",
+        &["--checks", "inventory", "--fail-on", "critical"],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert!(stdout(&output).contains("Policy: not checked"));
+    let json: serde_json::Value =
+        serde_json::from_slice(&scan("policy", &["--format", "json", "--fail-on", "none"]).stdout)
+            .expect("valid JSON");
+    assert_eq!(json["policy"].as_array().expect("violations").len(), 5);
+    assert_eq!(json["policy"][0]["rule"], "source");
+    let sarif: serde_json::Value =
+        serde_json::from_slice(&scan("policy", &["--format", "sarif", "--fail-on", "none"]).stdout)
+            .expect("valid SARIF");
+    let results = sarif["runs"][0]["results"].as_array().expect("results");
+    assert!(results.iter().any(|result| result["ruleId"] == "cargoscope/policy-ban" && result["level"] == "error"));
+    assert!(
+        stdout(&scan("simple", &["--fail-on", "none"]))
+            .contains("Policy: no cargoscope.toml policy")
+    );
+}
+
+#[test]
+fn invalid_policy_is_an_execution_error() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-bad-policy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dir");
+    for file in ["Cargo.toml", "Cargo.lock"] {
+        std::fs::copy(fixture("simple").join(file), dir.join(file)).expect("copy");
+    }
+    std::fs::write(
+        dir.join("cargoscope.toml"),
+        "[licenses]\nalow = [\"MIT\"]\n",
+    )
+    .expect("write");
+    let output = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+        .arg("scan")
+        .arg(&dir)
+        .output()
+        .expect("runs");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unknown key `alow`"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

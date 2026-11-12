@@ -1,0 +1,8 @@
+[licenses]
+allow = ["BSD-3-Clause"]
+
+[sources]
+allow-git = ["https://github.com/myorg/"]
+
+[bans]
+deny = [{ name = "serde", version = "<2", reason = "testing bans" }]
