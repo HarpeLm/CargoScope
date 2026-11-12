@@ -128,7 +128,7 @@ pub fn check_report(report: &Value) -> Result<(), String> {
 #[must_use]
 pub fn compare(baseline: &Value, current: &Value) -> Comparison {
     let before = advisory_keys(baseline);
-    let new_advisories = array(current, "advisories")
+    let new_advisories: Vec<_> = array(current, "advisories")
         .iter()
         .filter_map(|advisory| {
             let key = AdvisoryKey {
@@ -152,6 +152,8 @@ pub fn compare(baseline: &Value, current: &Value) -> Comparison {
             })
         })
         .collect();
+    let mut new_advisories: Vec<(AdvisoryKey, Option<String>, bool, String)> = new_advisories;
+    new_advisories.sort_by(|left, right| left.0.cmp(&right.0));
     let after = advisory_keys(current);
     let resolved_advisories = before.difference(&after).cloned().collect();
 
