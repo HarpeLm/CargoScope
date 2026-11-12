@@ -154,6 +154,28 @@ cargo run -p cargoscope -- scan .
 
 Unused-dependency detection is measured on a labelled corpus of 70 real repositories (about 91–94% precision on unseen code, below the 97% target): see [tests/corpus](tests/corpus/README.md) for the method and the honest numbers.
 
+## Comparing Reports and Baselines
+
+```sh
+cargoscope scan . --format json --output baseline.json        # once, on main
+cargoscope scan . --baseline baseline.json                     # later: only new advisories fail
+cargoscope compare baseline.json current.json                  # what changed between two reports
+```
+
+`compare` lists new and resolved advisories, new yanked versions, new and resolved likely-unused dependencies, and version changes. It exits with 1 when new advisories reach `--fail-on`.
+
+## Dependency Policy
+
+A `cargoscope.toml` next to `Cargo.toml` enforces allowed licenses, allowed sources and banned crates, in the spirit of cargo-deny. Violations fail the scan. See [docs/policy.md](docs/policy.md).
+
+## Compiler-Accurate Mode
+
+```sh
+cargoscope scan . --precise
+```
+
+Confirms unused dependencies with rustc's `unused_crate_dependencies` lint (`cargo check --all-targets --all-features`, in `target/cargoscope-precise`). **It compiles the project, so build scripts and proc macros run**: use it on code you trust. It is never enabled by default, and covers only the current platform.
+
 ## Ignoring an Unused-Dependency Finding
 
 ```toml

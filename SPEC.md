@@ -245,10 +245,24 @@ Exit codes are a stable contract from v0.1.
 - **SARIF 2.1.0**: one result per advisory (located at the package in `Cargo.lock`, with GitHub `security-severity`), per yanked version in use, and per likely-unused dependency (located at its line in `Cargo.toml`; possibly-unused ones only with `--show-uncertain`; ignored ones never). Validated against the official SARIF schema.
 - `--output FILE` writes any format to a file instead of standard output.
 
+### Also available (implemented ahead of the roadmap)
+
+```sh
+# Compare two JSON reports; exit 1 when new advisories reach --fail-on
+cargoscope compare baseline.json current.json
+
+# Only advisories absent from a previous report fail the scan
+cargoscope scan . --baseline baseline.json
+
+# Confirm unused dependencies with rustc (compiles the project: opt-in only)
+cargoscope scan . --precise
+```
+
+A `cargoscope.toml` policy (allowed licenses, allowed sources, banned crates) is checked by `scan`; violations fail it unless `--fail-on none` (see docs/policy.md).
+
 ### Later
 
 ```sh
-cargoscope compare baseline.json current.json
 cargoscope fix --dry-run
 cargoscope fix --apply
 ```
