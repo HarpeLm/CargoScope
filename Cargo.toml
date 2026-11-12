@@ -4,6 +4,7 @@ members = [
     "crates/cargoscope-cargo",
     "crates/cargoscope-cli",
     "crates/cargoscope-core",
+    "crates/cargoscope-corpus",
     "crates/cargoscope-report",
 ]
 exclude = ["tests/fixtures"]

@@ -1,0 +1,17 @@
+[package]
+name = "cargoscope-corpus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Replays the labelled corpus and measures unused-dependency precision"
+publish = false
+
+[dependencies]
+cargoscope-cargo = { path = "../cargoscope-cargo" }
+cargoscope-core = { path = "../cargoscope-core" }
+toml = "0.8"
+
+[lints]
+workspace = true
