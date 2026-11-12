@@ -16,7 +16,7 @@ const USAGE: &str = "Usage:
   cargoscope update [PATH]
       Download the RustSec advisory database and the crates.io data (versions,
       licenses) of the project at PATH. The only command that uses the network.
-  cargoscope scan [PATH] [--format text|json|sarif] [--output FILE] [--fail-on THRESHOLD] [--show-uncertain]
+  cargoscope scan [PATH] [--format text|json|sarif] [--output FILE] [--fail-on THRESHOLD] [--show-uncertain] [--verbose]
       Report on a Cargo project, read-only and offline.
 
 Options for scan:
@@ -29,6 +29,7 @@ Options for scan:
                        Informational advisories (unmaintained, unsound) never fail.
                        Unused dependencies never fail.
   --show-uncertain     Also list possibly-unused dependencies.
+  -v, --verbose        List every resolved package (text format).
   --checks LIST        Comma-separated checks to run (default: all):
                        inventory, advisories, unused, licenses, versions.
                        Without advisories, no advisory database is needed.
@@ -112,6 +113,7 @@ struct ScanOptions {
     output: Option<PathBuf>,
     fail_on: FailOn,
     show_uncertain: bool,
+    verbose: bool,
     checks: Checks,
 }
 
@@ -122,6 +124,7 @@ fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<Sca
     let mut show_uncertain = false;
     let mut output = None;
     let mut checks = Checks::ALL;
+    let mut verbose = false;
 
     while let Some(argument) = arguments.next() {
         let (flag, inline_value) = match argument.split_once('=') {
@@ -149,6 +152,7 @@ fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<Sca
             }
             "--fail-on" => fail_on = parse_fail_on(&value()?)?,
             "--show-uncertain" if inline_value.is_none() => show_uncertain = true,
+            "--verbose" | "-v" if inline_value.is_none() => verbose = true,
             other if other.starts_with('-') => return Err(format!("Unknown option: {other}")),
             _ if path.is_some() => return Err("Only one scan path may be provided.".to_owned()),
             _ => path = Some(PathBuf::from(argument)),
@@ -161,6 +165,7 @@ fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<Sca
         output,
         fail_on,
         show_uncertain,
+        verbose,
         checks,
     })
 }
@@ -329,7 +334,14 @@ fn scan(options: &ScanOptions) -> ExitCode {
         warnings,
     };
     let rendered = match options.format {
-        OutputFormat::Text => cargoscope_report::render_text(root, &report, options.show_uncertain),
+        OutputFormat::Text => cargoscope_report::render_text(
+            root,
+            &report,
+            cargoscope_report::TextOptions {
+                show_uncertain: options.show_uncertain,
+                verbose: options.verbose,
+            },
+        ),
         OutputFormat::Json => cargoscope_report::render_json(root, &report),
         OutputFormat::Sarif => cargoscope_report::sarif::render_sarif(
             &report,
