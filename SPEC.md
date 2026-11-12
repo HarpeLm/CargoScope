@@ -58,27 +58,29 @@ Any public comparison states source, date, tool versions and method. Download co
 
 ## 4. Product Differentiators
 
-### 4.1 Dependency Intelligence
+These are differentiation axes to validate, not established advantages.
 
-Move from isolated alerts to decision explanations. A recommendation can combine: security advisories, last known publication date, measurable maintenance activity, transitive dependency, fix availability, and estimated migration cost when verifiable data exists.
+### 4.1 Unified report (primary differentiator)
 
-Each finding must show its evidence, provenance, freshness, and limitations.
+**One command, one report** for a Rust project: inventory, advisories, likely-unused dependencies and transitive paths, instead of running cargo-audit, cargo-deny, cargo-machete and cargo-tree separately and reconciling their outputs. This is the message used everywhere (README, demo, announcements).
 
-### 4.2 Dependency Health Report
+Each finding in the report shows its evidence, provenance, freshness and limitations, and explains **why the package is there** (dependency chain, resolved version) and **how to fix it** (fixed version available, direct dependency to change). A recommendation may also combine maintenance activity and estimated migration cost when verifiable data exists.
 
-A health report can synthesize security, maintenance, dependency quality, and version coherence. A global score is a later option: it must be transparent, configurable, dated, comparable over time, and decomposable. A score never guarantees project security.
+### 4.2 Separate health indicators, no global score
 
-### 4.3 Dependency Graph
+The report shows separate indicators (security, maintenance, unused dependencies, version coherence) and their trends between scans. **No aggregated health score before 1.0.** If one is considered later, it must be transparent, configurable, dated, decomposable and evaluated first. No indicator is presented as a guarantee of security.
 
-Represent transitive paths to answer: which component introduces this package, which components depend on it, which paths are affected, and which version is resolved?
+### 4.3 Dependency graph
 
-### 4.4 Safe Fixes
+Answers: which component introduces this package, which components depend on it, which paths are affected, which version is resolved. Text and JSON output first; interactive visualization only after the data model is validated.
 
-A proposal command can preview changes without writing. Any application must be explicitly requested, display affected files, preserve a diff, and validate modified formats.
+### 4.4 Safe fixes (later, not in v0.1)
 
-### 4.5 Multi-Project View
+A preview command shows changes without writing. Any application must be explicitly requested, display affected files, keep a diff and validate modified files. Manifests and lockfiles are never modified silently.
 
-A local or CI mode can aggregate exported reports to spot components common to multiple repositories. Start without a mandatory central service.
+### 4.5 Multi-project view (later, not in v0.1)
+
+Aggregate exported JSON reports locally or in CI to spot components shared by several repositories. No mandatory central service.
 
 ## 5. Features and Scope
 
@@ -107,7 +109,7 @@ CargoScope supports **only Rust/Cargo** until the Cargo experience is clearly be
 
 The first niche to win: **one report on a Rust project** combining inventory, advisories, unused-dependency candidates and transitive paths.
 
-The flagship feature is **"why is this package here, and how do I fix it"**: for each finding, show the dependency chain that pulls it in (`my-app → reqwest → hyper → h2`), the resolved version, whether a fixed version exists, and which direct dependency would have to change. This is the most concrete and most demonstrable differentiator.
+The key feature inside the unified report is **"why is this package here, and how do I fix it"**: for each finding, show the dependency chain that pulls it in (`my-app → reqwest → hyper → h2`), the resolved version, whether a fixed version exists, and which direct dependency would have to change. This is the most concrete and most demonstrable differentiator.
 
 Stage 0 interviews (8–12 Rust maintainers) happen **before** substantial code beyond the core. They confirm which problems matter and which output formats people actually use.
 
