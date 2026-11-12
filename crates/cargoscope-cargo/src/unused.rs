@@ -600,7 +600,10 @@ fn text_mentions(text: &str, ident: &str) -> bool {
         let before = text[..position].chars().next_back();
         let after = &text[position + ident.len()..];
         before.is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
-            && (after.starts_with("::") || after.starts_with(';') || after.starts_with(' '))
+            && (after.starts_with("::")
+                || after.starts_with(';')
+                || after.starts_with(' ')
+                || after.starts_with('`'))
     })
 }
 
@@ -824,6 +827,11 @@ pub fn check_package(
                 ));
             }
         }
+        if dependency.kind != DependencyKind::Dev && references.in_docs(&ident) {
+            exceptions.push(
+                "mentioned in documentation (a doc link needs the crate to resolve)".to_owned(),
+            );
+        }
         let declared_idents: Vec<String> =
             declared_dependencies(package.manifest, workspace_dependencies)
                 .iter()
@@ -993,6 +1001,10 @@ mod tests {
         super::collect_doc_text(tokens, &mut docs);
         let joined = docs.join("\n");
         assert!(text_mentions(&joined, "async_stream"));
+        assert!(text_mentions(
+            "- [`mdbook_markdown`]: the renderer",
+            "mdbook_markdown"
+        ));
     }
 
     #[test]
