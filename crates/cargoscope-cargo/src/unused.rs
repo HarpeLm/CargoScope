@@ -486,6 +486,53 @@ fn scan_files(files: &[PathBuf]) -> References {
 /// Records identifiers that appear as the first segment of a path
 /// (`name::...`), after `extern crate`, or after `use`.
 fn collect_references(tokens: TokenStream, names: &mut BTreeSet<String>) {
+    collect_references_in(tokens, false, names);
+}
+
+/// Whether the tokens before `index` end with `::` that continues a path
+/// (`a::b`, `crate::b`, `<T as X>::b`, `$crate::b`), as opposed to a
+/// leading `::` (`::phf::Map`), which starts an absolute path.
+fn continues_path(tokens: &[TokenTree], index: usize) -> bool {
+    let is_colon = |position: usize| matches!(tokens.get(position), Some(TokenTree::Punct(p)) if p.as_char() == ':');
+    if index < 2 || !is_colon(index - 1) || !is_colon(index - 2) {
+        return false;
+    }
+    match index
+        .checked_sub(3)
+        .and_then(|position| tokens.get(position))
+    {
+        // After a keyword, `::` starts an absolute path: `impl ::serde::Serialize`.
+        Some(TokenTree::Ident(ident)) => !matches!(
+            ident.to_string().as_str(),
+            "as" | "const"
+                | "dyn"
+                | "else"
+                | "for"
+                | "if"
+                | "impl"
+                | "in"
+                | "let"
+                | "match"
+                | "mut"
+                | "pub"
+                | "ref"
+                | "return"
+                | "static"
+                | "type"
+                | "unsafe"
+                | "use"
+                | "where"
+                | "while"
+                | "yield"
+        ),
+        Some(TokenTree::Punct(p)) => p.as_char() == '>',
+        Some(TokenTree::Group(_)) | Some(TokenTree::Literal(_)) | None => false,
+    }
+}
+
+/// `nested` is true inside a `use` group that follows `::`
+/// (`use std::{io::Read, fmt}`), where names are not crate roots.
+fn collect_references_in(tokens: TokenStream, nested: bool, names: &mut BTreeSet<String>) {
     let tokens: Vec<TokenTree> = tokens.into_iter().collect();
     for (index, token) in tokens.iter().enumerate() {
         match token {
@@ -497,7 +544,10 @@ fn collect_references(tokens: TokenStream, names: &mut BTreeSet<String>) {
                 if is_attribute {
                     collect_attribute_references(group.stream(), names);
                 }
-                collect_references(group.stream(), names);
+                let use_group = group.delimiter() == proc_macro2::Delimiter::Brace
+                    && index >= 1
+                    && matches!(&tokens[index - 1], TokenTree::Punct(p) if p.as_char() == ':');
+                collect_references_in(group.stream(), use_group, names);
             }
             TokenTree::Ident(ident) => {
                 let name = ident.to_string();
@@ -516,7 +566,10 @@ fn collect_references(tokens: TokenStream, names: &mut BTreeSet<String>) {
                 let after_use = previous(1).as_deref() == Some("use");
                 let after_extern_crate = previous(1).as_deref() == Some("crate")
                     && previous(2).as_deref() == Some("extern");
-                if followed_by_path || after_use || after_extern_crate {
+                // Only the first segment of a path names a crate:
+                // `deno_runtime::deno_node::X` uses deno_runtime, not deno_node.
+                let first_segment = !nested && !continues_path(&tokens, index);
+                if (followed_by_path && first_segment) || after_use || after_extern_crate {
                     names.insert(name);
                 }
             }
@@ -1176,6 +1229,40 @@ mod tests {
             "#,
         );
         assert!(names.is_empty(), "{names:?}");
+    }
+
+    #[test]
+    fn only_the_first_path_segment_names_a_crate() {
+        let names = references(
+            r#"
+            use std::{io::Read, fmt};
+            pub type R = deno_runtime::deno_node::NodeResolver;
+            static M: ::phf::Map<u8, u8> = todo!();
+            fn f() { let _ = <T as regex::Pattern>::bytes::Regex::new(); }
+            fn g() { quote! { #server_fn_path::const_format::concatcp!() } }
+            fn h() { $crate::log::info!(); serde_json::json!({}); }
+            impl ::serde::Serialize for X {}
+            fn k() -> impl ::futures::Future { todo!() }
+            "#,
+        );
+        for expected in [
+            "std",
+            "deno_runtime",
+            "phf",
+            "regex",
+            "server_fn_path",
+            "serde_json",
+            "serde",
+            "futures",
+        ] {
+            assert!(names.contains(expected), "missing {expected}");
+        }
+        for unexpected in ["io", "deno_node", "bytes", "const_format", "log"] {
+            assert!(
+                !names.contains(unexpected),
+                "{unexpected} is not a crate root"
+            );
+        }
     }
 
     #[test]
