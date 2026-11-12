@@ -121,6 +121,7 @@ dependencies = [
  "cargoscope-core",
  "proc-macro2",
  "semver",
+ "serde_json",
  "toml",
 ]
 
