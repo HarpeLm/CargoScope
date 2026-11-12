@@ -89,8 +89,8 @@ Aggregate exported JSON reports locally or in CI to spot components shared by se
 - **Discovery**: `Cargo.toml`, `Cargo.lock` and explicit workspace members.
 - **Inventory**: direct and transitive dependencies with declared and resolved versions, from `Cargo.lock`.
 - **Advisories**: RustSec advisory database, downloaded as a whole and cached locally so scans work offline after an update. Each finding shows the advisory ID, source and database date.
-- **Available versions**: latest version on crates.io for each package, from the local cache.
-- **Licenses**: license inventory for every resolved package, from Cargo metadata. Reporting only, no policy enforcement yet.
+- **Available versions**: latest non-yanked version on crates.io for each package (stable unless only pre-releases exist), its publication date, and whether the version in use is yanked, from the local cache.
+- **Licenses**: license expression of every resolved crates.io package, as published (legacy forms such as `MIT/Apache-2.0` are shown as is), with a summary by license. Reporting only, no policy enforcement yet.
 - **Likely-unused dependencies**: static analysis presented as candidates with confidence levels (see 5.2).
 - **"Why is it here"**: every finding (advisory, unused candidate) shows its dependency chain and resolved version, plus the fixed version when one exists.
 - **Output**: text, versioned JSON and SARIF; documented, stable CI exit codes.
@@ -162,7 +162,7 @@ cargoscope/
 │   ├── cargoscope-cli/        # commands, options, exit codes
 │   ├── cargoscope-core/       # data model, orchestration, configuration
 │   ├── cargoscope-cargo/      # Cargo.toml / Cargo.lock parsing, resolution, unused analysis
-│   ├── cargoscope-advisory/   # RustSec database download, cache, provenance
+│   ├── cargoscope-advisory/   # RustSec and crates.io data: explicit download, cache, provenance
 │   └── cargoscope-report/     # text, JSON, SARIF, later HTML
 └── tests/                     # fixture repositories and integration tests
 ```
@@ -179,13 +179,14 @@ Pipeline: `discover → parse → analyze → report`.
 ### Sources
 
 - **RustSec advisory database**: the reference Rust advisory source. Downloaded as a whole and stored locally; advisory IDs and original links are kept in every finding.
-- **crates.io index** (v0.1): latest available versions and publication dates for resolved packages, via the sparse index, cached locally and respecting crates.io usage policy.
+- **crates.io sparse index** (v0.1): available versions, yanked status and publication dates for resolved packages, cached locally.
+- **Licenses** (v0.1): read first from the local Cargo registry sources (`$CARGO_HOME/registry/src`, no network); otherwise from the crates.io API, at most one request per second as its crawler policy asks, with a User-Agent naming the tool and its repository. A license is cached forever, since it never changes for a published version.
 - Other sources (OSV.dev, GitHub advisories) are added only if they bring distinct coverage.
 
 ### Network policy
 
 - **`cargoscope scan` never accesses the network.** It uses only local cached data.
-- **`cargoscope update`** explicitly downloads the RustSec database and refreshes crates.io data for the scanned project. Nothing is downloaded automatically.
+- **`cargoscope update [PATH]`** explicitly downloads the RustSec database and refreshes crates.io data for the project at `PATH` (default `.`). Nothing is downloaded automatically. Missing crates.io data is a warning in the report, not an error.
 - Every report shows the date of the advisory database and of the crates.io data used. A missing or old cache produces a visible warning, never a silent pass.
 - Caches and mirrors can be configured for isolated environments.
 

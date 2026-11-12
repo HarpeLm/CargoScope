@@ -7,12 +7,14 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use cargoscope_advisory::crates_io::{self, RegistryCache};
 use cargoscope_advisory::{AdvisoryDatabase, DEFAULT_ARCHIVE_URL};
 use cargoscope_core::{AdvisoryFinding, AdvisoryKind, Report, Severity, VERSION};
 
 const USAGE: &str = "Usage:
-  cargoscope update
-      Download the RustSec advisory database (the only command that uses the network).
+  cargoscope update [PATH]
+      Download the RustSec advisory database and the crates.io data (versions,
+      licenses) of the project at PATH. The only command that uses the network.
   cargoscope scan [PATH] [--format text|json] [--fail-on THRESHOLD] [--show-uncertain]
       Report on a Cargo project, read-only and offline.
 
@@ -42,11 +44,12 @@ fn main() -> ExitCode {
             }
         },
         Some("update") => {
+            let path = arguments.next().unwrap_or_else(|| ".".to_owned());
             if let Some(extra) = arguments.next() {
                 eprintln!("Unexpected argument for update: {extra}");
                 return ExitCode::from(2);
             }
-            update()
+            update(Path::new(&path))
         }
         Some("--version" | "-V") => {
             println!("cargoscope {VERSION}");
@@ -165,20 +168,57 @@ fn parse_fail_on(value: &str) -> Result<FailOn, String> {
     })
 }
 
-fn update() -> ExitCode {
-    let result = cargoscope_advisory::cache_dir()
-        .and_then(|dir| cargoscope_advisory::update(&dir, DEFAULT_ARCHIVE_URL));
-    match result {
+fn update(project_root: &Path) -> ExitCode {
+    let cache = match cargoscope_advisory::cache_dir() {
+        Ok(cache) => cache,
+        Err(error) => {
+            eprintln!("CargoScope could not update: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    match cargoscope_advisory::update(&cache, DEFAULT_ARCHIVE_URL) {
+        Ok(summary) => println!(
+            "RustSec advisory database updated: {} advisories in {}",
+            summary.advisories,
+            summary.path.display()
+        ),
+        Err(error) => {
+            eprintln!("CargoScope could not update the advisory database: {error}");
+            return ExitCode::from(2);
+        }
+    }
+
+    let inventory = match cargoscope_cargo::scan_cargo_project(project_root) {
+        Ok(inventory) => inventory,
+        Err(error) => {
+            println!(
+                "crates.io data not refreshed: no Cargo project read at {} ({error})",
+                project_root.display()
+            );
+            return ExitCode::SUCCESS;
+        }
+    };
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))
+        .or_else(|| std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join(".cargo")));
+    println!(
+        "Refreshing crates.io data for {} (licenses not found locally are fetched at most once per second)...",
+        project_root.display()
+    );
+    match crates_io::refresh(&cache, &inventory, cargo_home.as_deref()) {
         Ok(summary) => {
             println!(
-                "RustSec advisory database updated: {} advisories in {}",
-                summary.advisories,
-                summary.path.display()
+                "crates.io data updated: {} crates, {} licenses from local sources, {} from the crates.io API",
+                summary.crates, summary.licenses_local, summary.licenses_api
             );
+            for failure in &summary.failures {
+                eprintln!("warning: {failure}");
+            }
             ExitCode::SUCCESS
         }
         Err(error) => {
-            eprintln!("CargoScope could not update the advisory database: {error}");
+            eprintln!("CargoScope could not update crates.io data: {error}");
             ExitCode::from(2)
         }
     }
@@ -212,7 +252,21 @@ fn scan(options: &ScanOptions) -> ExitCode {
         ));
     }
 
+    let registry = cargoscope_advisory::cache_dir().map(|dir| RegistryCache::open(&dir));
+    let (package_info, registry_date) = match registry {
+        Ok(registry) => (registry.info(&inventory), registry.fetched_on),
+        Err(_) => (vec![Default::default(); inventory.packages.len()], None),
+    };
+    if registry_date.is_none() {
+        warnings.push(format!(
+            "no crates.io data: licenses and latest versions are unknown; run `cargoscope update {}`",
+            root.display()
+        ));
+    }
+
     let report = Report {
+        package_info,
+        registry_date,
         inventory,
         advisories: check.findings,
         unused,

@@ -202,6 +202,22 @@ pub struct UnusedFinding {
     pub ignored: Option<String>,
 }
 
+/// Registry data about one resolved package, from the local crates.io cache.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PackageInfo {
+    /// SPDX license expression, or `None` when unknown.
+    pub license: Option<String>,
+    /// Latest published version that is not yanked (stable, unless only
+    /// pre-releases exist). `None` when no registry data is cached.
+    pub latest_version: Option<String>,
+    /// Publication date (`YYYY-MM-DD`) of `latest_version`, when known.
+    pub latest_published: Option<String>,
+    /// Whether the resolved version has been yanked. `None` when unknown.
+    pub yanked: Option<bool>,
+    /// Whether `latest_version` is newer than the resolved version.
+    pub outdated: bool,
+}
+
 /// Everything a scan produced, ready to be rendered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
@@ -209,6 +225,10 @@ pub struct Report {
     pub inventory: Inventory,
     /// Advisories affecting resolved packages.
     pub advisories: Vec<AdvisoryFinding>,
+    /// Registry data, one entry per package of `inventory`, in the same order.
+    pub package_info: Vec<PackageInfo>,
+    /// Date the crates.io data was downloaded (`YYYY-MM-DD`), if any.
+    pub registry_date: Option<String>,
     /// Dependencies with no usage found, including ignored ones.
     pub unused: Vec<UnusedFinding>,
     /// Date the RustSec database was downloaded (`YYYY-MM-DD`), if known.

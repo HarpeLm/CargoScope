@@ -178,7 +178,7 @@ fn reports_likely_unused_dependencies_only_by_default() {
     let unused_section = text
         .split("Likely-unused dependencies")
         .nth(1)
-        .and_then(|rest| rest.split("Resolved packages").next())
+        .and_then(|rest| rest.split("\nLicenses of").next())
         .expect("unused section present");
     for used in [
         "serde_json",
@@ -232,4 +232,45 @@ fn json_output_includes_unused_dependencies() {
     assert!(json.contains("\"dependency\":\"chrono\",\"package\":\"chrono\",\"section\":\"dependencies\",\"declared_by\":\"unused-demo\",\"manifest\":\"Cargo.toml\",\"confidence\":\"possibly-unused\""));
     assert!(json.contains("\"ignored_reason\":\"kept for an upcoming feature\""));
     assert!(!json.contains("\"dependency\":\"serde_json\""));
+}
+
+#[test]
+fn reports_licenses_versions_and_yanked_packages() {
+    let text = stdout(&scan("simple", &["--fail-on", "none"]));
+    assert!(text.contains(
+        "Licenses of 3 registry packages (crates.io data downloaded 2026-01-01):\n- MIT OR Apache-2.0: 2\n- unknown: 1\n"
+    ));
+    assert!(text.contains(
+        "Yanked versions in use: 1\n- itoa 1.0.11\n    via simple -> serde_json -> itoa\n"
+    ));
+    // 1.0.300 is yanked and 2.0.0-alpha.1 is a pre-release: the latest is 1.0.200.
+    assert!(text.contains(
+        "Outdated packages: 1 (1 direct)\n- serde_json 1.0.128 -> 1.0.200, published 2025-12-01\n"
+    ));
+    assert!(text.contains("- serde_json 1.0.128 [direct] (registry+https://github.com/rust-lang/crates.io-index) MIT OR Apache-2.0 -> 1.0.200 available\n"));
+    assert!(text.contains("- itoa 1.0.11 [transitive] (registry+https://github.com/rust-lang/crates.io-index) YANKED\n"));
+    assert!(!text.contains("no crates.io data"));
+}
+
+#[test]
+fn json_output_includes_registry_data() {
+    let json = stdout(&scan("simple", &["--format", "json", "--fail-on", "none"]));
+    assert!(
+        json.contains("\"registry\":{\"source\":\"crates.io\",\"downloaded_on\":\"2026-01-01\"}")
+    );
+    assert!(json.contains("\"license\":\"MIT OR Apache-2.0\",\"latest_version\":\"1.0.200\",\"latest_published\":\"2025-12-01\",\"outdated\":true,\"yanked\":false}"));
+}
+
+#[test]
+fn missing_registry_data_is_a_warning_not_an_error() {
+    let cache = std::env::temp_dir().join(format!("cargoscope-no-registry-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&cache);
+    let db = cache.join("advisory-db/crates");
+    std::fs::create_dir_all(&db).expect("create cache");
+    let output = scan_with_cache("simple", &["--fail-on", "none"], &cache);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        stdout(&output).contains("no crates.io data: licenses and latest versions are unknown")
+    );
+    let _ = std::fs::remove_dir_all(&cache);
 }

@@ -1,4 +1,5 @@
-//! RustSec advisory database: explicit download, local cache and matching.
+//! External data: the RustSec advisory database and crates.io metadata,
+//! with explicit download, local cache and offline matching.
 //!
 //! [`update`] is the only function that accesses the network. Scans use
 //! [`AdvisoryDatabase::open`] and [`AdvisoryDatabase::check`], which read only
@@ -13,6 +14,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cargoscope_core::{AdvisoryFinding, AdvisoryKind, Inventory, Severity};
 
+pub mod crates_io;
+
 /// Where the RustSec database archive is downloaded from.
 pub const DEFAULT_ARCHIVE_URL: &str =
     "https://github.com/rustsec/advisory-db/archive/refs/heads/main.tar.gz";
@@ -26,7 +29,7 @@ const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_ADVISORY_BYTES: u64 = 256 * 1024;
 
 /// crates.io sources covered by RustSec.
-const CRATES_IO_SOURCES: [&str; 2] = [
+pub(crate) const CRATES_IO_SOURCES: [&str; 2] = [
     "registry+https://github.com/rust-lang/crates.io-index",
     "sparse+https://index.crates.io/",
 ];
@@ -81,7 +84,7 @@ impl std::error::Error for AdvisoryError {
     }
 }
 
-fn io_error(path: &Path) -> impl FnOnce(io::Error) -> AdvisoryError + '_ {
+pub(crate) fn io_error(path: &Path) -> impl FnOnce(io::Error) -> AdvisoryError + '_ {
     move |source| AdvisoryError::Io {
         path: path.to_path_buf(),
         source,
@@ -257,10 +260,7 @@ impl AdvisoryDatabase {
         let mut check = AdvisoryCheck::default();
 
         for (index, package) in inventory.packages.iter().enumerate() {
-            let from_crates_io = package
-                .source
-                .as_deref()
-                .is_some_and(|source| CRATES_IO_SOURCES.contains(&source));
+            let from_crates_io = crates_io::is_crates_io(package.source.as_deref());
             if !from_crates_io {
                 continue;
             }
@@ -418,7 +418,7 @@ fn severity_from_cvss(vector: &str) -> Option<Severity> {
 }
 
 /// Converts Unix seconds to a `YYYY-MM-DD` UTC date.
-fn utc_date(seconds: u64) -> String {
+pub(crate) fn utc_date(seconds: u64) -> String {
     // Days-to-civil conversion (Howard Hinnant's algorithm).
     let days = i64::try_from(seconds / 86_400).unwrap_or(0) + 719_468;
     let era = days.div_euclid(146_097);

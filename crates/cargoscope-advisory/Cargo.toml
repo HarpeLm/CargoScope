@@ -12,6 +12,7 @@ cargoscope-core = { path = "../cargoscope-core" }
 cvss = "2"
 flate2 = "1"
 semver = "1"
+serde_json = "1"
 tar = "0.4"
 toml = "0.8"
 ureq = "2"

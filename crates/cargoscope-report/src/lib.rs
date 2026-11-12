@@ -87,6 +87,7 @@ pub fn render_text(project_root: &Path, report: &Report, show_uncertain: bool) -
     }
 
     render_unused_text(&mut out, &report.unused, show_uncertain);
+    render_registry_text(&mut out, report);
 
     let _ = writeln!(out, "\nResolved packages: {}", inventory.packages.len());
     for (index, package) in inventory.packages.iter().enumerate() {
@@ -99,6 +100,19 @@ pub fn render_text(project_root: &Path, report: &Report, show_uncertain: bool) -
         );
         if let Some(source) = &package.source {
             let _ = write!(out, " ({source})");
+        }
+        if let Some(info) = report.package_info.get(index) {
+            if let Some(license) = &info.license {
+                let _ = write!(out, " {license}");
+            }
+            if info.yanked == Some(true) {
+                out.push_str(" YANKED");
+            }
+            if info.outdated {
+                if let Some(latest) = &info.latest_version {
+                    let _ = write!(out, " -> {latest} available");
+                }
+            }
         }
         out.push('\n');
 
@@ -170,6 +184,86 @@ fn render_unused_text(out: &mut String, unused: &[UnusedFinding], show_uncertain
     }
 }
 
+fn render_registry_text(out: &mut String, report: &Report) {
+    let date = report.registry_date.as_deref().unwrap_or("never");
+    let registry_packages: Vec<(usize, &cargoscope_core::PackageInfo)> = report
+        .package_info
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| {
+            report.inventory.packages[*index]
+                .source
+                .as_deref()
+                .is_some_and(|source| {
+                    source.starts_with("registry+") || source.starts_with("sparse+")
+                })
+        })
+        .collect();
+
+    let mut licenses: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for (_, info) in &registry_packages {
+        *licenses
+            .entry(info.license.as_deref().unwrap_or("unknown"))
+            .or_default() += 1;
+    }
+    let mut by_count: Vec<(&str, usize)> = licenses.into_iter().collect();
+    by_count.sort_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(right.0)));
+    let _ = writeln!(
+        out,
+        "\nLicenses of {} registry packages (crates.io data downloaded {date}):",
+        registry_packages.len()
+    );
+    for (license, count) in by_count {
+        let _ = writeln!(out, "- {license}: {count}");
+    }
+
+    let yanked: Vec<usize> = registry_packages
+        .iter()
+        .filter(|(_, info)| info.yanked == Some(true))
+        .map(|(index, _)| *index)
+        .collect();
+    if !yanked.is_empty() {
+        let _ = writeln!(out, "\nYanked versions in use: {}", yanked.len());
+        for index in yanked {
+            let package = &report.inventory.packages[index];
+            let _ = writeln!(out, "- {} {}", package.name, package.version);
+            if let Some(chain) = chain(&report.inventory, index) {
+                let _ = writeln!(out, "    via {chain}");
+            }
+        }
+    }
+
+    let outdated = registry_packages
+        .iter()
+        .filter(|(_, info)| info.outdated)
+        .count();
+    let direct_outdated: Vec<(usize, &cargoscope_core::PackageInfo)> = registry_packages
+        .iter()
+        .filter(|(index, info)| info.outdated && report.inventory.packages[*index].direct)
+        .copied()
+        .collect();
+    let _ = writeln!(
+        out,
+        "\nOutdated packages: {outdated} ({} direct)",
+        direct_outdated.len()
+    );
+    for (index, info) in direct_outdated {
+        let package = &report.inventory.packages[index];
+        let published = info
+            .latest_published
+            .as_deref()
+            .map(|date| format!(", published {date}"))
+            .unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "- {} {} -> {}{published}",
+            package.name,
+            package.version,
+            info.latest_version.as_deref().unwrap_or("?")
+        );
+    }
+}
+
 /// Renders a versioned JSON report, terminated by a newline.
 ///
 /// Each package and each advisory carries a `path`: the shortest chain of
@@ -188,6 +282,11 @@ pub fn render_json(project_root: &Path, report: &Report) -> String {
         out,
         "\"advisory_database\":{{\"source\":\"RustSec\",\"downloaded_on\":{}}},",
         json_string_or_null(report.advisory_db_date.as_deref())
+    );
+    let _ = write!(
+        out,
+        "\"registry\":{{\"source\":\"crates.io\",\"downloaded_on\":{}}},",
+        json_string_or_null(report.registry_date.as_deref())
     );
 
     out.push_str("\"advisories\":[");
@@ -234,7 +333,17 @@ pub fn render_json(project_root: &Path, report: &Report) -> String {
             json_string_or_null(package.source.as_deref()),
         );
         write_path(&mut out, inventory, index);
-        out.push('}');
+        let info = report.package_info.get(index).cloned().unwrap_or_default();
+        let _ = write!(
+            out,
+            ",\"license\":{},\"latest_version\":{},\"latest_published\":{},\"outdated\":{},\"yanked\":{}}}",
+            json_string_or_null(info.license.as_deref()),
+            json_string_or_null(info.latest_version.as_deref()),
+            json_string_or_null(info.latest_published.as_deref()),
+            info.outdated,
+            info.yanked
+                .map_or("null", |yanked| if yanked { "true" } else { "false" }),
+        );
     }
     out.push_str("],");
 
@@ -326,8 +435,8 @@ fn json_escape(value: &str) -> String {
 mod tests {
     use super::{json_escape, render_json, render_text};
     use cargoscope_core::{
-        AdvisoryFinding, AdvisoryKind, DependencyKind, Inventory, Package, Report, Severity,
-        UnusedConfidence, UnusedFinding,
+        AdvisoryFinding, AdvisoryKind, DependencyKind, Inventory, Package, PackageInfo, Report,
+        Severity, UnusedConfidence, UnusedFinding,
     };
     use std::path::Path;
 
@@ -367,6 +476,8 @@ mod tests {
             },
             advisories,
             unused: Vec::new(),
+            package_info: Vec::new(),
+            registry_date: None,
             advisory_db_date: Some("2026-01-02".to_owned()),
             warnings: Vec::new(),
         }
@@ -438,7 +549,7 @@ mod tests {
             "{\"id\":\"TEST-0001\",\"aliases\":[\"CVE-TEST\"],\"title\":\"Beta is broken\",\"date\":\"2025-05-05\",\"url\":\"https://example.test/report\",\"kind\":\"vulnerability\",\"informational\":null,\"severity\":\"high\",\"package\":{\"name\":\"beta\",\"version\":\"1.0.0\"},\"patched\":[\">= 1.2.0\"],\"path\":[{\"name\":\"app\",\"version\":\"1.0.0\"},{\"name\":\"alpha\",\"version\":\"1.0.0\"},{\"name\":\"beta\",\"version\":\"1.0.0\"}]}"
         ));
         assert!(json.contains(
-            "{\"name\":\"orphan\",\"version\":\"1.0.0\",\"scope\":\"transitive\",\"direct\":false,\"source\":null,\"path\":null}"
+            "{\"name\":\"orphan\",\"version\":\"1.0.0\",\"scope\":\"transitive\",\"direct\":false,\"source\":null,\"path\":null,\"license\":null,\"latest_version\":null,\"latest_published\":null,\"outdated\":false,\"yanked\":null}"
         ));
         assert!(json.ends_with("\"unused\":[],\"warnings\":[]}\n"));
     }
@@ -507,6 +618,43 @@ mod tests {
         assert!(json.contains("{\"dependency\":\"log\",\"package\":\"log\",\"section\":\"dependencies\",\"declared_by\":\"app\",\"manifest\":\"Cargo.toml\",\"confidence\":\"likely-unused\",\"evidence\":[\"no reference\"],\"ignored_reason\":null}"));
         assert!(json.contains("\"confidence\":\"possibly-unused\""));
         assert!(json.contains("\"ignored_reason\":\"generated code\""));
+    }
+
+    #[test]
+    fn reports_licenses_outdated_and_yanked_packages() {
+        let mut report = sample(Vec::new());
+        report.registry_date = Some("2026-02-03".to_owned());
+        report.package_info = vec![
+            PackageInfo::default(),
+            PackageInfo {
+                license: Some("MIT".to_owned()),
+                latest_version: Some("2.0.0".to_owned()),
+                latest_published: Some("2026-01-01".to_owned()),
+                yanked: Some(true),
+                outdated: true,
+            },
+            PackageInfo::default(),
+            PackageInfo::default(),
+        ];
+        let text = render_text(Path::new("."), &report, false);
+        assert!(text.contains(
+            "Licenses of 1 registry packages (crates.io data downloaded 2026-02-03):\n- MIT: 1\n"
+        ));
+        assert!(text.contains("Yanked versions in use: 1\n- alpha 1.0.0\n    via app -> alpha\n"));
+        assert!(text.contains(
+            "Outdated packages: 1 (1 direct)\n- alpha 1.0.0 -> 2.0.0, published 2026-01-01\n"
+        ));
+        assert!(text.contains(
+            "- alpha 1.0.0 [direct] (registry+https://example.test) MIT YANKED -> 2.0.0 available\n"
+        ));
+
+        let json = render_json(Path::new("."), &report);
+        assert!(
+            json.contains(
+                "\"registry\":{\"source\":\"crates.io\",\"downloaded_on\":\"2026-02-03\"}"
+            )
+        );
+        assert!(json.contains("\"license\":\"MIT\",\"latest_version\":\"2.0.0\",\"latest_published\":\"2026-01-01\",\"outdated\":true,\"yanked\":true}"));
     }
 
     #[test]
