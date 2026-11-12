@@ -20,9 +20,11 @@ targets = [
     "aarch64-unknown-linux-gnu",
     "x86_64-unknown-linux-gnu",
     "x86_64-unknown-linux-musl",
-    "aarch64-pc-windows-msvc",
     "x86_64-pc-windows-msvc",
 ]
+# aarch64-pc-windows-msvc is left out: it is cross-compiled with cargo-xwin,
+# where ring (used by rustls) fails to build. Windows on ARM runs the x86_64
+# binary through emulation.
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
 # Whether to install an updater program
