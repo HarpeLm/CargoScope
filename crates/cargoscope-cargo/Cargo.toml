@@ -10,7 +10,7 @@ readme = "../../README.md"
 description = "Cargo manifest and lockfile parsing for CargoScope"
 
 [dependencies]
-cargoscope-core = { path = "../cargoscope-core", version = "0.1.0-alpha.1" }
+cargoscope-core = { path = "../cargoscope-core", version = "0.1.0-alpha.2" }
 proc-macro2 = "1"
 toml = "0.8"
 
