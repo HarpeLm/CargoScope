@@ -16,6 +16,9 @@ fn scan(name: &str, extra: &[&str]) -> Output {
 fn scan_with_cache(name: &str, extra: &[&str], cache: &std::path::Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_cargoscope"))
         .env("CARGOSCOPE_CACHE_DIR", cache)
+        // An empty Cargo home: results must not depend on the crates this
+        // machine happens to have downloaded.
+        .env("CARGO_HOME", fixture("empty-cargo-home"))
         .arg("scan")
         // Most tests check the package list, which the text report shows only
         // in verbose mode; the flag has no effect on JSON and SARIF.
