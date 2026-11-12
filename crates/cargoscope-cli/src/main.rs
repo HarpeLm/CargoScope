@@ -29,13 +29,14 @@ Options for scan:
                        Default: fail on any security vulnerability.
                        Vulnerabilities without a CVSS score always count.
                        Informational advisories (unmaintained, unsound) never fail.
-                       Unused dependencies never fail.
+                       Unused dependencies never fail. Policy violations
+                       (cargoscope.toml) fail unless THRESHOLD is none.
   --show-uncertain     Also list possibly-unused dependencies.
   -v, --verbose        List every resolved package (text format).
   --baseline FILE      A previous JSON report: advisories already in it do not
                        fail the scan, so only new ones do.
   --checks LIST        Comma-separated checks to run (default: all):
-                       inventory, advisories, unused, licenses, versions.
+                       inventory, advisories, unused, licenses, versions, policy.
                        Without advisories, no advisory database is needed.
 
 Environment:
@@ -408,9 +409,22 @@ fn scan(options: &ScanOptions) -> ExitCode {
         Vec::new()
     };
 
+    let policy = if checks.policy {
+        match cargoscope_cargo::config::load_policy(root) {
+            Ok(policy) => policy,
+            Err(error) => {
+                eprintln!("CargoScope could not read the policy: {error}");
+                return ExitCode::from(2);
+            }
+        }
+    } else {
+        None
+    };
+    let needs_licenses = policy.as_ref().is_some_and(|policy| policy.check_licenses);
+
     let (mut package_info, mut registry_date) =
         (vec![Default::default(); inventory.packages.len()], None);
-    if checks.licenses || checks.versions {
+    if checks.licenses || checks.versions || needs_licenses {
         if let Ok(dir) = cargoscope_advisory::cache_dir() {
             let registry = RegistryCache::open(&dir);
             package_info = registry.info(&inventory);
@@ -437,6 +451,14 @@ fn scan(options: &ScanOptions) -> ExitCode {
                 ));
             }
         }
+    }
+    let violations = policy.map(|policy| {
+        if policy.check_licenses && registry_date.is_none() {
+            warnings.push("license rules of the policy were skipped: no crates.io data".to_owned());
+        }
+        policy.check(&inventory, &package_info, registry_date.is_some())
+    });
+    {
         for info in &mut package_info {
             if !checks.licenses {
                 info.license = None;
@@ -457,7 +479,7 @@ fn scan(options: &ScanOptions) -> ExitCode {
         inventory,
         advisories,
         unused,
-        policy: None,
+        policy: violations,
         advisory_db_date,
         warnings,
     };
@@ -515,11 +537,17 @@ fn scan(options: &ScanOptions) -> ExitCode {
             "{in_baseline} advisory finding(s) are already in the baseline and do not fail the scan."
         );
     }
-    if report
-        .advisories
-        .iter()
-        .filter(is_new)
-        .any(|finding| options.fail_on.is_triggered_by(finding))
+    let policy_fails = options.fail_on != FailOn::Never
+        && report
+            .policy
+            .as_ref()
+            .is_some_and(|violations| !violations.is_empty());
+    if policy_fails
+        || report
+            .advisories
+            .iter()
+            .filter(is_new)
+            .any(|finding| options.fail_on.is_triggered_by(finding))
     {
         ExitCode::from(1)
     } else {
