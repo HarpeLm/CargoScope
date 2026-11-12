@@ -342,47 +342,66 @@ fn included_files(tokens: TokenStream) -> Vec<String> {
     files
 }
 
-/// Top-level `mod name;` declarations, with their `#[path = "..."]` if any.
+/// `mod name;` declarations, with their `#[path = "..."]` if any.
+///
+/// Top-level declarations are all returned. Inside blocks (a function
+/// body, as in nushell's build script) only `#[path]` modules are, since the
+/// file of an unannotated nested module cannot be located reliably.
 fn declared_modules(tokens: TokenStream) -> Vec<(String, Option<String>)> {
-    let tokens: Vec<TokenTree> = tokens.into_iter().collect();
     let mut modules = Vec::new();
+    collect_modules(tokens, true, &mut modules);
+    modules
+}
+
+fn path_attribute(token: &TokenTree) -> Option<String> {
+    let TokenTree::Group(group) = token else {
+        return None;
+    };
+    let inner: Vec<TokenTree> = group.stream().into_iter().collect();
+    match inner.as_slice() {
+        [
+            TokenTree::Ident(attribute),
+            TokenTree::Punct(eq),
+            TokenTree::Literal(path),
+        ] if attribute == "path" && eq.as_char() == '=' => {
+            Some(path.to_string().trim_matches('"').to_owned())
+        }
+        _ => None,
+    }
+}
+
+fn collect_modules(
+    tokens: TokenStream,
+    top_level: bool,
+    modules: &mut Vec<(String, Option<String>)>,
+) {
+    let tokens: Vec<TokenTree> = tokens.into_iter().collect();
     for (index, token) in tokens.iter().enumerate() {
-        let TokenTree::Ident(keyword) = token else {
-            continue;
-        };
-        if keyword != "mod" {
-            continue;
-        }
-        let (Some(TokenTree::Ident(name)), Some(TokenTree::Punct(semicolon))) =
-            (tokens.get(index + 1), tokens.get(index + 2))
-        else {
-            continue;
-        };
-        if semicolon.as_char() != ';' {
-            continue;
-        }
-        let explicit_path = tokens[..index].iter().rev().find_map(|token| match token {
-            TokenTree::Group(group) => {
-                let inner: Vec<TokenTree> = group.stream().into_iter().collect();
-                match inner.as_slice() {
-                    [
-                        TokenTree::Ident(attribute),
-                        TokenTree::Punct(eq),
-                        TokenTree::Literal(path),
-                    ] if attribute == "path" && eq.as_char() == '=' => {
-                        Some(path.to_string().trim_matches('"').to_owned())
-                    }
-                    _ => None,
+        match token {
+            TokenTree::Group(group) if group.delimiter() == proc_macro2::Delimiter::Brace => {
+                collect_modules(group.stream(), false, modules);
+            }
+            TokenTree::Ident(keyword) if keyword == "mod" => {
+                let (Some(TokenTree::Ident(name)), Some(TokenTree::Punct(semicolon))) =
+                    (tokens.get(index + 1), tokens.get(index + 2))
+                else {
+                    continue;
+                };
+                if semicolon.as_char() != ';' {
+                    continue;
+                }
+                // Only an attribute directly before this `mod` counts.
+                let explicit_path = (index >= 2
+                    && matches!(&tokens[index - 2], TokenTree::Punct(hash) if hash.as_char() == '#'))
+                .then(|| path_attribute(&tokens[index - 1]))
+                .flatten();
+                if top_level || explicit_path.is_some() {
+                    modules.push((name.to_string(), explicit_path));
                 }
             }
-            _ => None,
-        });
-        // Only an attribute directly before this `mod` counts.
-        let directly_before = index >= 2
-            && matches!(&tokens[index - 2], TokenTree::Punct(hash) if hash.as_char() == '#');
-        modules.push((name.to_string(), explicit_path.filter(|_| directly_before)));
+            _ => {}
+        }
     }
-    modules
 }
 
 fn walk(dir: &Path, depth: usize, files: &mut Vec<PathBuf>, skipped: &mut usize) {
@@ -1220,6 +1239,22 @@ mod tests {
         );
         assert!(warnings.iter().any(|warning| warning.contains("skipped")));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn finds_path_modules_declared_inside_functions() {
+        let tokens = TokenStream::from_str(
+            "mod top;\nfn build() {\n    #[path = \"src/theme.rs\"]\n    mod theme;\n    mod unknown;\n}\n#[inline]\nmod plain;\n",
+        )
+        .expect("tokenizes");
+        assert_eq!(
+            super::declared_modules(tokens),
+            vec![
+                ("top".to_owned(), None),
+                ("theme".to_owned(), Some("src/theme.rs".to_owned())),
+                ("plain".to_owned(), None),
+            ]
+        );
     }
 
     #[test]
