@@ -13,6 +13,15 @@ use cargoscope_core::{
 /// Version of the JSON report format.
 pub const JSON_FORMAT_VERSION: u32 = 1;
 
+/// Options of the text report.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TextOptions {
+    /// Also list possibly-unused dependencies.
+    pub show_uncertain: bool,
+    /// List every resolved package with its path, license and versions.
+    pub verbose: bool,
+}
+
 fn scope(package: &Package) -> &'static str {
     if package.root {
         "root"
@@ -46,9 +55,9 @@ fn chain(inventory: &Inventory, index: usize) -> Option<String> {
 /// chain that pulls the package in.
 #[must_use]
 ///
-/// Possibly-unused dependencies are listed only when `show_uncertain` is set;
-/// otherwise only their number is shown.
-pub fn render_text(project_root: &Path, report: &Report, show_uncertain: bool) -> String {
+/// Possibly-unused dependencies are listed only with `show_uncertain`, and
+/// the full package list only with `verbose`; otherwise only counts are shown.
+pub fn render_text(project_root: &Path, report: &Report, options: TextOptions) -> String {
     let inventory = &report.inventory;
     let mut out = String::new();
     // Writing to a String cannot fail.
@@ -62,14 +71,22 @@ pub fn render_text(project_root: &Path, report: &Report, show_uncertain: bool) -
         out.push_str("\nAdvisories: not checked\n");
     }
     if report.checks.unused {
-        render_unused_text(&mut out, &report.unused, show_uncertain);
+        render_unused_text(&mut out, &report.unused, options.show_uncertain);
     } else {
         out.push_str("\nUnused dependencies: not checked\n");
     }
     render_registry_text(&mut out, report);
 
-    let _ = writeln!(out, "\nResolved packages: {}", inventory.packages.len());
-    render_inventory_text(&mut out, report);
+    if options.verbose {
+        let _ = writeln!(out, "\nResolved packages: {}", inventory.packages.len());
+        render_inventory_text(&mut out, report);
+    } else {
+        let _ = writeln!(
+            out,
+            "\nResolved packages: {} (use --verbose to list them)",
+            inventory.packages.len()
+        );
+    }
 
     for warning in &report.warnings {
         let _ = writeln!(out, "\nwarning: {warning}");
@@ -542,7 +559,12 @@ fn json_escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{json_escape, render_json, render_text};
+    use super::{TextOptions, json_escape, render_json, render_text};
+
+    const VERBOSE: TextOptions = TextOptions {
+        show_uncertain: false,
+        verbose: true,
+    };
     use cargoscope_core::{
         AdvisoryFinding, AdvisoryKind, Checks, DependencyKind, Inventory, Package, PackageInfo,
         Report, Severity, UnusedConfidence, UnusedFinding,
@@ -609,7 +631,7 @@ mod tests {
 
     #[test]
     fn text_report_lists_scope_source_and_path() {
-        let text = render_text(Path::new("."), &sample(Vec::new()), false);
+        let text = render_text(Path::new("."), &sample(Vec::new()), VERBOSE);
         assert!(text.contains("Resolved packages: 4\n"));
         assert!(text.contains("- app 1.0.0 [root]\n"));
         assert!(text.contains("- alpha 1.0.0 [direct] (registry+https://example.test)\n"));
@@ -627,7 +649,7 @@ mod tests {
             AdvisoryKind::Vulnerability,
             vec![">= 1.2.0".to_owned()],
         )]);
-        let text = render_text(Path::new("."), &report, false);
+        let text = render_text(Path::new("."), &report, VERBOSE);
         assert!(text.contains(
             "- TEST-0001 [high] beta 1.0.0: Beta is broken\n    via app -> alpha -> beta\n    fix: upgrade to >= 1.2.0\n    https://example.test/report\n"
         ));
@@ -639,7 +661,7 @@ mod tests {
             AdvisoryKind::Informational("unmaintained".to_owned()),
             Vec::new(),
         )]);
-        let text = render_text(Path::new("."), &report, false);
+        let text = render_text(Path::new("."), &report, VERBOSE);
         assert!(text.contains("[unmaintained] beta 1.0.0"));
         assert!(text.contains("fix: no fixed version available"));
     }
@@ -697,7 +719,7 @@ mod tests {
 
     #[test]
     fn text_report_hides_uncertain_unused_by_default() {
-        let text = render_text(Path::new("."), &with_unused(), false);
+        let text = render_text(Path::new("."), &with_unused(), VERBOSE);
         assert!(
             text.contains(
                 "Likely-unused dependencies: 1 (static analysis: candidates to verify)\n"
@@ -717,7 +739,14 @@ mod tests {
 
     #[test]
     fn text_report_shows_uncertain_unused_on_request() {
-        let text = render_text(Path::new("."), &with_unused(), true);
+        let text = render_text(
+            Path::new("."),
+            &with_unused(),
+            TextOptions {
+                show_uncertain: true,
+                verbose: true,
+            },
+        );
         assert!(text.contains("- openssl-sys [possibly-unused] in [dependencies] of Cargo.toml\n"));
         assert!(!text.contains("hidden"));
     }
@@ -746,7 +775,7 @@ mod tests {
             PackageInfo::default(),
             PackageInfo::default(),
         ];
-        let text = render_text(Path::new("."), &report, false);
+        let text = render_text(Path::new("."), &report, VERBOSE);
         assert!(text.contains(
             "Licenses of 1 registry packages (crates.io data downloaded 2026-02-03):\n- MIT: 1\n"
         ));
@@ -788,7 +817,16 @@ mod tests {
             versions: false,
         };
         assert_eq!(super::summary(&report), "4 packages");
-        assert!(render_text(Path::new("."), &report, false).contains("\nSummary: 4 packages\n"));
+        assert!(render_text(Path::new("."), &report, VERBOSE).contains("\nSummary: 4 packages\n"));
+    }
+
+    #[test]
+    fn package_list_is_shown_only_when_verbose() {
+        let report = sample(Vec::new());
+        let short = render_text(Path::new("."), &report, TextOptions::default());
+        assert!(short.contains("Resolved packages: 4 (use --verbose to list them)\n"));
+        assert!(!short.contains("- app 1.0.0 [root]"));
+        assert!(render_text(Path::new("."), &report, VERBOSE).contains("- app 1.0.0 [root]"));
     }
 
     #[test]
