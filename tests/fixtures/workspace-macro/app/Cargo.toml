@@ -7,3 +7,5 @@ edition = "2021"
 common = { path = "../common" }
 rust-embed = "8"
 log = "0.4"
+vt-fork = { path = "../vt-fork" }
+tiny-bip39 = "2"

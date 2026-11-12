@@ -547,3 +547,18 @@ fn dependency_used_by_a_sibling_macro_is_only_possibly_unused() {
         text.contains("may be used through a macro of workspace crate `common`, which mentions it")
     );
 }
+
+#[test]
+fn library_names_that_differ_from_package_names_are_recognised() {
+    let text = stdout(&scan(
+        "workspace-macro",
+        &["--fail-on", "none", "--show-uncertain"],
+    ));
+    // `[lib] name = "vt"` of a path dependency: definitely used.
+    assert!(!text.contains("- vt-fork ["));
+    // Unknown library name, but `bip39::` is used: only possibly unused.
+    assert!(text.contains("- tiny-bip39 [possibly-unused]"));
+    assert!(text.contains(
+        "`bip39::` is used: the library name of `tiny-bip39` may differ from its package name"
+    ));
+}

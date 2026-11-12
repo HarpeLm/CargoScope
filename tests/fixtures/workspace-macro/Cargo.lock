@@ -7,6 +7,8 @@ dependencies = [
  "common",
  "log",
  "rust-embed",
+ "tiny-bip39",
+ "vt-fork",
 ]
 
 [[package]]
@@ -22,3 +24,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 name = "rust-embed"
 version = "8.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "tiny-bip39"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "vt-fork"
+version = "0.1.0"

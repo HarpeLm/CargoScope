@@ -8,7 +8,7 @@ Small Cargo projects used by integration tests. They are never built: CargoScope
 | `workspace` | Explicit workspace members contributing direct dependencies |
 | `renamed` | `package = "..."` renames and dev/build dependencies |
 | `workspace-glob` | `members = ["crates/*"]` with an `exclude`d member |
-| `workspace-macro` | A dependency used only through a `macro_rules!` of a sibling crate |
+| `workspace-macro` | A dependency used only through a `macro_rules!` of a sibling crate; library names that differ from package names (`[lib] name`, `tiny-bip39` used as `bip39`) |
 | `multi-version` | Two versions of one crate: one direct, one pulled in transitively |
 | `unused` | Every unused-detection case: comments, strings, macros, renames, `-sys`, optional, transitive with features, build script, ignore list |
 | `no-lockfile` | Missing `Cargo.lock` (execution error, exit code 2) |
