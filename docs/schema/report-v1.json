@@ -15,6 +15,7 @@
     "advisories",
     "packages",
     "unused",
+    "policy",
     "warnings"
   ],
   "properties": {
@@ -31,6 +32,10 @@
     "advisories": { "type": "array", "items": { "$ref": "#/$defs/advisory" } },
     "packages": { "type": "array", "items": { "$ref": "#/$defs/package" } },
     "unused": { "type": "array", "items": { "$ref": "#/$defs/unused" } },
+    "policy": {
+      "description": "Violations of the cargoscope.toml policy, or null when no policy is configured or checked.",
+      "oneOf": [{ "type": "array", "items": { "$ref": "#/$defs/violation" } }, { "type": "null" }]
+    },
     "warnings": { "type": "array", "items": { "type": "string" } }
   },
   "$defs": {
@@ -114,6 +119,17 @@
         "latest_published": { "$ref": "#/$defs/nullable_date" },
         "outdated": { "type": "boolean" },
         "yanked": { "type": ["boolean", "null"], "description": "null when no registry data is cached." }
+      }
+    },
+    "violation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule", "package", "message", "path"],
+      "properties": {
+        "rule": { "enum": ["license", "source", "ban"] },
+        "package": { "$ref": "#/$defs/package_ref" },
+        "message": { "type": "string" },
+        "path": { "$ref": "#/$defs/path" }
       }
     },
     "unused": {

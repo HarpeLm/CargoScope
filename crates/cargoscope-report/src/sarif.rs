@@ -138,6 +138,29 @@ pub fn render_sarif(report: &Report, locations: &SarifLocations, show_uncertain:
         }));
     }
 
+    for violation in report.policy.iter().flatten() {
+        let package = &report.inventory.packages[violation.package];
+        let rule_id = format!("cargoscope/policy-{}", violation.rule.as_str());
+        rules.entry(rule_id.clone()).or_insert_with(|| {
+            json!({
+                "id": rule_id,
+                "name": format!("Policy{}", violation.rule.as_str()),
+                "shortDescription": { "text": format!("A dependency breaks the {} policy of cargoscope.toml", violation.rule.as_str()) },
+                "defaultConfiguration": { "level": "error" },
+                "properties": { "tags": ["dependency", "policy"] },
+            })
+        });
+        let via = chain(report, violation.package)
+            .map(|chain| format!(" Introduced via {chain}."))
+            .unwrap_or_default();
+        results.push(json!({
+            "ruleId": rule_id,
+            "level": "error",
+            "message": { "text": format!("{} {}: {}.{via}", package.name, package.version, violation.message) },
+            "locations": [location(&locations.lockfile_uri, package_line(violation.package))],
+        }));
+    }
+
     for (index, finding) in report.unused.iter().enumerate() {
         let wanted = finding.confidence == UnusedConfidence::Likely || show_uncertain;
         if finding.ignored.is_some() || !wanted {

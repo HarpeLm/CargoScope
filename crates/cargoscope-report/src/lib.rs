@@ -77,6 +77,7 @@ pub fn render_text(project_root: &Path, report: &Report, options: TextOptions) -
         out.push_str("\nUnused dependencies: not checked\n");
     }
     render_registry_text(&mut out, report);
+    render_policy_text(&mut out, report);
 
     if options.verbose {
         let _ = writeln!(out, "\nResolved packages: {}", inventory.packages.len());
@@ -148,8 +149,37 @@ pub fn summary(report: &Report) -> String {
         parts.push(format!("{yanked} yanked"));
         parts.push(format!("{outdated_direct} outdated direct"));
     }
+    if let Some(violations) = &report.policy {
+        parts.push(plural(violations.len(), "policy violation"));
+    }
     parts.push(plural(report.inventory.packages.len(), "package"));
     parts.join(", ")
+}
+
+fn render_policy_text(out: &mut String, report: &Report) {
+    if !report.checks.policy {
+        out.push_str("\nPolicy: not checked\n");
+        return;
+    }
+    let Some(violations) = &report.policy else {
+        out.push_str("\nPolicy: no cargoscope.toml policy\n");
+        return;
+    };
+    let _ = writeln!(out, "\nPolicy violations: {}", violations.len());
+    for violation in violations {
+        let package = &report.inventory.packages[violation.package];
+        let _ = writeln!(
+            out,
+            "- [{}] {} {}: {}",
+            violation.rule.as_str(),
+            package.name,
+            package.version,
+            violation.message
+        );
+        if let Some(chain) = chain(&report.inventory, violation.package) {
+            let _ = writeln!(out, "    via {chain}");
+        }
+    }
 }
 
 fn render_advisories_text(out: &mut String, report: &Report) {
@@ -473,6 +503,31 @@ pub fn render_json(project_root: &Path, report: &Report) -> String {
         );
     }
     out.push_str("],");
+
+    out.push_str("\"policy\":");
+    match &report.policy {
+        None => out.push_str("null,"),
+        Some(violations) => {
+            out.push('[');
+            for (position, violation) in violations.iter().enumerate() {
+                if position > 0 {
+                    out.push(',');
+                }
+                let package = &inventory.packages[violation.package];
+                let _ = write!(
+                    out,
+                    "{{\"rule\":\"{}\",\"package\":{{\"name\":\"{}\",\"version\":\"{}\"}},\"message\":\"{}\",\"path\":",
+                    violation.rule.as_str(),
+                    json_escape(&package.name),
+                    json_escape(&package.version),
+                    json_escape(&violation.message)
+                );
+                write_path(&mut out, inventory, violation.package);
+                out.push('}');
+            }
+            out.push_str("],");
+        }
+    }
 
     out.push_str("\"unused\":[");
     for (position, finding) in report.unused.iter().enumerate() {
