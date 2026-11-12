@@ -1,0 +1,3 @@
+common::catalogue!();
+
+fn main() {}

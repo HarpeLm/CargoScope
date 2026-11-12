@@ -534,3 +534,16 @@ fn packages_missing_from_the_registry_cache_are_reported() {
     assert!(text.contains("2 crates.io package(s) have no cached data"));
     assert!(!stdout(&scan("simple", &["--fail-on", "none"])).contains("no cached data"));
 }
+
+#[test]
+fn dependency_used_by_a_sibling_macro_is_only_possibly_unused() {
+    let text = stdout(&scan(
+        "workspace-macro",
+        &["--fail-on", "none", "--show-uncertain"],
+    ));
+    assert!(text.contains("- log [likely-unused] in [dependencies] of app/Cargo.toml"));
+    assert!(text.contains("- rust-embed [possibly-unused] in [dependencies] of app/Cargo.toml"));
+    assert!(
+        text.contains("may be used through a macro of workspace crate `common`, which mentions it")
+    );
+}
