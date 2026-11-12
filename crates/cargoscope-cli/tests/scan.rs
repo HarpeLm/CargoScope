@@ -562,3 +562,103 @@ fn library_names_that_differ_from_package_names_are_recognised() {
         "`bip39::` is used: the library name of `tiny-bip39` may differ from its package name"
     ));
 }
+
+fn write_report(name: &str, fixture_name: &str) -> PathBuf {
+    let file = std::env::temp_dir().join(format!("cargoscope-{name}-{}.json", std::process::id()));
+    let output = scan(
+        fixture_name,
+        &[
+            "--format",
+            "json",
+            "--fail-on",
+            "none",
+            "--output",
+            file.to_str().expect("utf-8"),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    file
+}
+
+fn compare(arguments: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .arg("compare")
+        .args(arguments)
+        .output()
+        .expect("cargoscope binary runs")
+}
+
+#[test]
+fn compare_lists_new_advisories_and_fails_on_them() {
+    let baseline = write_report("baseline", "workspace");
+    let current = write_report("current", "simple");
+    let output = compare(&[
+        baseline.to_str().expect("utf-8"),
+        current.to_str().expect("utf-8"),
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+    let text = stdout(&output);
+    assert!(
+        text.contains("New advisories: 2\n- CARGOSCOPE-TEST-0001 [high] serde_json 1.0.128"),
+        "{text}"
+    );
+    assert!(text.contains("- CARGOSCOPE-TEST-0003 [informational] itoa 1.0.11"));
+    assert!(text.contains("New yanked versions in use: 1\n- itoa 1.0.11\n"));
+    assert!(text.contains("Removed packages: "));
+
+    let same = compare(&[
+        current.to_str().expect("utf-8"),
+        current.to_str().expect("utf-8"),
+    ]);
+    assert_eq!(same.status.code(), Some(0));
+    assert!(stdout(&same).contains("New advisories: 0\n"));
+
+    let json = compare(&[
+        "--format",
+        "json",
+        "--fail-on",
+        "critical",
+        baseline.to_str().expect("utf-8"),
+        current.to_str().expect("utf-8"),
+    ]);
+    assert_eq!(json.status.code(), Some(0));
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).expect("valid JSON");
+    assert_eq!(value["comparison_format_version"], 1);
+    assert_eq!(value["new_advisories"][0]["id"], "CARGOSCOPE-TEST-0001");
+    let _ = std::fs::remove_file(baseline);
+    let _ = std::fs::remove_file(current);
+}
+
+#[test]
+fn compare_rejects_files_that_are_not_reports() {
+    let bogus = std::env::temp_dir().join(format!("cargoscope-bogus-{}.json", std::process::id()));
+    std::fs::write(&bogus, "{\"hello\": 1}").expect("write");
+    let output = compare(&[
+        bogus.to_str().expect("utf-8"),
+        bogus.to_str().expect("utf-8"),
+    ]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not a CargoScope JSON report"));
+    let _ = std::fs::remove_file(bogus);
+}
+
+#[test]
+fn baseline_lets_known_advisories_pass() {
+    let baseline = write_report("known", "simple");
+    let output = scan("simple", &["--baseline", baseline.to_str().expect("utf-8")]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "known advisories must not fail"
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("already in the baseline"));
+    let empty = write_report("empty", "workspace");
+    assert_eq!(
+        scan("simple", &["--baseline", empty.to_str().expect("utf-8")])
+            .status
+            .code(),
+        Some(1)
+    );
+    let _ = std::fs::remove_file(baseline);
+    let _ = std::fs::remove_file(empty);
+}
