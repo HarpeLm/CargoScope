@@ -7,11 +7,11 @@
 
 CargoScope is an open-source engine that helps developers **discover, evaluate, and improve** their project dependencies. It aims to unify inventory, known vulnerabilities, maintenance signals, versions, likely-unused dependencies, and transitive relationships into understandable, CI-integrable reports.
 
-**Positioning:** "The Dependency Intelligence Engine" — understand dependencies, their risks, and their maintenance costs, across multiple ecosystems, from a single experience.
+**Positioning:** "Understand every dependency in your Rust project: why it's there, what it risks, and what to do." CargoScope starts with Rust/Cargo only; other ecosystems are a long-term possibility, considered only once the Rust experience is clearly better than combining existing tools (see 5.1).
 
 CargoScope is designed to complement Dependabot, Renovate, Snyk, and OSV-Scanner. It does not ask teams to replace an already-installed tool: they can start by running a local analysis, then add a report to CI, and progressively adopt comparison and recommendation features. Becoming a primary tool is a possibility to earn through result quality, not a promise.
 
-Guiding principles: local operation without a mandatory account for the first scan; no source code transmission by default; no silent file modification; recommendations justified by evidence; result quality before number of ecosystems. Adoption, downloads, and contributions are never guaranteed.
+Guiding principles (all four are binding): local operation without a mandatory account for the first scan; no source code transmission by default; no silent file modification; recommendations justified by evidence; result quality before number of ecosystems. Adoption, downloads, and contributions are never guaranteed.
 
 ## 2. Target Users and Problems
 
