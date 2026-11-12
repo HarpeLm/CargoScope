@@ -9,6 +9,7 @@
     "format_version",
     "tool_version",
     "target",
+    "checks",
     "advisory_database",
     "registry",
     "advisories",
@@ -20,6 +21,11 @@
     "format_version": { "const": 1 },
     "tool_version": { "type": "string" },
     "target": { "type": "string", "description": "Scanned directory, as given on the command line." },
+    "checks": {
+      "description": "Checks that ran (see --checks). Data of checks that did not run is empty or null.",
+      "type": "array",
+      "items": { "enum": ["inventory", "advisories", "unused", "licenses", "versions"] }
+    },
     "advisory_database": { "$ref": "#/$defs/data_source" },
     "registry": { "$ref": "#/$defs/data_source" },
     "advisories": { "type": "array", "items": { "$ref": "#/$defs/advisory" } },
