@@ -12,6 +12,7 @@ description = "Cargo manifest and lockfile parsing for CargoScope"
 [dependencies]
 cargoscope-core = { path = "../cargoscope-core", version = "0.1.0-alpha.3" }
 proc-macro2 = "1"
+semver = "1"
 toml = "0.8"
 
 [lints]
