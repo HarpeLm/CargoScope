@@ -37,6 +37,10 @@ pub struct DeclaredDependency {
     pub target_specific: bool,
     /// Declared with `features` or `default-features`.
     pub sets_features: bool,
+    /// `path = "..."` of a local dependency, and whether it is relative to
+    /// the workspace root (inherited with `workspace = true`) rather than to
+    /// the package.
+    pub path: Option<(String, bool)>,
 }
 
 /// Reads every declared dependency of a manifest.
@@ -94,6 +98,16 @@ pub fn declared_dependencies(
                         sets_features: lookup("features").is_some()
                             || lookup("default-features").is_some()
                             || lookup("default_features").is_some(),
+                        path: specification
+                            .get("path")
+                            .and_then(toml::Value::as_str)
+                            .map(|path| (path.to_owned(), false))
+                            .or_else(|| {
+                                from_workspace
+                                    .and_then(|spec| spec.get("path"))
+                                    .and_then(toml::Value::as_str)
+                                    .map(|path| (path.to_owned(), true))
+                            }),
                     });
                 }
             }
@@ -600,6 +614,93 @@ pub struct PackageToCheck<'a> {
     pub manifest_label: &'a str,
     /// Parsed manifest.
     pub manifest: &'a toml::Value,
+    /// Workspace root, for paths of dependencies inherited from it.
+    pub workspace_root: &'a Path,
+}
+
+/// The `[lib] name` of a dependency, when its manifest is available locally:
+/// a path dependency, or a crate unpacked in `$CARGO_HOME/registry/src`.
+fn library_name(
+    dependency: &DeclaredDependency,
+    package: &PackageToCheck<'_>,
+    inventory: &Inventory,
+) -> Option<String> {
+    let lib_name = |manifest: &Path| -> Option<String> {
+        let metadata = fs::symlink_metadata(manifest).ok()?;
+        if !metadata.is_file() || metadata.len() > MAX_SOURCE_BYTES {
+            return None;
+        }
+        let value: toml::Value = toml::from_str(&fs::read_to_string(manifest).ok()?).ok()?;
+        value
+            .get("lib")
+            .and_then(|lib| lib.get("name"))
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned)
+    };
+    if let Some((path, from_workspace)) = &dependency.path {
+        let base = if *from_workspace {
+            package.workspace_root
+        } else {
+            package.dir
+        };
+        return lib_name(&base.join(path).join("Cargo.toml"));
+    }
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))
+        .or_else(|| {
+            std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join(".cargo"))
+        })?;
+    let registries = fs::read_dir(cargo_home.join("registry").join("src")).ok()?;
+    let registries: Vec<PathBuf> = registries
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .collect();
+    inventory
+        .packages
+        .iter()
+        .filter(|candidate| candidate.name == dependency.package && candidate.source.is_some())
+        .find_map(|candidate| {
+            registries.iter().find_map(|registry| {
+                lib_name(
+                    &registry
+                        .join(format!("{}-{}", candidate.name, candidate.version))
+                        .join("Cargo.toml"),
+                )
+            })
+        })
+}
+
+/// Names the library of `crate_name` plausibly uses when its `[lib] name`
+/// is unknown: `atuin-vt100` → `vt100`, `tui-textarea-2` → `tui_textarea`.
+fn library_name_guesses(crate_name: &str) -> Vec<String> {
+    let segments: Vec<&str> = crate_name
+        .split(['-', '_'])
+        .filter(|s| !s.is_empty())
+        .collect();
+    let mut guesses = Vec::new();
+    for start in 0..segments.len() {
+        for end in start + 1..=segments.len() {
+            if start == 0 && end == segments.len() {
+                continue;
+            }
+            if start != 0 && end != segments.len() {
+                continue;
+            }
+            let guess = segments[start..end].join("_");
+            let too_generic = matches!(
+                guess.as_str(),
+                "core" | "std" | "alloc" | "crate" | "self" | "super" | "rs" | "rust"
+            );
+            if !too_generic
+                && !guess.starts_with(|c: char| c.is_ascii_digit())
+                && !guesses.contains(&guess)
+            {
+                guesses.push(guess);
+            }
+        }
+    }
+    guesses
 }
 
 /// Finds declared dependencies with no usage in a package's sources.
@@ -670,7 +771,13 @@ pub fn check_package(
 
     let mut findings = Vec::new();
     for dependency in declared_dependencies(package.manifest, workspace_dependencies) {
-        let ident = dependency.key.replace('-', "_");
+        let renamed = dependency.key != dependency.package;
+        let ident = if renamed {
+            dependency.key.replace('-', "_")
+        } else {
+            library_name(&dependency, package, inventory)
+                .unwrap_or_else(|| dependency.key.replace('-', "_"))
+        };
         let (references, searched, searched_label) = match dependency.kind {
             DependencyKind::Build => (&build_refs, sources.build.len(), "build script"),
             _ => (
@@ -705,6 +812,17 @@ pub fn check_package(
                 "also a transitive dependency: may be declared only to select its features"
                     .to_owned(),
             );
+        }
+        if !renamed && ident == dependency.key.replace('-', "_") {
+            if let Some(guess) = library_name_guesses(&dependency.package)
+                .into_iter()
+                .find(|guess| references.contains(guess))
+            {
+                exceptions.push(format!(
+                    "`{guess}::` is used: the library name of `{}` may differ from its package name",
+                    dependency.package
+                ));
+            }
         }
         let declared_idents: Vec<String> =
             declared_dependencies(package.manifest, workspace_dependencies)
@@ -941,6 +1059,20 @@ mod tests {
         names.sort();
         assert_eq!(names, vec!["build.rs", "src/cli.rs", "src/cmd/cmd.rs"]);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn guesses_library_names_from_package_names() {
+        assert_eq!(
+            super::library_name_guesses("atuin-vt100"),
+            vec!["atuin", "vt100"]
+        );
+        assert_eq!(
+            super::library_name_guesses("tui-textarea-2"),
+            vec!["tui", "tui_textarea", "textarea_2"]
+        );
+        assert_eq!(super::library_name_guesses("tracing-core"), vec!["tracing"]);
+        assert!(super::library_name_guesses("serde").is_empty());
     }
 
     #[test]

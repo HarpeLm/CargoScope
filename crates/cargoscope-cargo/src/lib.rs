@@ -181,6 +181,7 @@ pub fn find_unused(
                 dir,
                 manifest_label: label,
                 manifest,
+                workspace_root: project_root,
             },
             workspace_dependencies,
             inventory,
