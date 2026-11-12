@@ -89,6 +89,7 @@ Aggregate exported JSON reports locally or in CI to spot components shared by se
 - **Discovery**: `Cargo.toml`, `Cargo.lock` and explicit workspace members.
 - **Inventory**: direct and transitive dependencies with declared and resolved versions, from `Cargo.lock`.
 - **Advisories**: RustSec advisory database, downloaded as a whole and cached locally so scans work offline after an update. Each finding shows the advisory ID, source and database date.
+- **Available versions**: latest version on crates.io for each package, from the local cache.
 - **Licenses**: license inventory for every resolved package, from Cargo metadata. Reporting only, no policy enforcement yet.
 - **Likely-unused dependencies**: static analysis presented as candidates with confidence levels (see 5.2).
 - **"Why is it here"**: every finding (advisory, unused candidate) shows its dependency chain and resolved version, plus the fixed version when one exists.
@@ -169,12 +170,29 @@ Pipeline: `discover → parse → analyze → report`.
 
 ## 7. Data Sources and Security
 
-- **OSV.dev**: source to evaluate for advisories and compatible formats.
-- **Ecosystem databases**: add only if they provide distinct coverage and if their use is documented.
-- **Registries**: consult version metadata for obsolescence, with cache and rate limit compliance.
-- **Local data**: allow caches and mirrors for isolated environments.
+### Sources
 
-"No advisory found" does not mean "safe". Each finding indicates source and date.
+- **RustSec advisory database**: the reference Rust advisory source. Downloaded as a whole and stored locally; advisory IDs and original links are kept in every finding.
+- **crates.io index** (v0.1): latest available versions and publication dates for resolved packages, via the sparse index, cached locally and respecting crates.io usage policy.
+- Other sources (OSV.dev, GitHub advisories) are added only if they bring distinct coverage.
+
+### Network policy
+
+- **`cargoscope scan` never accesses the network.** It uses only local cached data.
+- **`cargoscope update`** explicitly downloads the RustSec database and refreshes crates.io data for the scanned project. Nothing is downloaded automatically.
+- Every report shows the date of the advisory database and of the crates.io data used. A missing or old cache produces a visible warning, never a silent pass.
+- Caches and mirrors can be configured for isolated environments.
+
+"No advisory found" does not mean "safe".
+
+### Hardening against untrusted repositories
+
+Manifests, lockfiles and sources are treated as untrusted input:
+
+- maximum file size and directory depth;
+- symbolic links pointing outside the repository are not followed;
+- malformed files produce readable errors, never panics;
+- no project code, build script or `cargo` command is executed by default.
 
 ## 8. CLI UX
 
