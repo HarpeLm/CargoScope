@@ -16,6 +16,8 @@ const USAGE: &str = "Usage:
   cargoscope update [PATH]
       Download the RustSec advisory database and the crates.io data (versions,
       licenses) of the project at PATH. The only command that uses the network.
+  cargoscope compare BASELINE CURRENT [--format text|json] [--fail-on THRESHOLD]
+      Compare two JSON reports. Exit code 1 when new advisories reach the threshold.
   cargoscope scan [PATH] [--format text|json|sarif] [--output FILE] [--fail-on THRESHOLD] [--show-uncertain] [--verbose]
       Report on a Cargo project, read-only and offline.
 
@@ -30,6 +32,8 @@ Options for scan:
                        Unused dependencies never fail.
   --show-uncertain     Also list possibly-unused dependencies.
   -v, --verbose        List every resolved package (text format).
+  --baseline FILE      A previous JSON report: advisories already in it do not
+                       fail the scan, so only new ones do.
   --checks LIST        Comma-separated checks to run (default: all):
                        inventory, advisories, unused, licenses, versions.
                        Without advisories, no advisory database is needed.
@@ -50,6 +54,7 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Some("compare") => compare_command(arguments),
         Some("update") => {
             let path = arguments.next().unwrap_or_else(|| ".".to_owned());
             if let Some(extra) = arguments.next() {
@@ -93,16 +98,119 @@ enum FailOn {
 
 impl FailOn {
     fn is_triggered_by(self, finding: &AdvisoryFinding) -> bool {
-        if !matches!(finding.kind, AdvisoryKind::Vulnerability) {
+        self.triggers(
+            matches!(finding.kind, AdvisoryKind::Vulnerability),
+            finding.severity,
+        )
+    }
+
+    fn triggers(self, vulnerability: bool, severity: Option<Severity>) -> bool {
+        if !vulnerability {
             return false;
         }
         match self {
             Self::Never => false,
             Self::AnyVulnerability => true,
-            Self::AtLeast(threshold) => finding
-                .severity
-                .is_none_or(|severity| severity >= threshold),
+            Self::AtLeast(threshold) => severity.is_none_or(|severity| severity >= threshold),
         }
+    }
+}
+
+fn parse_severity(name: &str) -> Option<Severity> {
+    Some(match name {
+        "none" => Severity::None,
+        "low" => Severity::Low,
+        "medium" => Severity::Medium,
+        "high" => Severity::High,
+        "critical" => Severity::Critical,
+        _ => return None,
+    })
+}
+
+fn read_report(path: &Path) -> Result<serde_json::Value, String> {
+    let text =
+        std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
+    cargoscope_report::compare::check_report(&value)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    Ok(value)
+}
+
+/// `cargoscope compare BASELINE CURRENT [--format text|json] [--fail-on THRESHOLD]`.
+fn compare_command(arguments: impl Iterator<Item = String>) -> ExitCode {
+    let mut files = Vec::new();
+    let mut format = OutputFormat::Text;
+    let mut fail_on = FailOn::AnyVulnerability;
+    let mut arguments = arguments.peekable();
+    while let Some(argument) = arguments.next() {
+        let (flag, inline) = match argument.split_once('=') {
+            Some((flag, value)) if flag.starts_with("--") => {
+                (flag.to_owned(), Some(value.to_owned()))
+            }
+            _ => (argument.clone(), None),
+        };
+        let value = |arguments: &mut std::iter::Peekable<_>| {
+            inline.clone().or_else(|| Iterator::next(arguments))
+        };
+        let result = match flag.as_str() {
+            "--format" => value(&mut arguments)
+                .ok_or_else(|| "Missing value for --format.".to_owned())
+                .and_then(|value: String| match value.as_str() {
+                    "text" => Ok(OutputFormat::Text),
+                    "json" => Ok(OutputFormat::Json),
+                    other => Err(format!(
+                        "Unsupported comparison format: {other}. Use text or json."
+                    )),
+                })
+                .map(|parsed| format = parsed),
+            "--fail-on" => value(&mut arguments)
+                .ok_or_else(|| "Missing value for --fail-on.".to_owned())
+                .and_then(|value: String| parse_fail_on(&value))
+                .map(|parsed| fail_on = parsed),
+            other if other.starts_with('-') => Err(format!("Unknown option: {other}")),
+            _ => {
+                files.push(PathBuf::from(argument));
+                Ok(())
+            }
+        };
+        if let Err(error) = result {
+            eprintln!("{error}\nRun cargoscope --help for usage.");
+            return ExitCode::from(2);
+        }
+    }
+    let [baseline, current] = files.as_slice() else {
+        eprintln!("compare needs two JSON reports: BASELINE CURRENT");
+        return ExitCode::from(2);
+    };
+    let (baseline, current) = match (read_report(baseline), read_report(current)) {
+        (Ok(baseline), Ok(current)) => (baseline, current),
+        (Err(error), _) | (_, Err(error)) => {
+            eprintln!("CargoScope could not compare: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let comparison = cargoscope_report::compare::compare(&baseline, &current);
+    match format {
+        OutputFormat::Json => print!(
+            "{}",
+            cargoscope_report::compare::render_comparison_json(&comparison)
+        ),
+        _ => print!(
+            "{}",
+            cargoscope_report::compare::render_comparison_text(&comparison)
+        ),
+    }
+    let fails = comparison
+        .new_advisories
+        .iter()
+        .any(|(_, severity, vulnerability, _)| {
+            fail_on.triggers(*vulnerability, severity.as_deref().and_then(parse_severity))
+        });
+    if fails {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
@@ -115,6 +223,7 @@ struct ScanOptions {
     show_uncertain: bool,
     verbose: bool,
     checks: Checks,
+    baseline: Option<PathBuf>,
 }
 
 fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<ScanOptions, String> {
@@ -125,6 +234,7 @@ fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<Sca
     let mut output = None;
     let mut checks = Checks::ALL;
     let mut verbose = false;
+    let mut baseline = None;
 
     while let Some(argument) = arguments.next() {
         let (flag, inline_value) = match argument.split_once('=') {
@@ -142,6 +252,7 @@ fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<Sca
         match flag.as_str() {
             "--format" => format = parse_output_format(&value()?)?,
             "--output" | "-o" => output = Some(PathBuf::from(value()?)),
+            "--baseline" => baseline = Some(PathBuf::from(value()?)),
             "--checks" => {
                 checks = Checks::parse(&value()?).map_err(|unknown| {
                     format!(
@@ -167,6 +278,7 @@ fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<Sca
         show_uncertain,
         verbose,
         checks,
+        baseline,
     })
 }
 
@@ -374,9 +486,38 @@ fn scan(options: &ScanOptions) -> ExitCode {
         None => print!("{rendered}"),
     }
 
+    let known = match &options.baseline {
+        Some(path) => match read_report(path) {
+            Ok(baseline) => cargoscope_report::compare::advisory_keys(&baseline),
+            Err(error) => {
+                eprintln!("CargoScope could not read the baseline: {error}");
+                return ExitCode::from(2);
+            }
+        },
+        None => std::collections::BTreeSet::new(),
+    };
+    let is_new = |finding: &&AdvisoryFinding| {
+        let package = &report.inventory.packages[finding.package];
+        !known.contains(&cargoscope_report::compare::AdvisoryKey {
+            id: finding.id.clone(),
+            package: package.name.clone(),
+            version: package.version.clone(),
+        })
+    };
+    let in_baseline = report
+        .advisories
+        .iter()
+        .filter(|finding| !is_new(finding))
+        .count();
+    if in_baseline > 0 {
+        eprintln!(
+            "{in_baseline} advisory finding(s) are already in the baseline and do not fail the scan."
+        );
+    }
     if report
         .advisories
         .iter()
+        .filter(is_new)
         .any(|finding| options.fail_on.is_triggered_by(finding))
     {
         ExitCode::from(1)
