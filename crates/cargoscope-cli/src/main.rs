@@ -18,7 +18,7 @@ const USAGE: &str = "Usage:
       licenses) of the project at PATH. The only command that uses the network.
   cargoscope compare BASELINE CURRENT [--format text|json] [--fail-on THRESHOLD]
       Compare two JSON reports. Exit code 1 when new advisories reach the threshold.
-  cargoscope scan [PATH] [--format text|json|sarif] [--output FILE] [--fail-on THRESHOLD] [--show-uncertain] [--verbose]
+  cargoscope scan [PATH] [--format text|json|sarif] [--output FILE] [--fail-on THRESHOLD] [--show-uncertain] [--verbose] [--precise]
       Report on a Cargo project, read-only and offline.
 
 Options for scan:
@@ -32,6 +32,9 @@ Options for scan:
                        Unused dependencies never fail. Policy violations
                        (cargoscope.toml) fail unless THRESHOLD is none.
   --show-uncertain     Also list possibly-unused dependencies.
+  --precise            Confirm unused dependencies with rustc (cargo check, all
+                       targets and features). COMPILES THE PROJECT: build
+                       scripts and proc macros run. Never enabled by default.
   -v, --verbose        List every resolved package (text format).
   --baseline FILE      A previous JSON report: advisories already in it do not
                        fail the scan, so only new ones do.
@@ -225,6 +228,7 @@ struct ScanOptions {
     verbose: bool,
     checks: Checks,
     baseline: Option<PathBuf>,
+    precise: bool,
 }
 
 fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<ScanOptions, String> {
@@ -236,6 +240,7 @@ fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<Sca
     let mut checks = Checks::ALL;
     let mut verbose = false;
     let mut baseline = None;
+    let mut precise = false;
 
     while let Some(argument) = arguments.next() {
         let (flag, inline_value) = match argument.split_once('=') {
@@ -265,6 +270,7 @@ fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<Sca
             "--fail-on" => fail_on = parse_fail_on(&value()?)?,
             "--show-uncertain" if inline_value.is_none() => show_uncertain = true,
             "--verbose" | "-v" if inline_value.is_none() => verbose = true,
+            "--precise" if inline_value.is_none() => precise = true,
             other if other.starts_with('-') => return Err(format!("Unknown option: {other}")),
             _ if path.is_some() => return Err("Only one scan path may be provided.".to_owned()),
             _ => path = Some(PathBuf::from(argument)),
@@ -280,6 +286,7 @@ fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<Sca
         verbose,
         checks,
         baseline,
+        precise,
     })
 }
 
@@ -407,6 +414,26 @@ fn scan(options: &ScanOptions) -> ExitCode {
         }
     } else {
         Vec::new()
+    };
+    let unused = if checks.unused && options.precise {
+        eprintln!(
+            "--precise: running cargo check with all targets and features. This compiles the project, so build scripts and proc macros of the project and its dependencies are executed."
+        );
+        let packages = match cargoscope_cargo::project_packages(root) {
+            Ok(packages) => packages,
+            Err(error) => return execution_error(root, &error),
+        };
+        match cargoscope_cargo::precise::run(root) {
+            Ok(compiler) => cargoscope_cargo::precise::refine(
+                unused,
+                &packages.packages,
+                packages.workspace_dependencies.as_ref(),
+                &compiler,
+            ),
+            Err(error) => return execution_error(root, &error),
+        }
+    } else {
+        unused
     };
 
     let policy = if checks.policy {
