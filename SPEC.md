@@ -84,22 +84,25 @@ Aggregate exported JSON reports locally or in CI to spot components shared by se
 
 ## 5. Features and Scope
 
-### MVP
+### MVP (v0.1)
 
-- Manifest and lockfile discovery for announced supported formats.
-- Direct and transitive inventory when a lockfile provides resolved data.
-- Known advisory lookup via a documented source, with source and date.
-- Text and versioned JSON report, documented CI exit codes.
-- Initial analysis of likely-unused Cargo dependencies, with results presented as candidates.
-- Local analysis, without code upload or automatic execution of repository scripts.
+- **Discovery**: `Cargo.toml`, `Cargo.lock` and explicit workspace members.
+- **Inventory**: direct and transitive dependencies with declared and resolved versions, from `Cargo.lock`.
+- **Advisories**: RustSec advisory database, downloaded as a whole and cached locally so scans work offline after an update. Each finding shows the advisory ID, source and database date.
+- **Licenses**: license inventory for every resolved package, from Cargo metadata. Reporting only, no policy enforcement yet.
+- **Likely-unused dependencies**: static analysis presented as candidates with confidence levels (see 5.2).
+- **"Why is it here"**: every finding (advisory, unused candidate) shows its dependency chain and resolved version, plus the fixed version when one exists.
+- **Output**: text, versioned JSON and SARIF; documented, stable CI exit codes.
+- **Safety**: local analysis only, no code upload, no execution of repository scripts or builds.
 
 ### Next Steps
 
 - Other ecosystems (Python, Node.js, Go) are deferred: see 5.1.
-- SARIF, GitHub Actions, GitLab CI, baselines, and scan comparison.
+- GitHub Action, GitLab CI example, baselines and scan comparison.
+- License and source policies, banned crates (toward covering cargo-deny).
+- Opt-in compiler-accurate `--precise` mode for unused dependencies.
 - Available version checking and maintenance indicators with provenance.
-- Exportable graph, justified recommendations, then locally-generated shareable HTML report.
-- Health score only after method definition, documentation, and evaluation.
+- Exportable graph, then locally-generated shareable HTML report.
 - Proposed fixes in preview mode, then explicit and limited application.
 - Multi-project aggregation from local reports.
 
