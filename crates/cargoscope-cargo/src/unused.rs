@@ -816,9 +816,17 @@ pub fn check_package(
                     .to_owned(),
             );
         }
+        let declared_idents: Vec<String> =
+            declared_dependencies(package.manifest, workspace_dependencies)
+                .iter()
+                .map(|declared| declared.key.replace('-', "_"))
+                .collect();
         if !renamed && ident == dependency.key.replace('-', "_") {
             if let Some(guess) = library_name_guesses(&dependency.package)
                 .into_iter()
+                // A guess that is itself a declared dependency (`tokio` for
+                // `tokio-test`) is explained by that dependency.
+                .filter(|guess| !declared_idents.contains(guess))
                 .find(|guess| references.contains(guess))
             {
                 exceptions.push(format!(
@@ -832,11 +840,6 @@ pub fn check_package(
                 "mentioned in documentation (a doc link needs the crate to resolve)".to_owned(),
             );
         }
-        let declared_idents: Vec<String> =
-            declared_dependencies(package.manifest, workspace_dependencies)
-                .iter()
-                .map(|declared| declared.key.replace('-', "_"))
-                .collect();
         if let Some(provider) = workspace_macros.iter().find_map(|(crate_ident, names)| {
             (declared_idents.contains(crate_ident) && names.contains(&ident)).then_some(crate_ident)
         }) {
