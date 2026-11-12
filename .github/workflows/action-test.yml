@@ -1,0 +1,35 @@
+# Runs the CargoScope GitHub Action from this repository against this
+# repository, on each OS. It needs a published release to download, so it
+# runs when a release is published, or by hand.
+name: Action test
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  action:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: cargoscope
+        uses: ./
+        with:
+          fail-on: none
+          upload-sarif: ${{ matrix.os == 'ubuntu-latest' }}
+      - name: Check the outputs
+        shell: bash
+        run: |
+          test -s "${{ steps.cargoscope.outputs.sarif }}"
+          test "${{ steps.cargoscope.outputs.exit-code }}" = 0
