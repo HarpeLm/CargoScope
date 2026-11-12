@@ -154,7 +154,7 @@ pub fn find_unused(
         }
     }
 
-    let mut workspace_macros = unused::WorkspaceMacros::new();
+    let mut workspace_macros = unused::WorkspaceMacros::default();
     for (dir, _, manifest) in &packages {
         if let Some(name) = manifest
             .get("package")
@@ -163,7 +163,15 @@ pub fn find_unused(
         {
             let names = unused::macro_references(dir, manifest);
             if !names.is_empty() {
-                workspace_macros.insert(name.replace('-', "_"), names);
+                workspace_macros
+                    .macro_rules
+                    .insert(name.replace('-', "_"), names);
+            }
+            if unused::is_proc_macro(manifest) {
+                workspace_macros.proc_macros.insert(
+                    name.replace('-', "_"),
+                    unused::proc_macro_generated(dir, manifest),
+                );
             }
         }
     }

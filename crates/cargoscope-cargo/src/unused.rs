@@ -811,7 +811,99 @@ fn collect_macro_bodies(tokens: TokenStream, names: &mut BTreeSet<String>) {
 
 /// Macro references of the workspace packages, keyed by crate identifier
 /// (package name with `-` read as `_`).
-pub type WorkspaceMacros = BTreeMap<String, BTreeSet<String>>;
+#[derive(Debug, Default)]
+pub struct WorkspaceMacros {
+    /// Crates mentioned in `macro_rules!` bodies, by providing crate.
+    pub macro_rules: BTreeMap<String, BTreeSet<String>>,
+    /// Crates that workspace proc-macro crates generate paths to, by
+    /// proc-macro crate: paths in `quote!` and crate names in strings, as in
+    /// `manifest.get_path("bevy_extract")`.
+    pub proc_macros: BTreeMap<String, BTreeSet<String>>,
+}
+
+/// Whether a manifest declares a proc-macro library.
+#[must_use]
+pub fn is_proc_macro(manifest: &toml::Value) -> bool {
+    let lib = manifest.get("lib");
+    ["proc-macro", "proc_macro"].iter().any(|key| {
+        lib.and_then(|lib| lib.get(*key))
+            .and_then(toml::Value::as_bool)
+            .unwrap_or(false)
+    })
+}
+
+/// Crates a proc-macro crate may generate paths to.
+#[must_use]
+pub fn proc_macro_generated(dir: &Path, manifest: &toml::Value) -> BTreeSet<String> {
+    let sources = collect_sources(dir, manifest);
+    let mut names = BTreeSet::new();
+    for file in &sources.code {
+        let Ok(text) = fs::read_to_string(file) else {
+            continue;
+        };
+        if let Ok(tokens) = TokenStream::from_str(&text) {
+            collect_quoted_references(tokens.clone(), &mut names);
+            let tokens: Vec<TokenTree> = tokens.into_iter().collect();
+            collect_identifier_strings(&tokens, &mut names);
+        }
+    }
+    names
+}
+
+/// References inside `quote!`, `quote_spanned!` and `parse_quote!`, which
+/// is the code a proc macro emits (not the code it runs).
+fn collect_quoted_references(tokens: TokenStream, names: &mut BTreeSet<String>) {
+    let tokens: Vec<TokenTree> = tokens.into_iter().collect();
+    for (index, token) in tokens.iter().enumerate() {
+        match token {
+            TokenTree::Ident(ident)
+                if matches!(
+                    ident.to_string().as_str(),
+                    "quote" | "quote_spanned" | "parse_quote"
+                ) =>
+            {
+                if let (Some(TokenTree::Punct(bang)), Some(TokenTree::Group(body))) =
+                    (tokens.get(index + 1), tokens.get(index + 2))
+                {
+                    if bang.as_char() == '!' {
+                        collect_references(body.stream(), names);
+                    }
+                }
+            }
+            TokenTree::Group(group) => collect_quoted_references(group.stream(), names),
+            _ => {}
+        }
+    }
+}
+
+/// String literals that are a plain crate-like identifier (`"bevy_extract"`).
+fn collect_identifier_strings(tokens: &[TokenTree], names: &mut BTreeSet<String>) {
+    for token in tokens {
+        match token {
+            TokenTree::Group(group) => {
+                let inner: Vec<TokenTree> = group.stream().into_iter().collect();
+                collect_identifier_strings(&inner, names);
+            }
+            TokenTree::Literal(literal) => {
+                let text = literal.to_string();
+                if let Some(text) = text
+                    .strip_prefix('"')
+                    .and_then(|text| text.strip_suffix('"'))
+                {
+                    let plain = !text.is_empty()
+                        && text
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                        && !text.starts_with(|c: char| c.is_ascii_digit());
+                    if plain {
+                        names.insert(text.replace('-', "_"));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
 
 pub fn check_package(
     package: &PackageToCheck<'_>,
@@ -914,9 +1006,27 @@ pub fn check_package(
                 "mentioned in documentation (a doc link needs the crate to resolve)".to_owned(),
             );
         }
-        if let Some(provider) = workspace_macros.iter().find_map(|(crate_ident, names)| {
-            (declared_idents.contains(crate_ident) && names.contains(&ident)).then_some(crate_ident)
-        }) {
+        if let Some(provider) =
+            workspace_macros
+                .proc_macros
+                .iter()
+                .find_map(|(crate_ident, names)| {
+                    (crate_ident != &ident && names.contains(&ident)).then_some(crate_ident)
+                })
+        {
+            exceptions.push(format!(
+                "workspace proc-macro crate `{provider}` generates paths to it, which derives and attributes expand in this crate"
+            ));
+        }
+        if let Some(provider) =
+            workspace_macros
+                .macro_rules
+                .iter()
+                .find_map(|(crate_ident, names)| {
+                    (declared_idents.contains(crate_ident) && names.contains(&ident))
+                        .then_some(crate_ident)
+                })
+        {
             exceptions.push(format!(
                 "may be used through a macro of workspace crate `{provider}`, which mentions it"
             ));
@@ -1230,7 +1340,7 @@ mod tests {
             &cargoscope_core::Inventory {
                 packages: Vec::new(),
             },
-            &super::WorkspaceMacros::new(),
+            &super::WorkspaceMacros::default(),
         );
         assert_eq!(findings.len(), 1);
         assert_eq!(
@@ -1255,6 +1365,33 @@ mod tests {
                 ("plain".to_owned(), None),
             ]
         );
+    }
+
+    #[test]
+    fn proc_macro_generated_paths_come_from_quote_and_crate_name_strings() {
+        let root = std::env::temp_dir().join(format!("cargoscope-pm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).expect("dirs");
+        std::fs::write(
+            root.join("src/lib.rs"),
+            r#"
+            use syn::DeriveInput;
+            fn path() -> syn::Path { manifest.get_path("bevy_extract") }
+            fn emit() { quote! { impl ::bevy_ecs::Resource for X {} } }
+            "#,
+        )
+        .expect("write");
+        let manifest: toml::Value =
+            toml::from_str("[package]\nname = \"m\"\n[lib]\nproc-macro = true\n").expect("valid");
+        assert!(super::is_proc_macro(&manifest));
+        let names = super::proc_macro_generated(&root, &manifest);
+        assert!(names.contains("bevy_extract"));
+        assert!(names.contains("bevy_ecs"));
+        assert!(
+            !names.contains("syn"),
+            "the macro's own dependencies are not generated"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
