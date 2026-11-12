@@ -442,7 +442,7 @@ fn scan_files(files: &[PathBuf]) -> References {
         };
         if let Ok(tokens) = TokenStream::from_str(&text) {
             references.includes_generated_code |= includes_generated_code(tokens.clone());
-            collect_doc_text(tokens.clone(), &mut references.doc_text);
+            collect_doc_text(tokens.clone(), &mut references.doc_text, file.parent());
             collect_references(tokens, &mut references.names);
         } else {
             references.text_fallback.push(file.clone());
@@ -545,10 +545,41 @@ fn collect_path_literals(tokens: &[TokenTree], names: &mut BTreeSet<String>) {
 
 /// Collects the text of `#[doc = "..."]` attributes, which is how doc
 /// comments appear in a token stream.
-fn collect_doc_text(tokens: TokenStream, out: &mut Vec<String>) {
+fn collect_doc_text(tokens: TokenStream, out: &mut Vec<String>, dir: Option<&Path>) {
     for token in tokens {
         if let TokenTree::Group(group) = token {
             let inner: Vec<TokenTree> = group.stream().into_iter().collect();
+            // `#[doc = include_str!("../docs/guide.md")]`: read the file.
+            if let (
+                [
+                    TokenTree::Ident(ident),
+                    TokenTree::Punct(eq),
+                    TokenTree::Ident(macro_name),
+                    TokenTree::Punct(bang),
+                    TokenTree::Group(arguments),
+                ],
+                Some(dir),
+            ) = (inner.as_slice(), dir)
+            {
+                if ident == "doc"
+                    && eq.as_char() == '='
+                    && macro_name == "include_str"
+                    && bang.as_char() == '!'
+                {
+                    let path = arguments.to_string();
+                    let path = path.trim().trim_matches('"');
+                    let file = dir.join(path);
+                    let readable = fs::symlink_metadata(&file).is_ok_and(|metadata| {
+                        metadata.is_file() && metadata.len() <= MAX_SOURCE_BYTES
+                    });
+                    if readable {
+                        if let Ok(text) = fs::read_to_string(&file) {
+                            out.push(text);
+                        }
+                    }
+                    continue;
+                }
+            }
             if let [
                 TokenTree::Ident(ident),
                 TokenTree::Punct(eq),
@@ -560,7 +591,7 @@ fn collect_doc_text(tokens: TokenStream, out: &mut Vec<String>) {
                     continue;
                 }
             }
-            collect_doc_text(group.stream(), out);
+            collect_doc_text(group.stream(), out, dir);
         }
     }
 }
@@ -1001,7 +1032,7 @@ mod tests {
         )
         .expect("tokenizes");
         let mut docs = Vec::new();
-        super::collect_doc_text(tokens, &mut docs);
+        super::collect_doc_text(tokens, &mut docs, None);
         let joined = docs.join("\n");
         assert!(text_mentions(&joined, "async_stream"));
         assert!(text_mentions(
@@ -1088,6 +1119,24 @@ mod tests {
         );
         assert_eq!(super::library_name_guesses("tracing-core"), vec!["tracing"]);
         assert!(super::library_name_guesses("serde").is_empty());
+    }
+
+    #[test]
+    fn reads_markdown_included_as_documentation() {
+        let root = std::env::temp_dir().join(format!("cargoscope-docmd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src/handler")).expect("dirs");
+        std::fs::create_dir_all(root.join("src/docs")).expect("dirs");
+        std::fs::write(
+            root.join("src/docs/errors.md"),
+            "```rust\nfn f() -> Result<(), anyhow::Error> { Ok(()) }\n```\n",
+        )
+        .expect("write");
+        let file = root.join("src/handler/mod.rs");
+        std::fs::write(&file, "#![doc = include_str!(\"../docs/errors.md\")]\n").expect("write");
+        let references = super::scan_files(&[file]);
+        assert!(references.in_docs("anyhow"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
