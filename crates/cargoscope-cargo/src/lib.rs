@@ -88,11 +88,12 @@ pub fn scan_cargo_project(project_root: &Path) -> Result<Inventory, ScanError> {
             source,
         }
     })?);
-    let workspace_members =
-        parse_workspace_members(&manifest_contents).map_err(|source| ScanError::ParseManifest {
+    let root_manifest: toml::Value =
+        toml::from_str(&manifest_contents).map_err(|source| ScanError::ParseManifest {
             path: manifest,
             source,
         })?;
+    let (workspace_members, _) = workspace::members(project_root, &root_manifest);
 
     for member in workspace_members {
         let member_manifest = project_root.join(member).join("Cargo.toml");
@@ -139,11 +140,7 @@ pub fn find_unused(
             root_manifest.clone(),
         ));
     }
-    let members =
-        parse_workspace_members(&root_contents).map_err(|source| ScanError::ParseManifest {
-            path: root_manifest_path.clone(),
-            source,
-        })?;
+    let (members, mut warnings) = workspace::members(project_root, &root_manifest);
     for member in members {
         let dir = project_root.join(&member);
         let path = dir.join("Cargo.toml");
@@ -158,7 +155,6 @@ pub fn find_unused(
     }
 
     let mut findings = Vec::new();
-    let mut warnings = Vec::new();
     for (dir, label, manifest) in &packages {
         let name = manifest
             .get("package")
