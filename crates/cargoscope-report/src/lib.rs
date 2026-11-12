@@ -54,6 +54,7 @@ pub fn render_text(project_root: &Path, report: &Report, show_uncertain: bool) -
     // Writing to a String cannot fail.
     let _ = writeln!(out, "CargoScope {VERSION}");
     let _ = writeln!(out, "Target: {}", project_root.display());
+    let _ = writeln!(out, "Summary: {}", summary(report));
 
     if report.checks.advisories {
         render_advisories_text(&mut out, report);
@@ -75,6 +76,62 @@ pub fn render_text(project_root: &Path, report: &Report, show_uncertain: bool) -
     }
 
     out
+}
+
+/// One-line overview of the findings of the checks that ran.
+#[must_use]
+pub fn summary(report: &Report) -> String {
+    let plural = |count: usize, word: &str| {
+        if count == 1 {
+            format!("{count} {word}")
+        } else {
+            format!("{count} {word}s")
+        }
+    };
+    let mut parts = Vec::new();
+    if report.checks.advisories {
+        let vulnerabilities = report
+            .advisories
+            .iter()
+            .filter(|finding| matches!(finding.kind, AdvisoryKind::Vulnerability))
+            .count();
+        parts.push(format!(
+            "{} ({} informational)",
+            if vulnerabilities == 1 {
+                "1 vulnerability".to_owned()
+            } else {
+                format!("{vulnerabilities} vulnerabilities")
+            },
+            report.advisories.len() - vulnerabilities
+        ));
+    }
+    if report.checks.unused {
+        let likely = report
+            .unused
+            .iter()
+            .filter(|finding| {
+                finding.ignored.is_none() && finding.confidence == UnusedConfidence::Likely
+            })
+            .count();
+        parts.push(format!("{likely} likely-unused"));
+    }
+    if report.checks.versions {
+        let yanked = report
+            .package_info
+            .iter()
+            .filter(|info| info.yanked == Some(true))
+            .count();
+        let outdated_direct = report
+            .package_info
+            .iter()
+            .zip(&report.inventory.packages)
+            .filter(|(info, package)| info.outdated && package.direct)
+            .count();
+        parts.push(format!("{yanked} yanked"));
+        parts.push(format!("{outdated_direct} outdated direct"));
+    }
+    parts.push(plural(report.inventory.packages.len(), "package"));
+    parts.join(", ")
 }
 
 fn render_advisories_text(out: &mut String, report: &Report) {
@@ -708,6 +765,30 @@ mod tests {
             )
         );
         assert!(json.contains("\"license\":\"MIT\",\"latest_version\":\"2.0.0\",\"latest_published\":\"2026-01-01\",\"outdated\":true,\"yanked\":true}"));
+    }
+
+    #[test]
+    fn summary_counts_findings_of_checks_that_ran() {
+        let mut report = with_unused();
+        report.advisories = vec![
+            finding(AdvisoryKind::Vulnerability, Vec::new()),
+            finding(
+                AdvisoryKind::Informational("unmaintained".to_owned()),
+                Vec::new(),
+            ),
+        ];
+        assert_eq!(
+            super::summary(&report),
+            "1 vulnerability (1 informational), 1 likely-unused, 0 yanked, 0 outdated direct, 4 packages"
+        );
+        report.checks = Checks {
+            advisories: false,
+            unused: false,
+            licenses: false,
+            versions: false,
+        };
+        assert_eq!(super::summary(&report), "4 packages");
+        assert!(render_text(Path::new("."), &report, false).contains("\nSummary: 4 packages\n"));
     }
 
     #[test]
