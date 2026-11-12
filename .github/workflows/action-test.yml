@@ -7,6 +7,10 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      version:
+        description: CargoScope version to test ("latest" ignores pre-releases)
+        default: latest
 
 permissions:
   contents: read
@@ -26,6 +30,7 @@ jobs:
       - id: cargoscope
         uses: ./
         with:
+          version: ${{ inputs.version || 'latest' }}
           fail-on: none
           upload-sarif: ${{ matrix.os == 'ubuntu-latest' }}
       - name: Check the outputs
