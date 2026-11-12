@@ -606,10 +606,48 @@ pub struct PackageToCheck<'a> {
 ///
 /// `inventory` is used to recognise dependencies that are also pulled in
 /// transitively, which may be declared only to select their features.
+/// Crate identifiers referenced inside the `macro_rules!` bodies of a
+/// package. A macro expands in the crate that calls it, so these crates may
+/// be needed by the packages that use the macro.
+#[must_use]
+pub fn macro_references(dir: &Path, manifest: &toml::Value) -> BTreeSet<String> {
+    let sources = collect_sources(dir, manifest);
+    let mut names = BTreeSet::new();
+    for file in &sources.code {
+        let Ok(text) = fs::read_to_string(file) else {
+            continue;
+        };
+        if let Ok(tokens) = TokenStream::from_str(&text) {
+            collect_macro_bodies(tokens, &mut names);
+        }
+    }
+    names
+}
+
+fn collect_macro_bodies(tokens: TokenStream, names: &mut BTreeSet<String>) {
+    let tokens: Vec<TokenTree> = tokens.into_iter().collect();
+    for (index, token) in tokens.iter().enumerate() {
+        match token {
+            TokenTree::Ident(ident) if ident == "macro_rules" => {
+                if let Some(TokenTree::Group(body)) = tokens.get(index + 3) {
+                    collect_references(body.stream(), names);
+                }
+            }
+            TokenTree::Group(group) => collect_macro_bodies(group.stream(), names),
+            _ => {}
+        }
+    }
+}
+
+/// Macro references of the workspace packages, keyed by crate identifier
+/// (package name with `-` read as `_`).
+pub type WorkspaceMacros = BTreeMap<String, BTreeSet<String>>;
+
 pub fn check_package(
     package: &PackageToCheck<'_>,
     workspace_dependencies: Option<&toml::Value>,
     inventory: &Inventory,
+    workspace_macros: &WorkspaceMacros,
 ) -> (Vec<UnusedFinding>, Vec<String>) {
     let sources = collect_sources(package.dir, package.manifest);
     let code_refs = scan_files(&sources.code);
@@ -667,6 +705,18 @@ pub fn check_package(
                 "also a transitive dependency: may be declared only to select its features"
                     .to_owned(),
             );
+        }
+        let declared_idents: Vec<String> =
+            declared_dependencies(package.manifest, workspace_dependencies)
+                .iter()
+                .map(|declared| declared.key.replace('-', "_"))
+                .collect();
+        if let Some(provider) = workspace_macros.iter().find_map(|(crate_ident, names)| {
+            (declared_idents.contains(crate_ident) && names.contains(&ident)).then_some(crate_ident)
+        }) {
+            exceptions.push(format!(
+                "may be used through a macro of workspace crate `{provider}`, which mentions it"
+            ));
         }
         if sources.has_build_script
             && dependency.kind != DependencyKind::Build

@@ -154,6 +154,20 @@ pub fn find_unused(
         }
     }
 
+    let mut workspace_macros = unused::WorkspaceMacros::new();
+    for (dir, _, manifest) in &packages {
+        if let Some(name) = manifest
+            .get("package")
+            .and_then(|package| package.get("name"))
+            .and_then(toml::Value::as_str)
+        {
+            let names = unused::macro_references(dir, manifest);
+            if !names.is_empty() {
+                workspace_macros.insert(name.replace('-', "_"), names);
+            }
+        }
+    }
+
     let mut findings = Vec::new();
     for (dir, label, manifest) in &packages {
         let name = manifest
@@ -170,6 +184,7 @@ pub fn find_unused(
             },
             workspace_dependencies,
             inventory,
+            &workspace_macros,
         );
         findings.append(&mut package_findings);
         warnings.extend(package_warnings);
