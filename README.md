@@ -19,7 +19,7 @@ CargoScope is an open-source CLI, written in Rust, for Rust/Cargo projects. One 
 
 ## Status
 
-**Early development, not yet ready for production use.** Today, `cargoscope update` downloads the RustSec advisory database and the crates.io data of the project, and `cargoscope scan` reports matching advisories, licenses, outdated and yanked versions, and inventories the packages resolved in `Cargo.lock`, with the dependency chain behind every advisory and transitive package. It also lists likely-unused dependencies found by static analysis, with the evidence behind each one. Exit codes and `--fail-on` work as described below. The rest of the v0.1 scope below is in progress.
+**Early development, not yet ready for production use.** Today, `cargoscope update` downloads the RustSec advisory database and the crates.io data of the project, and `cargoscope scan` reports matching advisories, licenses, outdated and yanked versions, and inventories the packages resolved in `Cargo.lock`, with the dependency chain behind every advisory and transitive package. It also lists likely-unused dependencies found by static analysis, with the evidence behind each one. Output is available as text, JSON and SARIF. What remains for v0.1 is distribution (prebuilt binaries, crates.io, Homebrew, npm, PyPI) and the GitHub Action.
 
 ## Quick Start
 
@@ -59,15 +59,19 @@ Resolved packages: 22
 
 Every transitive package shows the shortest dependency chain that pulls it in. The JSON report carries the same chain in a `path` field.
 
-## More Usage (some options still planned)
+## More Usage
 
 ```sh
-cargoscope scan . --format sarif --output results.sarif
+cargoscope scan . --format json --output report.json   # versioned JSON report
+cargoscope scan . --format sarif --output results.sarif # SARIF 2.1.0 for GitHub code scanning
+cargoscope scan . --fail-on high                    # fail only on high or critical vulnerabilities
 cargoscope scan . --fail-on none                    # never fail CI on findings
 cargoscope scan . --show-uncertain                  # also list possibly-unused dependencies
 ```
 
 By default, any security vulnerability fails the scan (exit code 1); vulnerabilities without a CVSS score count at every threshold, and informational advisories never fail. Set `CARGOSCOPE_CACHE_DIR` to choose where downloaded data is stored. Use `--fail-on none` to add CargoScope to CI alongside your existing tools without blocking builds. Exit codes: `0` OK, `1` threshold reached, `2` execution error.
+
+The JSON report follows a published schema with a compatibility policy: see [docs/json-report.md](docs/json-report.md). SARIF results cover advisories (pointing at the package in `Cargo.lock`), yanked versions in use, and likely-unused dependencies (pointing at their line in `Cargo.toml`).
 
 ## Roadmap
 
@@ -93,7 +97,7 @@ cargoscope/
 │   ├── cargoscope-core/       # data model, orchestration, configuration
 │   ├── cargoscope-cargo/      # Cargo parsing, resolution, unused analysis
 │   ├── cargoscope-advisory/   # RustSec database and cache (skeleton)
-│   └── cargoscope-report/     # text and JSON (SARIF planned)
+│   └── cargoscope-report/     # text, JSON and SARIF
 └── tests/                     # fixtures and integration tests
 ```
 

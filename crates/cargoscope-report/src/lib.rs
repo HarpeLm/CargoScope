@@ -1,4 +1,6 @@
-//! Report rendering: text and JSON today, SARIF planned for v0.1.
+//! Report rendering: text, JSON and SARIF.
+
+pub mod sarif;
 
 use std::fmt::Write;
 use std::path::Path;

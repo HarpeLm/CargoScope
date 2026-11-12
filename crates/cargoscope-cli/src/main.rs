@@ -10,16 +10,19 @@ use std::process::ExitCode;
 use cargoscope_advisory::crates_io::{self, RegistryCache};
 use cargoscope_advisory::{AdvisoryDatabase, DEFAULT_ARCHIVE_URL};
 use cargoscope_core::{AdvisoryFinding, AdvisoryKind, Report, Severity, VERSION};
+use cargoscope_report::sarif::SarifLocations;
 
 const USAGE: &str = "Usage:
   cargoscope update [PATH]
       Download the RustSec advisory database and the crates.io data (versions,
       licenses) of the project at PATH. The only command that uses the network.
-  cargoscope scan [PATH] [--format text|json] [--fail-on THRESHOLD] [--show-uncertain]
+  cargoscope scan [PATH] [--format text|json|sarif] [--output FILE] [--fail-on THRESHOLD] [--show-uncertain]
       Report on a Cargo project, read-only and offline.
 
 Options for scan:
-  --format text|json   Output format (default: text).
+  --format text|json|sarif
+                       Output format (default: text).
+  --output FILE        Write the report to FILE instead of standard output.
   --fail-on THRESHOLD  none, low, medium, high or critical.
                        Default: fail on any security vulnerability.
                        Vulnerabilities without a CVSS score always count.
@@ -70,6 +73,7 @@ fn main() -> ExitCode {
 enum OutputFormat {
     Text,
     Json,
+    Sarif,
 }
 
 /// When advisory findings make the scan fail.
@@ -102,6 +106,7 @@ impl FailOn {
 struct ScanOptions {
     path: PathBuf,
     format: OutputFormat,
+    output: Option<PathBuf>,
     fail_on: FailOn,
     show_uncertain: bool,
 }
@@ -111,6 +116,7 @@ fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<Sca
     let mut format = OutputFormat::Text;
     let mut fail_on = FailOn::AnyVulnerability;
     let mut show_uncertain = false;
+    let mut output = None;
 
     while let Some(argument) = arguments.next() {
         let (flag, inline_value) = match argument.split_once('=') {
@@ -127,6 +133,7 @@ fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<Sca
         };
         match flag.as_str() {
             "--format" => format = parse_output_format(&value()?)?,
+            "--output" | "-o" => output = Some(PathBuf::from(value()?)),
             "--fail-on" => fail_on = parse_fail_on(&value()?)?,
             "--show-uncertain" if inline_value.is_none() => show_uncertain = true,
             other if other.starts_with('-') => return Err(format!("Unknown option: {other}")),
@@ -138,6 +145,7 @@ fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<Sca
     Ok(ScanOptions {
         path: path.unwrap_or_else(|| PathBuf::from(".")),
         format,
+        output,
         fail_on,
         show_uncertain,
     })
@@ -147,8 +155,9 @@ fn parse_output_format(value: &str) -> Result<OutputFormat, String> {
     match value {
         "text" => Ok(OutputFormat::Text),
         "json" => Ok(OutputFormat::Json),
+        "sarif" => Ok(OutputFormat::Sarif),
         _ => Err(format!(
-            "Unsupported output format: {value}. Use text or json."
+            "Unsupported output format: {value}. Use text, json or sarif."
         )),
     }
 }
@@ -276,8 +285,21 @@ fn scan(options: &ScanOptions) -> ExitCode {
     let rendered = match options.format {
         OutputFormat::Text => cargoscope_report::render_text(root, &report, options.show_uncertain),
         OutputFormat::Json => cargoscope_report::render_json(root, &report),
+        OutputFormat::Sarif => cargoscope_report::sarif::render_sarif(
+            &report,
+            &sarif_locations(root, &report),
+            options.show_uncertain,
+        ),
     };
-    print!("{rendered}");
+    match &options.output {
+        Some(path) => {
+            if let Err(error) = std::fs::write(path, rendered) {
+                eprintln!("CargoScope could not write {}: {error}", path.display());
+                return ExitCode::from(2);
+            }
+        }
+        None => print!("{rendered}"),
+    }
 
     if report
         .advisories
@@ -287,6 +309,56 @@ fn scan(options: &ScanOptions) -> ExitCode {
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+/// Repository-relative URI with forward slashes, as SARIF consumers expect.
+fn sarif_uri(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let mut text = text.as_str();
+    while let Some(rest) = text.strip_prefix("./") {
+        text = rest;
+    }
+    if path.is_absolute() {
+        let text = text.trim_start_matches('/');
+        return format!("file:///{text}");
+    }
+    text.to_owned()
+}
+
+fn sarif_locations(root: &Path, report: &Report) -> SarifLocations {
+    use cargoscope_cargo::locations::{lockfile_lines, manifest_dependency_line};
+
+    let lockfile = root.join("Cargo.lock");
+    let lines = std::fs::read_to_string(&lockfile)
+        .map(|text| lockfile_lines(&text))
+        .unwrap_or_default();
+    let package_lines = report
+        .inventory
+        .packages
+        .iter()
+        .map(|package| {
+            lines
+                .iter()
+                .find(|((name, version), _)| *name == package.name && *version == package.version)
+                .map(|(_, line)| *line)
+        })
+        .collect();
+    let unused_locations = report
+        .unused
+        .iter()
+        .map(|finding| {
+            let manifest = root.join(&finding.manifest);
+            let line = std::fs::read_to_string(&manifest).ok().and_then(|text| {
+                manifest_dependency_line(&text, finding.kind.section(), &finding.dependency)
+            });
+            (sarif_uri(&manifest), line)
+        })
+        .collect();
+    SarifLocations {
+        lockfile_uri: sarif_uri(&lockfile),
+        package_lines,
+        unused_locations,
     }
 }
 

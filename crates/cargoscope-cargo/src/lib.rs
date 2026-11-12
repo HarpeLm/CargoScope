@@ -9,6 +9,7 @@ use std::path::Path;
 
 use cargoscope_core::{Inventory, Package, UnusedFinding};
 
+pub mod locations;
 pub mod unused;
 
 /// An error while reading or interpreting a Cargo project.

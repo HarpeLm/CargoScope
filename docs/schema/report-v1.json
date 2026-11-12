@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/HarpeLm/CargoScope/blob/main/docs/schema/report-v1.json",
+  "title": "CargoScope JSON report, format version 1",
+  "description": "Output of `cargoscope scan --format json`. See docs/json-report.md for the compatibility policy.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format_version",
+    "tool_version",
+    "target",
+    "advisory_database",
+    "registry",
+    "advisories",
+    "packages",
+    "unused",
+    "warnings"
+  ],
+  "properties": {
+    "format_version": { "const": 1 },
+    "tool_version": { "type": "string" },
+    "target": { "type": "string", "description": "Scanned directory, as given on the command line." },
+    "advisory_database": { "$ref": "#/$defs/data_source" },
+    "registry": { "$ref": "#/$defs/data_source" },
+    "advisories": { "type": "array", "items": { "$ref": "#/$defs/advisory" } },
+    "packages": { "type": "array", "items": { "$ref": "#/$defs/package" } },
+    "unused": { "type": "array", "items": { "$ref": "#/$defs/unused" } },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "nullable_string": { "type": ["string", "null"] },
+    "date": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "nullable_date": {
+      "oneOf": [{ "$ref": "#/$defs/date" }, { "type": "null" }]
+    },
+    "data_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "downloaded_on"],
+      "properties": {
+        "source": { "enum": ["RustSec", "crates.io"] },
+        "downloaded_on": { "$ref": "#/$defs/nullable_date" }
+      }
+    },
+    "package_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" }
+      }
+    },
+    "path": {
+      "description": "Shortest dependency chain from a root package to this package, or null when no root reaches it.",
+      "oneOf": [
+        { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/package_ref" } },
+        { "type": "null" }
+      ]
+    },
+    "advisory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "aliases", "title", "date", "url", "kind", "informational",
+        "severity", "package", "patched", "path"
+      ],
+      "properties": {
+        "id": { "type": "string", "description": "Identifier taken from the advisory data, such as a RUSTSEC ID." },
+        "aliases": { "type": "array", "items": { "type": "string" } },
+        "title": { "type": "string" },
+        "date": { "type": "string" },
+        "url": { "$ref": "#/$defs/nullable_string" },
+        "kind": { "enum": ["vulnerability", "informational"] },
+        "informational": {
+          "description": "Informational category (unmaintained, unsound, notice...) or null for vulnerabilities.",
+          "$ref": "#/$defs/nullable_string"
+        },
+        "severity": {
+          "description": "Computed from the advisory's CVSS vector; null when it has none.",
+          "enum": ["none", "low", "medium", "high", "critical", null]
+        },
+        "package": { "$ref": "#/$defs/package_ref" },
+        "patched": {
+          "description": "Version requirements that fix the advisory; empty when no fix exists.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "path": { "$ref": "#/$defs/path" }
+      }
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name", "version", "scope", "direct", "source", "path", "license",
+        "latest_version", "latest_published", "outdated", "yanked"
+      ],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "scope": { "enum": ["root", "direct", "transitive"] },
+        "direct": { "type": "boolean" },
+        "source": { "$ref": "#/$defs/nullable_string" },
+        "path": { "$ref": "#/$defs/path" },
+        "license": { "$ref": "#/$defs/nullable_string" },
+        "latest_version": { "$ref": "#/$defs/nullable_string" },
+        "latest_published": { "$ref": "#/$defs/nullable_date" },
+        "outdated": { "type": "boolean" },
+        "yanked": { "type": ["boolean", "null"], "description": "null when no registry data is cached." }
+      }
+    },
+    "unused": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dependency", "package", "section", "declared_by", "manifest",
+        "confidence", "evidence", "ignored_reason"
+      ],
+      "properties": {
+        "dependency": { "type": "string", "description": "Manifest key, also the name used in code." },
+        "package": { "type": "string", "description": "Real crate name when renamed with `package = ...`." },
+        "section": { "enum": ["dependencies", "dev-dependencies", "build-dependencies"] },
+        "declared_by": { "type": "string" },
+        "manifest": { "type": "string" },
+        "confidence": { "enum": ["likely-unused", "possibly-unused"] },
+        "evidence": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "ignored_reason": { "$ref": "#/$defs/nullable_string" }
+      }
+    }
+  }
+}

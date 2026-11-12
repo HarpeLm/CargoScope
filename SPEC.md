@@ -237,6 +237,13 @@ By default, **any security advisory fails the scan**, as cargo-audit does. `--fa
 
 Exit codes are a stable contract from v0.1.
 
+### Output formats
+
+- **Text** (default): advisories, unused dependencies, licenses, yanked and outdated versions, then the inventory.
+- **JSON**: described by the public schema `docs/schema/report-v1.json` and checked against it in tests. `format_version` changes only when a field is removed, renamed or changes meaning; fields may be added within a version.
+- **SARIF 2.1.0**: one result per advisory (located at the package in `Cargo.lock`, with GitHub `security-severity`), per yanked version in use, and per likely-unused dependency (located at its line in `Cargo.toml`; possibly-unused ones only with `--show-uncertain`; ignored ones never). Validated against the official SARIF schema.
+- `--output FILE` writes any format to a file instead of standard output.
+
 ### Later
 
 ```sh

@@ -274,3 +274,154 @@ fn missing_registry_data_is_a_warning_not_an_error() {
     );
     let _ = std::fs::remove_dir_all(&cache);
 }
+
+fn json_of(name: &str) -> serde_json::Value {
+    let output = scan(name, &["--format", "json", "--fail-on", "none"]);
+    serde_json::from_slice(&output.stdout).expect("JSON output parses")
+}
+
+#[test]
+fn json_reports_match_the_published_schema() {
+    let schema_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/schema/report-v1.json");
+    let schema: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(schema_path).expect("schema file"))
+            .expect("schema parses");
+    let validator = jsonschema::validator_for(&schema).expect("schema is valid");
+    for fixture in ["simple", "workspace", "renamed", "multi-version", "unused"] {
+        let report = json_of(fixture);
+        let errors: Vec<String> = validator
+            .iter_errors(&report)
+            .map(|error| error.to_string())
+            .collect();
+        assert!(errors.is_empty(), "{fixture}: {errors:?}");
+    }
+}
+
+#[test]
+fn output_option_writes_the_report_to_a_file() {
+    let file = std::env::temp_dir().join(format!("cargoscope-output-{}.json", std::process::id()));
+    let output = scan(
+        "simple",
+        &[
+            "--format",
+            "json",
+            "--fail-on",
+            "none",
+            "--output",
+            file.to_str().expect("utf-8"),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stdout.is_empty());
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).expect("file written"))
+            .expect("valid JSON");
+    assert_eq!(written["format_version"], 1);
+    let _ = std::fs::remove_file(&file);
+}
+
+fn sarif_of(name: &str, extra: &[&str]) -> serde_json::Value {
+    let mut args = vec!["--format", "sarif", "--fail-on", "none"];
+    args.extend_from_slice(extra);
+    serde_json::from_slice(&scan(name, &args).stdout).expect("SARIF output parses")
+}
+
+#[test]
+fn sarif_reports_advisories_yanked_versions_and_unused_dependencies() {
+    let sarif = sarif_of("simple", &[]);
+    assert_eq!(sarif["version"], "2.1.0");
+    let run = &sarif["runs"][0];
+    assert_eq!(run["tool"]["driver"]["name"], "CargoScope");
+    let results = run["results"].as_array().expect("results");
+
+    let advisory = results
+        .iter()
+        .find(|result| result["ruleId"] == "CARGOSCOPE-TEST-0001")
+        .expect("advisory result");
+    assert_eq!(advisory["level"], "error");
+    let location = &advisory["locations"][0]["physicalLocation"];
+    assert!(
+        location["artifactLocation"]["uri"]
+            .as_str()
+            .expect("uri")
+            .ends_with("tests/fixtures/simple/Cargo.lock")
+    );
+    // `name = "serde_json"` is on line 14 of the fixture lockfile.
+    assert_eq!(location["region"]["startLine"], 14);
+    assert!(
+        advisory["message"]["text"]
+            .as_str()
+            .expect("text")
+            .contains("Fix: upgrade to >= 1.0.200.")
+    );
+
+    let informational = results
+        .iter()
+        .find(|result| result["ruleId"] == "CARGOSCOPE-TEST-0003")
+        .expect("informational result");
+    assert_eq!(informational["level"], "note");
+    assert!(
+        results
+            .iter()
+            .any(|result| result["ruleId"] == "cargoscope/yanked-version")
+    );
+
+    let rules = run["tool"]["driver"]["rules"].as_array().expect("rules");
+    let rule = rules
+        .iter()
+        .find(|rule| rule["id"] == "CARGOSCOPE-TEST-0001")
+        .expect("rule");
+    assert_eq!(rule["properties"]["security-severity"], "8.0");
+    assert_eq!(rule["helpUri"], "https://example.test/advisories/0001");
+    for result in results {
+        let id = result["ruleId"].as_str().expect("ruleId");
+        assert!(
+            rules.iter().any(|rule| rule["id"] == id),
+            "no rule for {id}"
+        );
+    }
+}
+
+#[test]
+fn sarif_points_unused_dependencies_at_their_manifest_line() {
+    let sarif = sarif_of("unused", &[]);
+    let results = sarif["runs"][0]["results"].as_array().expect("results");
+    let unused: Vec<&serde_json::Value> = results
+        .iter()
+        .filter(|result| result["ruleId"] == "cargoscope/unused-dependency")
+        .collect();
+    assert_eq!(unused.len(), 5, "only likely-unused, never ignored ones");
+    let log = unused
+        .iter()
+        .find(|result| {
+            result["message"]["text"]
+                .as_str()
+                .expect("text")
+                .starts_with("`log`")
+        })
+        .expect("log result");
+    let location = &log["locations"][0]["physicalLocation"];
+    assert!(
+        location["artifactLocation"]["uri"]
+            .as_str()
+            .expect("uri")
+            .ends_with("tests/fixtures/unused/Cargo.toml")
+    );
+    // `log = "0.4"` is on line 12 of the fixture manifest.
+    assert_eq!(location["region"]["startLine"], 12);
+    assert!(!results.iter().any(|result| {
+        result["message"]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("once_cell"))
+    }));
+
+    let uncertain = sarif_of("unused", &["--show-uncertain"]);
+    let count = uncertain["runs"][0]["results"]
+        .as_array()
+        .expect("results")
+        .iter()
+        .filter(|result| result["ruleId"] == "cargoscope/unused-dependency")
+        .count();
+    assert_eq!(count, 8);
+}
