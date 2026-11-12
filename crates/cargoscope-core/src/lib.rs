@@ -1,6 +1,7 @@
 //! Data model shared by all CargoScope crates.
 
 pub mod license;
+pub mod policy;
 
 use std::collections::VecDeque;
 

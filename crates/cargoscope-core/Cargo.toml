@@ -10,6 +10,7 @@ readme = "../../README.md"
 description = "Core domain types and analysis orchestration for CargoScope"
 
 [dependencies]
+semver = "1"
 
 [lints]
 workspace = true

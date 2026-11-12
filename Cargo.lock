@@ -126,6 +126,9 @@ dependencies = [
 [[package]]
 name = "cargoscope-core"
 version = "0.1.0-alpha.3"
+dependencies = [
+ "semver",
+]
 
 [[package]]
 name = "cargoscope-corpus"
