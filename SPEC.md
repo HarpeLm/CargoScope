@@ -153,17 +153,19 @@ cargoscope/
 ├── Cargo.toml
 ├── crates/
 │   ├── cargoscope-cli/        # commands, options, exit codes
-│   ├── cargoscope-core/       # canonical model, orchestration, configuration
-│   ├── cargoscope-report/     # text, JSON, SARIF, later HTML
-│   ├── cargoscope-advisory/   # clients, cache, advisory provenance
-│   ├── cargoscope-cargo/      # Cargo.toml, Cargo.lock and resolution
-│   ├── cargoscope-python/     # targeted Python formats
-│   ├── cargoscope-npm/        # package.json and targeted lockfiles
-│   └── cargoscope-go/         # later go.mod and go.sum
+│   ├── cargoscope-core/       # data model, orchestration, configuration
+│   ├── cargoscope-cargo/      # Cargo.toml / Cargo.lock parsing, resolution, unused analysis
+│   ├── cargoscope-advisory/   # RustSec database download, cache, provenance
+│   └── cargoscope-report/     # text, JSON, SARIF, later HTML
 └── tests/                     # fixture repositories and integration tests
 ```
 
-Pipeline: `discover → parse → normalize → analyze → report`.
+Pipeline: `discover → parse → analyze → report`.
+
+- **Cargo-specific data model.** Types such as `Package`, `Dependency`, `Finding`, `Evidence` and `DependencyPath` describe Cargo concepts directly. No cross-ecosystem abstraction is introduced until a second ecosystem is actually started.
+- **Files are read directly** (`toml`, `cargo-lock` crates). CargoScope never invokes `cargo` or `rustc` by default: it works offline, without a Rust toolchain, and executes no project code. `cargo metadata` and builds are reserved for the opt-in `--precise` mode.
+- Lockfiles are read first; declared and resolved versions are kept distinct.
+- Network access (advisory database updates only) is documented, cached and can be disabled.
 
 ## 7. Data Sources and Security
 
