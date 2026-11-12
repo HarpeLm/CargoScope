@@ -556,11 +556,26 @@ fn includes_generated_code(tokens: TokenStream) -> bool {
     let tokens: Vec<TokenTree> = tokens.into_iter().collect();
     tokens.iter().enumerate().any(|(index, token)| match token {
         TokenTree::Group(group) => includes_generated_code(group.stream()),
-        TokenTree::Ident(ident) if ident == "include" => matches!(
-            (tokens.get(index + 1), tokens.get(index + 2)),
-            (Some(TokenTree::Punct(bang)), Some(TokenTree::Group(arguments)))
-                if bang.as_char() == '!' && arguments.to_string().contains("OUT_DIR")
-        ),
+        TokenTree::Ident(ident) => {
+            let name = ident.to_string();
+            let Some((TokenTree::Punct(bang), Some(TokenTree::Group(arguments)))) = tokens
+                .get(index + 1)
+                .map(|bang| (bang, tokens.get(index + 2)))
+            else {
+                return false;
+            };
+            if bang.as_char() != '!' {
+                return false;
+            }
+            match name.as_str() {
+                // `include!(concat!(env!("OUT_DIR"), "/gen.rs"))`.
+                "include" => arguments.to_string().contains("OUT_DIR"),
+                // These embed data, not code.
+                "include_str" | "include_bytes" => false,
+                // `tonic::include_proto!`, `include_generated!`, ...
+                other => other.starts_with("include_"),
+            }
+        }
         _ => false,
     })
 }
