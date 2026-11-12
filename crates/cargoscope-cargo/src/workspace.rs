@@ -136,6 +136,10 @@ pub fn members(root: &Path, manifest: &toml::Value) -> (Vec<String>, Vec<String>
             vec![normalize(&pattern)]
         };
         for member in expanded {
+            // `"."` is the workspace root package, which callers already handle.
+            if member.is_empty() {
+                continue;
+            }
             if !excluded.contains(&member) && !members.contains(&member) {
                 members.push(member);
             }
@@ -183,7 +187,7 @@ mod tests {
         let manifest: toml::Value = toml::from_str(
             r#"
             [workspace]
-            members = ["crates/*", "tools/x", "./crates/a", "deep/**"]
+            members = [".", "crates/*", "tools/x", "./crates/a", "deep/**"]
             exclude = ["crates/b"]
             "#,
         )
