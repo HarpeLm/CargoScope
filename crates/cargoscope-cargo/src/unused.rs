@@ -444,7 +444,16 @@ fn collect_references(tokens: TokenStream, names: &mut BTreeSet<String>) {
     let tokens: Vec<TokenTree> = tokens.into_iter().collect();
     for (index, token) in tokens.iter().enumerate() {
         match token {
-            TokenTree::Group(group) => collect_references(group.stream(), names),
+            TokenTree::Group(group) => {
+                let is_attribute = group.delimiter() == proc_macro2::Delimiter::Bracket
+                    && index.checked_sub(1).is_some_and(|previous| {
+                        matches!(&tokens[previous], TokenTree::Punct(p) if p.as_char() == '#' || p.as_char() == '!')
+                    });
+                if is_attribute {
+                    collect_attribute_references(group.stream(), names);
+                }
+                collect_references(group.stream(), names);
+            }
             TokenTree::Ident(ident) => {
                 let name = ident.to_string();
                 let name = name.strip_prefix("r#").unwrap_or(&name).to_owned();
@@ -464,6 +473,55 @@ fn collect_references(tokens: TokenStream, names: &mut BTreeSet<String>) {
                     && previous(2).as_deref() == Some("extern");
                 if followed_by_path || after_use || after_extern_crate {
                     names.insert(name);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// References specific to attributes: the attribute name itself (derive
+/// helper attributes such as `#[serde(...)]` need their crate), and string
+/// literals holding a path, as in `#[serde(with = "serde_regex")]`.
+fn collect_attribute_references(tokens: TokenStream, names: &mut BTreeSet<String>) {
+    let tokens: Vec<TokenTree> = tokens.into_iter().collect();
+    if let Some(TokenTree::Ident(head)) = tokens.first() {
+        if head == "doc" {
+            return;
+        }
+        if matches!(tokens.get(1), Some(TokenTree::Group(_)) | None) {
+            names.insert(head.to_string());
+        }
+    }
+    collect_path_literals(&tokens, names);
+}
+
+fn collect_path_literals(tokens: &[TokenTree], names: &mut BTreeSet<String>) {
+    for token in tokens {
+        match token {
+            TokenTree::Group(group) => {
+                let inner: Vec<TokenTree> = group.stream().into_iter().collect();
+                collect_path_literals(&inner, names);
+            }
+            TokenTree::Literal(literal) => {
+                let text = literal.to_string();
+                let Some(text) = text
+                    .strip_prefix('"')
+                    .and_then(|text| text.strip_suffix('"'))
+                else {
+                    continue;
+                };
+                let first = text.split("::").next().unwrap_or_default();
+                let is_path = !first.is_empty()
+                    && first.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    && !first.starts_with(|c: char| c.is_ascii_digit())
+                    && text.split("::").all(|segment| {
+                        segment
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    });
+                if is_path {
+                    names.insert(first.to_owned());
                 }
             }
             _ => {}
@@ -687,6 +745,29 @@ mod tests {
         for expected in ["serde", "anyhow", "log", "tokio", "itoa", "async"] {
             assert!(names.contains(expected), "missing {expected}");
         }
+    }
+
+    #[test]
+    fn derive_helper_attributes_and_path_strings_count_as_references() {
+        let names = references(
+            r#"
+            #[derive(Deserialize)]
+            #[serde(tag = "type", content = "data")]
+            struct A {
+                #[serde(with = "serde_regex", default)]
+                r: Regex,
+                #[serde(deserialize_with = "humantime_serde::deserialize")]
+                d: Duration,
+            }
+            #[doc = "log"]
+            #[inline]
+            fn f() {}
+            "#,
+        );
+        assert!(names.contains("serde"));
+        assert!(names.contains("serde_regex"));
+        assert!(names.contains("humantime_serde"));
+        assert!(!names.contains("log"), "doc text is not a reference");
     }
 
     #[test]
