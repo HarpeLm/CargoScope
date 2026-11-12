@@ -466,3 +466,33 @@ fn skipped_checks_leave_their_data_empty() {
     assert_eq!(serde_json["license"], "MIT OR Apache-2.0");
     assert_eq!(serde_json["latest_version"], serde_json::Value::Null);
 }
+
+#[test]
+fn skipped_checks_are_reported_as_not_checked() {
+    let empty = std::env::temp_dir().join(format!("cargoscope-not-checked-{}", std::process::id()));
+    let text = stdout(&scan_with_cache(
+        "simple",
+        &["--checks", "inventory"],
+        &empty,
+    ));
+    for section in [
+        "Advisories: not checked",
+        "Unused dependencies: not checked",
+        "Licenses: not checked",
+        "Versions: not checked",
+    ] {
+        assert!(text.contains(section), "missing: {section}");
+    }
+    assert!(!text.contains("No known advisory found"));
+
+    let json: serde_json::Value = serde_json::from_slice(
+        &scan_with_cache(
+            "simple",
+            &["--format", "json", "--checks", "inventory"],
+            &empty,
+        )
+        .stdout,
+    )
+    .expect("valid JSON");
+    assert_eq!(json["checks"], serde_json::json!(["inventory"]));
+}
