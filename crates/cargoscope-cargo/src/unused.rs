@@ -928,6 +928,12 @@ pub fn check_package(
                     .to_owned(),
             );
         }
+        if sources.skipped > 0 {
+            exceptions.push(format!(
+                "{} source file(s) were skipped (size, depth or count limit) and not searched",
+                sources.skipped
+            ));
+        }
         if searched == 0 {
             exceptions.push(format!("no {searched_label} file found"));
         }
@@ -1177,6 +1183,43 @@ mod tests {
             .into_iter()
             .collect();
         assert_eq!(forwarded, vec!["mdbook-html", "reqwest"]);
+    }
+
+    #[test]
+    fn skipped_large_files_lower_confidence() {
+        let root = std::env::temp_dir().join(format!("cargoscope-big-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).expect("dirs");
+        std::fs::write(root.join("src/lib.rs"), "mod generated;\n").expect("write");
+        let big = format!(
+            "pub static M: ::phf::Map<u8, u8> = todo!();\n{}",
+            "//\n".repeat(1_100_000)
+        );
+        std::fs::write(root.join("src/generated.rs"), big).expect("write");
+        let manifest: toml::Value =
+            toml::from_str("[package]\nname = \"big\"\n[dependencies]\nphf = \"0.11\"\n")
+                .expect("valid");
+        let (findings, warnings) = super::check_package(
+            &super::PackageToCheck {
+                name: "big",
+                dir: &root,
+                manifest_label: "Cargo.toml",
+                manifest: &manifest,
+                workspace_root: &root,
+            },
+            None,
+            &cargoscope_core::Inventory {
+                packages: Vec::new(),
+            },
+            &super::WorkspaceMacros::new(),
+        );
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            findings[0].confidence,
+            cargoscope_core::UnusedConfidence::Possibly
+        );
+        assert!(warnings.iter().any(|warning| warning.contains("skipped")));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
