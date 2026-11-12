@@ -66,6 +66,7 @@ cargoscope scan . --format json --output report.json   # versioned JSON report
 cargoscope scan . --format sarif --output results.sarif # SARIF 2.1.0 for GitHub code scanning
 cargoscope scan . --fail-on high                    # fail only on high or critical vulnerabilities
 cargoscope scan . --fail-on none                    # never fail CI on findings
+cargoscope scan . --checks inventory,unused          # run only some checks (no download needed)
 cargoscope scan . --show-uncertain                  # also list possibly-unused dependencies
 ```
 

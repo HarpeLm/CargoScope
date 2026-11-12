@@ -219,7 +219,8 @@ cargoscope scan . --format json --output cargoscope-report.json
 cargoscope scan . --format sarif --output results.sarif
 
 # Choose checks and failure threshold
-cargoscope scan . --checks inventory,advisories,unused,licenses --fail-on high
+# (checks: inventory, advisories, unused, licenses, versions; skipped ones show "not checked")
+cargoscope scan . --checks inventory,advisories,unused,licenses,versions --fail-on high
 
 # Show uncertain unused candidates too
 cargoscope scan . --show-uncertain
