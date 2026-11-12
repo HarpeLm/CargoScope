@@ -295,13 +295,22 @@ No dates: each version ships when its exit criteria are met. There is no intervi
 
 | Risk | Response |
 |---|---|
-| Multi-language scope too broad | Start with Cargo; expand only with tested adapter and maintenance capacity |
-| False positives on unused/maintenance | Present candidates and evidence; calibrate on corpus |
-| Misleading score | Start with distinct metrics; document weights and limits before aggregation |
-| Inaccurate competitive comparisons | Verify current features and publish method and date |
-| Risky update recommendation | Preview, diff, explicit application and validation |
-| Incomplete or outdated advisories | Provenance, dates, refreshable cache, coverage warning |
+| No interview phase: building something nobody needs | Publish early, track issues and feedback, adjust priorities between versions |
+| Broad v0.1 delays the first release | Ship alpha pre-releases (`v0.1.0-alpha.N`) as items land; the v0.1 tag waits for all exit criteria |
+| Failing on any advisory by default slows CI adoption | Document `--fail-on none` prominently in the README and Action examples |
+| False positives on unused dependencies | Layered evidence, confidence levels, ignore list with reasons, compiler-oracle measurement |
+| Misleading indicators | Separate indicators only, no global score before 1.0 |
+| Inaccurate competitive comparisons | Verify current features, publish method and date |
+| Risky fix recommendations | Preview, diff, explicit application and validation (later versions) |
+| Incomplete or outdated advisory data | Provenance, database date in every report, warning on old cache |
+| Untrusted repositories | No code execution by default, file limits, no symlink escape |
 
 ## 12. Success Criteria
 
-Before claiming stable coverage, measure on a published corpus: parsing rate, announced format compatibility, manually confirmed precision, false positives, analysis time, offline behavior, and advisory freshness. For each recommendation, verify that the explanation links to evidence. Growth objectives remain targets, never guarantees of adoption or superiority.
+Quality criteria only; no adoption targets.
+
+- **Unused-dependency precision > 97%** on `likely-unused` findings, measured against the compiler oracle on the held-out corpus, before the feature is called stable.
+- Parsing rate and format compatibility measured on the published corpus.
+- Analysis time and offline behavior measured and documented.
+- Every finding links to evidence and states its data date.
+- Every report reproducible: same inputs and same cached data give the same output.
