@@ -3,12 +3,24 @@
 use std::fmt::Write;
 use std::path::Path;
 
-use cargoscope_core::{Inventory, VERSION};
+use cargoscope_core::{Inventory, Package, VERSION};
 
 /// Version of the JSON report format.
 pub const JSON_FORMAT_VERSION: u32 = 1;
 
+fn scope(package: &Package) -> &'static str {
+    if package.root {
+        "root"
+    } else if package.direct {
+        "direct"
+    } else {
+        "transitive"
+    }
+}
+
 /// Renders a human-readable inventory report.
+///
+/// Each transitive package shows the shortest dependency chain that pulls it in.
 #[must_use]
 pub fn render_text(project_root: &Path, inventory: &Inventory) -> String {
     let mut out = String::new();
@@ -17,23 +29,41 @@ pub fn render_text(project_root: &Path, inventory: &Inventory) -> String {
     let _ = writeln!(out, "Target: {}", project_root.display());
     let _ = writeln!(out, "Resolved packages: {}", inventory.packages.len());
 
-    for package in &inventory.packages {
-        let scope = if package.direct {
-            "direct"
-        } else {
-            "transitive"
-        };
-        let _ = write!(out, "- {} {} [{scope}]", package.name, package.version);
+    for (index, package) in inventory.packages.iter().enumerate() {
+        let _ = write!(
+            out,
+            "- {} {} [{}]",
+            package.name,
+            package.version,
+            scope(package)
+        );
         if let Some(source) = &package.source {
             let _ = write!(out, " ({source})");
         }
         out.push('\n');
+
+        if package.root || package.direct {
+            continue;
+        }
+        match inventory.path_to(index) {
+            Some(path) => {
+                let chain: Vec<&str> = path
+                    .iter()
+                    .map(|&step| inventory.packages[step].name.as_str())
+                    .collect();
+                let _ = writeln!(out, "    via {}", chain.join(" -> "));
+            }
+            None => out.push_str("    not reachable from any root package\n"),
+        }
     }
 
     out
 }
 
 /// Renders a versioned JSON inventory report, terminated by a newline.
+///
+/// Each package carries its `scope` and `path`: the shortest chain of
+/// `{name, version}` from a root package to it, or `null` when unreachable.
 #[must_use]
 pub fn render_json(project_root: &Path, inventory: &Inventory) -> String {
     let mut out = String::new();
@@ -50,17 +80,39 @@ pub fn render_json(project_root: &Path, inventory: &Inventory) -> String {
         }
         let _ = write!(
             out,
-            "{{\"name\":\"{}\",\"version\":\"{}\",\"direct\":{},\"source\":",
+            "{{\"name\":\"{}\",\"version\":\"{}\",\"scope\":\"{}\",\"direct\":{},\"source\":",
             json_escape(&package.name),
             json_escape(&package.version),
+            scope(package),
             package.direct
         );
         match &package.source {
             Some(source) => {
-                let _ = write!(out, "\"{}\"}}", json_escape(source));
+                let _ = write!(out, "\"{}\"", json_escape(source));
             }
-            None => out.push_str("null}"),
+            None => out.push_str("null"),
         }
+        out.push_str(",\"path\":");
+        match inventory.path_to(index) {
+            Some(path) => {
+                out.push('[');
+                for (position, &step) in path.iter().enumerate() {
+                    if position > 0 {
+                        out.push(',');
+                    }
+                    let step = &inventory.packages[step];
+                    let _ = write!(
+                        out,
+                        "{{\"name\":\"{}\",\"version\":\"{}\"}}",
+                        json_escape(&step.name),
+                        json_escape(&step.version)
+                    );
+                }
+                out.push(']');
+            }
+            None => out.push_str("null"),
+        }
+        out.push('}');
     }
 
     out.push_str("]}\n");
@@ -93,40 +145,61 @@ mod tests {
     use cargoscope_core::{Inventory, Package};
     use std::path::Path;
 
+    fn package(
+        name: &str,
+        source: Option<&str>,
+        root: bool,
+        direct: bool,
+        deps: Vec<usize>,
+    ) -> Package {
+        Package {
+            name: name.to_owned(),
+            version: "1.0.0".to_owned(),
+            source: source.map(str::to_owned),
+            root,
+            direct,
+            dependencies: deps,
+        }
+    }
+
+    // 0 app (root) -> 1 alpha (direct) -> 2 beta (transitive); 3 orphan
     fn sample() -> Inventory {
         Inventory {
             packages: vec![
-                Package {
-                    name: "alpha".to_owned(),
-                    version: "1.0.0".to_owned(),
-                    source: Some("registry+https://example.test".to_owned()),
-                    direct: true,
-                },
-                Package {
-                    name: "beta".to_owned(),
-                    version: "2.0.0".to_owned(),
-                    source: None,
-                    direct: false,
-                },
+                package("app", None, true, false, vec![1]),
+                package(
+                    "alpha",
+                    Some("registry+https://example.test"),
+                    false,
+                    true,
+                    vec![2],
+                ),
+                package("beta", None, false, false, vec![]),
+                package("orphan", None, false, false, vec![]),
             ],
         }
     }
 
     #[test]
-    fn text_report_lists_scope_and_source() {
+    fn text_report_lists_scope_source_and_path() {
         let text = render_text(Path::new("."), &sample());
-        assert!(text.contains("Resolved packages: 2\n"));
+        assert!(text.contains("Resolved packages: 4\n"));
+        assert!(text.contains("- app 1.0.0 [root]\n"));
         assert!(text.contains("- alpha 1.0.0 [direct] (registry+https://example.test)\n"));
-        assert!(text.contains("- beta 2.0.0 [transitive]\n"));
+        assert!(text.contains("- beta 1.0.0 [transitive]\n    via app -> alpha -> beta\n"));
+        assert!(
+            text.contains("- orphan 1.0.0 [transitive]\n    not reachable from any root package\n")
+        );
     }
 
     #[test]
-    fn json_report_is_versioned_and_uses_null_for_missing_source() {
+    fn json_report_includes_scope_and_path() {
         let json = render_json(Path::new("."), &sample());
         assert!(json.starts_with("{\"format_version\":1,"));
         assert!(json.contains(
-            "{\"name\":\"beta\",\"version\":\"2.0.0\",\"direct\":false,\"source\":null}"
+            "{\"name\":\"beta\",\"version\":\"1.0.0\",\"scope\":\"transitive\",\"direct\":false,\"source\":null,\"path\":[{\"name\":\"app\",\"version\":\"1.0.0\"},{\"name\":\"alpha\",\"version\":\"1.0.0\"},{\"name\":\"beta\",\"version\":\"1.0.0\"}]}"
         ));
+        assert!(json.contains("\"name\":\"orphan\",\"version\":\"1.0.0\",\"scope\":\"transitive\",\"direct\":false,\"source\":null,\"path\":null}"));
         assert!(json.ends_with("]}\n"));
     }
 

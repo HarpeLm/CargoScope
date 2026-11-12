@@ -1,0 +1,8 @@
+[package]
+name = "multi-version"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bitflags = "2"
+old-wrapper = "1"

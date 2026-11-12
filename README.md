@@ -19,7 +19,7 @@ CargoScope is an open-source CLI, written in Rust, for Rust/Cargo projects. One 
 
 ## Status
 
-**Early development, not yet ready for production use.** Today, `cargoscope scan` inventories the packages resolved in `Cargo.lock` (direct and transitive) across explicit workspace members. The rest of the v0.1 scope below is in progress.
+**Early development, not yet ready for production use.** Today, `cargoscope scan` inventories the packages resolved in `Cargo.lock` across explicit workspace members, and shows the dependency chain behind every transitive package. The rest of the v0.1 scope below is in progress.
 
 ## Quick Start
 
@@ -39,12 +39,15 @@ cargoscope scan . --format json
 ```
 CargoScope 0.1.0
 Target: .
-Resolved packages: 12
-- serde 1.0.229 [direct] (registry+https://github.com/rust-lang/crates.io-index)
-- serde_json 1.0.140 [transitive] (registry+https://github.com/rust-lang/crates.io-index)
+Resolved packages: 22
+- cargoscope-cargo 0.1.0 [root]
+- indexmap 2.14.2 [transitive] (registry+https://github.com/rust-lang/crates.io-index)
+    via cargoscope-cargo -> toml -> toml_edit -> indexmap
 - toml 0.8.23 [direct] (registry+https://github.com/rust-lang/crates.io-index)
 ...
 ```
+
+Every transitive package shows the shortest dependency chain that pulls it in. The JSON report carries the same chain in a `path` field.
 
 ## Planned v0.1 Usage
 
