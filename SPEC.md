@@ -283,7 +283,7 @@ GitHub Actions (cargo-dist + maturin)
 
 ### Official GitHub Action (`cargoscope-action`)
 
-Shipped with v0.1. A dedicated repository with a composite `action.yml` that:
+Shipped with v0.1, as a composite `action.yml` at the root of this repository (`uses: HarpeLm/CargoScope@v0.1.0`) rather than a separate repository. It:
 
 1. Downloads the prebuilt binary for the requested version from GitHub Releases instead of compiling.
 2. Runs `cargoscope update` and caches the RustSec and crates.io data between runs with `actions/cache`.

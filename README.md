@@ -19,22 +19,59 @@ CargoScope is an open-source CLI, written in Rust, for Rust/Cargo projects. One 
 
 ## Status
 
-**Early development, not yet ready for production use.** Today, `cargoscope update` downloads the RustSec advisory database and the crates.io data of the project, and `cargoscope scan` reports matching advisories, licenses, outdated and yanked versions, and inventories the packages resolved in `Cargo.lock`, with the dependency chain behind every advisory and transitive package. It also lists likely-unused dependencies found by static analysis, with the evidence behind each one. Output is available as text, JSON and SARIF. What remains for v0.1 is distribution (prebuilt binaries, crates.io, Homebrew, npm, PyPI) and the GitHub Action.
+**Early development, not yet ready for production use.** Today, `cargoscope update` downloads the RustSec advisory database and the crates.io data of the project, and `cargoscope scan` reports matching advisories, licenses, outdated and yanked versions, and inventories the packages resolved in `Cargo.lock`, with the dependency chain behind every advisory and transitive package. It also lists likely-unused dependencies found by static analysis, with the evidence behind each one. Output is available as text, JSON and SARIF. Release tooling (binaries, installers, crates.io, Homebrew, npm, PyPI and a GitHub Action) is in place; the first release is not published yet.
+
+## Install
+
+Not released yet: the commands below work from the first release (v0.1.0) on.
+
+```sh
+# Prebuilt binary, macOS and Linux
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/HarpeLm/CargoScope/releases/latest/download/cargoscope-installer.sh | sh
+
+# Prebuilt binary, Windows (PowerShell)
+irm https://github.com/HarpeLm/CargoScope/releases/latest/download/cargoscope-installer.ps1 | iex
+
+# Homebrew
+brew install HarpeLm/tap/cargoscope
+
+# From crates.io
+cargo install cargoscope
+
+# Without installing, through npm or Python tooling
+npx cargoscope scan .
+uvx cargoscope scan .
+```
+
+Until then, build from source: `cargo install --path crates/cargoscope-cli`.
+
+## GitHub Action
+
+```yaml
+permissions:
+  contents: read
+  security-events: write   # to upload SARIF to code scanning
+
+jobs:
+  cargoscope:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: HarpeLm/CargoScope@v0.1.0
+        with:
+          fail-on: high        # or none, to report without failing
+```
+
+The action downloads the prebuilt binary (no compilation), caches advisory data for a day, prints the report in the log, and uploads SARIF results to the Security tab. Inputs: `version`, `path`, `fail-on`, `checks`, `sarif`, `upload-sarif`.
 
 ## Quick Start
 
 ```sh
-# Install from source (prebuilt binaries, crates.io, Homebrew, npm and PyPI come with v0.1)
-cargo install --path crates/cargoscope-cli
-
 # Download the RustSec database and this project's crates.io data (the only command that uses the network)
 cargoscope update .
 
 # Scan the current project, offline
 cargoscope scan .
-
-# JSON output
-cargoscope scan . --format json
 ```
 
 ### Example Output
