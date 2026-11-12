@@ -115,7 +115,7 @@ cargo clippy -- -W clippy::pedantic
 cargo run -p cargoscope-cli -- scan .
 ```
 
-Unused-dependency detection is measured on a labelled corpus of 55 real repositories (93.6% precision on unseen code so far, below the 97% target): see [tests/corpus](tests/corpus/README.md) for the method and the honest numbers.
+Unused-dependency detection is measured on a labelled corpus of 70 real repositories (about 91–94% precision on unseen code, below the 97% target): see [tests/corpus](tests/corpus/README.md) for the method and the honest numbers.
 
 ## Ignoring an Unused-Dependency Finding
 
