@@ -24,7 +24,7 @@
     "checks": {
       "description": "Checks that ran (see --checks). Data of checks that did not run is empty or null.",
       "type": "array",
-      "items": { "enum": ["inventory", "advisories", "unused", "licenses", "versions"] }
+      "items": { "enum": ["inventory", "advisories", "unused", "licenses", "versions", "policy"] }
     },
     "advisory_database": { "$ref": "#/$defs/data_source" },
     "registry": { "$ref": "#/$defs/data_source" },

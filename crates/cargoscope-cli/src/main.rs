@@ -457,6 +457,7 @@ fn scan(options: &ScanOptions) -> ExitCode {
         inventory,
         advisories,
         unused,
+        policy: None,
         advisory_db_date,
         warnings,
     };

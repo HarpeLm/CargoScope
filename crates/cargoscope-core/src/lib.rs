@@ -233,6 +233,8 @@ pub struct Checks {
     pub licenses: bool,
     /// Report latest and yanked versions from the crates.io cache.
     pub versions: bool,
+    /// Check the policy of `cargoscope.toml`, when the file defines one.
+    pub policy: bool,
 }
 
 impl Checks {
@@ -242,11 +244,18 @@ impl Checks {
         unused: true,
         licenses: true,
         versions: true,
+        policy: true,
     };
 
     /// Names accepted by `--checks`, in report order.
-    pub const NAMES: [&'static str; 5] =
-        ["inventory", "advisories", "unused", "licenses", "versions"];
+    pub const NAMES: [&'static str; 6] = [
+        "inventory",
+        "advisories",
+        "unused",
+        "licenses",
+        "versions",
+        "policy",
+    ];
 
     /// Parses a comma-separated list such as `inventory,advisories`.
     ///
@@ -259,6 +268,7 @@ impl Checks {
             unused: false,
             licenses: false,
             versions: false,
+            policy: false,
         };
         for name in list
             .split(',')
@@ -271,6 +281,7 @@ impl Checks {
                 "unused" => checks.unused = true,
                 "licenses" => checks.licenses = true,
                 "versions" => checks.versions = true,
+                "policy" => checks.policy = true,
                 other => return Err(other.to_owned()),
             }
         }
@@ -286,6 +297,7 @@ impl Checks {
             self.unused,
             self.licenses,
             self.versions,
+            self.policy,
         ];
         Self::NAMES
             .iter()
@@ -318,6 +330,8 @@ pub struct Report {
     pub unused: Vec<UnusedFinding>,
     /// Date the RustSec database was downloaded (`YYYY-MM-DD`), if known.
     pub advisory_db_date: Option<String>,
+    /// Policy violations; `None` when no policy is configured or checked.
+    pub policy: Option<Vec<policy::Violation>>,
     /// Non-fatal problems to show the user, such as unreadable advisory files.
     pub warnings: Vec<String>,
 }

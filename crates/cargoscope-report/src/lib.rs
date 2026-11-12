@@ -609,6 +609,7 @@ mod tests {
             },
             advisories,
             unused: Vec::new(),
+            policy: None,
             package_info: Vec::new(),
             registry_date: None,
             advisory_db_date: Some("2026-01-02".to_owned()),
@@ -816,6 +817,7 @@ mod tests {
             unused: false,
             licenses: false,
             versions: false,
+            policy: false,
         };
         assert_eq!(super::summary(&report), "4 packages");
         assert!(render_text(Path::new("."), &report, VERBOSE).contains("\nSummary: 4 packages\n"));
