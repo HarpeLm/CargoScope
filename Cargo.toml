@@ -22,3 +22,8 @@ categories = ["command-line-utilities", "development-tools"]
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+# The profile that dist builds release binaries with
+[profile.dist]
+inherits = "release"
+lto = "thin"

@@ -1,0 +1,36 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist' (https://github.com/axodotdev/cargo-dist)
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.34.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell", "powershell", "homebrew", "npm"]
+# A GitHub repo to push Homebrew formulas to
+tap = "HarpeLm/homebrew-tap"
+# Publish jobs to run in CI
+publish-jobs = ["homebrew", "npm", "./publish-crates"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-pc-windows-msvc",
+    "x86_64-pc-windows-msvc",
+]
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Whether to install an updater program
+install-updater = false
+# Build provenance attestations on GitHub
+github-attestations = true
+# The npm package name
+npm-package = "cargoscope"
+# release.yml is patched by hand: dist 0.34 writes the custom publish job as
+# `uses: $/.github/...` instead of `./.github/...`.
+allow-dirty = ["ci"]
