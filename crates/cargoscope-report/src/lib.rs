@@ -1,5 +1,6 @@
 //! Report rendering: text, JSON and SARIF.
 
+pub mod compare;
 pub mod sarif;
 
 use std::fmt::Write;
