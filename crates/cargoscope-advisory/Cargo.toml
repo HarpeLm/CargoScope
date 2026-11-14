@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
 description = "RustSec advisory database access and caching for CargoScope"
 
 [dependencies]
