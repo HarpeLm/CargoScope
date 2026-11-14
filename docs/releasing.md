@@ -50,6 +50,12 @@ Checked on 2026-11-14 at commit 3ce08db. ✅ done, ⬜ to do before the tag.
 
 Released on 2026-11-14 to list the GitHub Action on the Marketplace as **Dep Scout** (the name CargoScope is taken there). No change to the CLI. ✅ GitHub Release, crates.io, npm, Homebrew and the installer report 0.1.1.
 
+## v0.2.0
+
+Released on 2026-11-15: the GitHub Action comments on pull requests with what they change and fails them only on new advisories; `compare --format markdown`; `version: installed` in the Action. ✅ GitHub Release, crates.io (5 crates), npm, Homebrew and the installer report 0.2.0; the Action passes on the 3 operating systems with 0.2.0.
+
+A first `v0.2.0` tag had been published under the name depscout during a rename that was undone; its release and tag were deleted, and the `depscout` crates are to be yanked on crates.io.
+
 ## One-time setup (maintainer)
 
 1. **crates.io**: create an API token with the `publish-new` and `publish-update` scopes, then add it as the repository secret `CARGO_REGISTRY_TOKEN`.
