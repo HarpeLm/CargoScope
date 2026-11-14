@@ -24,8 +24,9 @@ pub struct AdvisoryKey {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Comparison {
     /// Advisories present now and not in the baseline, with their severity
-    /// (`None` when unscored) and whether they are vulnerabilities.
-    pub new_advisories: Vec<(AdvisoryKey, Option<String>, bool, String)>,
+    /// (`None` when unscored), their kind (`vulnerability`, `informational`
+    /// or `ignored`) and their title. Only vulnerabilities can fail.
+    pub new_advisories: Vec<(AdvisoryKey, Option<String>, String, String)>,
     /// Advisories of the baseline that no longer appear.
     pub resolved_advisories: Vec<AdvisoryKey>,
     /// Packages (`name version`) added.
@@ -151,12 +152,18 @@ pub fn compare(baseline: &Value, current: &Value) -> Comparison {
                 let ignored = advisory
                     .get("ignored_reason")
                     .is_some_and(|reason| !reason.is_null());
-                let vulnerability = text(advisory, "kind") == "vulnerability" && !ignored;
-                (key, severity, vulnerability, text(advisory, "title"))
+                let kind = if ignored {
+                    "ignored".to_owned()
+                } else if text(advisory, "kind") == "vulnerability" {
+                    "vulnerability".to_owned()
+                } else {
+                    "informational".to_owned()
+                };
+                (key, severity, kind, text(advisory, "title"))
             })
         })
         .collect();
-    let mut new_advisories: Vec<(AdvisoryKey, Option<String>, bool, String)> = new_advisories;
+    let mut new_advisories: Vec<(AdvisoryKey, Option<String>, String, String)> = new_advisories;
     new_advisories.sort_by(|left, right| left.0.cmp(&right.0));
     let after = advisory_keys(current);
     let resolved_advisories = before.difference(&after).cloned().collect();
@@ -214,13 +221,13 @@ pub fn render_comparison_text(comparison: &Comparison) -> String {
     let new: Vec<String> = comparison
         .new_advisories
         .iter()
-        .map(|(key, severity, vulnerability, title)| {
-            let label = if *vulnerability {
+        .map(|(key, severity, kind, title)| {
+            let label = if kind == "vulnerability" {
                 severity
                     .clone()
                     .unwrap_or_else(|| "unknown severity".to_owned())
             } else {
-                "informational".to_owned()
+                kind.clone()
             };
             format!(
                 "{} [{label}] {} {}: {title}",
@@ -269,10 +276,10 @@ pub fn render_comparison_json(comparison: &Comparison) -> String {
     let key = |key: &AdvisoryKey| json!({ "id": key.id, "package": { "name": key.package, "version": key.version } });
     let value = json!({
         "comparison_format_version": COMPARISON_FORMAT_VERSION,
-        "new_advisories": comparison.new_advisories.iter().map(|(k, severity, vulnerability, title)| {
+        "new_advisories": comparison.new_advisories.iter().map(|(k, severity, kind, title)| {
             let mut entry = key(k);
             entry["severity"] = json!(severity);
-            entry["kind"] = json!(if *vulnerability { "vulnerability" } else { "informational" });
+            entry["kind"] = json!(kind);
             entry["title"] = json!(title);
             entry
         }).collect::<Vec<_>>(),
@@ -337,8 +344,23 @@ mod tests {
             vec!["Cargo.toml [dependencies] log"]
         );
         assert_eq!(comparison.new_yanked, vec!["y 1.0.0"]);
+        assert_eq!(comparison.new_advisories[0].2, "vulnerability");
         let text = render_comparison_text(&comparison);
         assert!(text.contains("New advisories: 1\n- NEW-1 [unknown severity] a 2.0.0: new\n"));
+    }
+
+    #[test]
+    fn ignored_advisories_are_labelled_ignored() {
+        let baseline = report(json!([]), json!([]), json!([]));
+        let current = report(
+            json!([{ "id": "IGN-1", "kind": "vulnerability", "severity": "high", "title": "known", "package": { "name": "a", "version": "1.0.0" }, "ignored_reason": "accepted risk" }]),
+            json!([]),
+            json!([]),
+        );
+        let comparison = compare(&baseline, &current);
+        assert_eq!(comparison.new_advisories[0].2, "ignored");
+        assert!(render_comparison_text(&comparison).contains("- IGN-1 [ignored] a 1.0.0: known\n"));
+        assert!(super::render_comparison_json(&comparison).contains("\"kind\": \"ignored\""));
     }
 
     #[test]

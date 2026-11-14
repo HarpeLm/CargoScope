@@ -252,8 +252,11 @@ fn compare_command(arguments: impl Iterator<Item = String>) -> ExitCode {
     let fails = comparison
         .new_advisories
         .iter()
-        .any(|(_, severity, vulnerability, _)| {
-            fail_on.triggers(*vulnerability, severity.as_deref().and_then(parse_severity))
+        .any(|(_, severity, kind, _)| {
+            fail_on.triggers(
+                kind == "vulnerability",
+                severity.as_deref().and_then(parse_severity),
+            )
         });
     if fails {
         ExitCode::from(1)
