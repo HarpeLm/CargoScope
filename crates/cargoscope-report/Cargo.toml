@@ -11,7 +11,7 @@ categories.workspace = true
 description = "Text, JSON and SARIF report rendering for CargoScope"
 
 [dependencies]
-cargoscope-core = { path = "../cargoscope-core", version = "0.1.0-dev" }
+cargoscope-core = { path = "../cargoscope-core", version = "0.1.0" }
 serde_json = "1"
 
 [lints]
