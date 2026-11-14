@@ -419,6 +419,15 @@ fn severity_from_cvss(vector: &str) -> Option<Severity> {
 }
 
 /// Converts Unix seconds to a `YYYY-MM-DD` UTC date.
+/// Today's date in UTC, as `YYYY-MM-DD`.
+#[must_use]
+pub fn utc_today() -> String {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    utc_date(seconds)
+}
+
 pub(crate) fn utc_date(seconds: u64) -> String {
     // Days-to-civil conversion (Howard Hinnant's algorithm).
     let days = i64::try_from(seconds / 86_400).unwrap_or(0) + 719_468;
