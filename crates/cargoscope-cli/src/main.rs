@@ -102,6 +102,9 @@ enum FailOn {
 
 impl FailOn {
     fn is_triggered_by(self, finding: &AdvisoryFinding) -> bool {
+        if finding.ignored.is_some() {
+            return false;
+        }
         self.triggers(
             matches!(finding.kind, AdvisoryKind::Vulnerability),
             finding.severity,
@@ -118,6 +121,47 @@ impl FailOn {
             Self::AtLeast(threshold) => severity.is_none_or(|severity| severity >= threshold),
         }
     }
+}
+
+/// Marks findings ignored by `[advisories] ignore`, matching the advisory ID
+/// or one of its aliases. Returns warnings for expired and unused entries.
+fn apply_advisory_ignores(
+    findings: &mut [AdvisoryFinding],
+    ignores: &[cargoscope_cargo::config::AdvisoryIgnore],
+    today: &str,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for ignore in ignores {
+        let matches = |finding: &AdvisoryFinding| {
+            finding.id.eq_ignore_ascii_case(&ignore.id)
+                || finding
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(&ignore.id))
+        };
+        if !findings.iter().any(&matches) {
+            warnings.push(format!(
+                "cargoscope.toml ignores {}, which matches no advisory of this project: remove it if it is no longer needed",
+                ignore.id
+            ));
+            continue;
+        }
+        if let Some(until) = ignore.until.as_deref().filter(|until| *until < today) {
+            warnings.push(format!(
+                "the ignore of {} expired on {until}: the advisory counts again",
+                ignore.id
+            ));
+            continue;
+        }
+        let reason = match &ignore.until {
+            Some(until) => format!("{} (until {until})", ignore.reason),
+            None => ignore.reason.clone(),
+        };
+        for finding in findings.iter_mut().filter(|finding| matches(finding)) {
+            finding.ignored = Some(reason.clone());
+        }
+    }
+    warnings
 }
 
 fn parse_severity(name: &str) -> Option<Severity> {
@@ -399,7 +443,21 @@ fn scan(options: &ScanOptions) -> ExitCode {
                 check.unreadable.len()
             ));
         }
-        (check.findings, database.fetched_on)
+        let mut findings = check.findings;
+        match cargoscope_cargo::config::load_advisory_ignores(root) {
+            Ok(ignores) => {
+                warnings.extend(apply_advisory_ignores(
+                    &mut findings,
+                    &ignores,
+                    &cargoscope_advisory::utc_today(),
+                ));
+            }
+            Err(error) => {
+                eprintln!("CargoScope could not read the advisory ignores: {error}");
+                return ExitCode::from(2);
+            }
+        }
+        (findings, database.fetched_on)
     } else {
         (Vec::new(), None)
     };
@@ -685,6 +743,42 @@ mod tests {
             patched: Vec::new(),
             ignored: None,
         }
+    }
+
+    #[test]
+    fn applies_advisory_ignores_by_id_or_alias_with_expiry() {
+        use cargoscope_cargo::config::AdvisoryIgnore;
+        let mut findings = vec![
+            finding(AdvisoryKind::Vulnerability, Some(Severity::High)),
+            finding(AdvisoryKind::Vulnerability, None),
+        ];
+        findings[0].id = "RUSTSEC-1".to_owned();
+        findings[1].id = "RUSTSEC-2".to_owned();
+        findings[1].aliases = vec!["CVE-9".to_owned()];
+        let ignore = |id: &str, until: Option<&str>| AdvisoryIgnore {
+            id: id.to_owned(),
+            reason: "known".to_owned(),
+            until: until.map(str::to_owned),
+        };
+        let warnings = super::apply_advisory_ignores(
+            &mut findings,
+            &[
+                ignore("rustsec-1", None),
+                ignore("CVE-9", Some("2026-01-01")),
+                ignore("RUSTSEC-404", None),
+            ],
+            "2026-11-14",
+        );
+        assert_eq!(findings[0].ignored.as_deref(), Some("known"));
+        assert_eq!(
+            findings[1].ignored, None,
+            "expired ignore no longer applies"
+        );
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings[0].contains("expired on 2026-01-01"));
+        assert!(warnings[1].contains("RUSTSEC-404, which matches no advisory"));
+        assert!(!FailOn::AnyVulnerability.is_triggered_by(&findings[0]));
+        assert!(FailOn::AnyVulnerability.is_triggered_by(&findings[1]));
     }
 
     #[test]
