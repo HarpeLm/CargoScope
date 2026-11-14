@@ -178,7 +178,39 @@ struct Sources {
     skipped: usize,
 }
 
+/// The directory that `include!`, `#[path]` and target paths may reach: the
+/// workspace root (the nearest ancestor whose `Cargo.toml` has a
+/// `[workspace]` table), or the package itself outside a workspace.
+fn source_bound(package_dir: &Path) -> PathBuf {
+    let start = package_dir
+        .canonicalize()
+        .unwrap_or_else(|_| package_dir.to_path_buf());
+    let mut current = Some(start.as_path());
+    while let Some(dir) = current {
+        let manifest = dir.join("Cargo.toml");
+        let is_workspace = fs::symlink_metadata(&manifest)
+            .is_ok_and(|m| m.is_file() && m.len() <= MAX_SOURCE_BYTES)
+            && fs::read_to_string(&manifest)
+                .ok()
+                .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+                .is_some_and(|value| value.get("workspace").is_some());
+        if is_workspace {
+            return dir.to_path_buf();
+        }
+        current = dir.parent();
+    }
+    start
+}
+
+/// Whether `path` resolves to a location inside `bound` (no escape through
+/// `..`, an absolute path or a symbolic link).
+fn is_within(bound: &Path, path: &Path) -> bool {
+    path.canonicalize()
+        .is_ok_and(|resolved| resolved.starts_with(bound))
+}
+
 fn collect_sources(package_dir: &Path, manifest: &toml::Value) -> Sources {
+    let bound = source_bound(package_dir);
     let mut sources = Sources {
         published_copy: is_regular_file(&package_dir.join("Cargo.toml.orig")),
         ..Sources::default()
@@ -206,6 +238,7 @@ fn collect_sources(package_dir: &Path, manifest: &toml::Value) -> Sources {
                 // live outside src/ (`crates/core/main.rs`, `main.rs`).
                 follow_modules(
                     &package_dir.join(path),
+                    &bound,
                     0,
                     &mut sources.code,
                     &mut sources.skipped,
@@ -226,7 +259,7 @@ fn collect_sources(package_dir: &Path, manifest: &toml::Value) -> Sources {
         sources.has_build_script = true;
         // Build scripts often reuse code from src/ with `#[path] mod` or
         // `include!("...")`.
-        follow_modules(&path, 0, &mut sources.build, &mut sources.skipped);
+        follow_modules(&path, &bound, 0, &mut sources.build, &mut sources.skipped);
         if let Some(dir) = path.parent().filter(|dir| *dir != package_dir) {
             walk(dir, 0, &mut sources.build, &mut sources.skipped);
         }
@@ -259,9 +292,17 @@ fn add_file(path: &Path, files: &mut Vec<PathBuf>, skipped: &mut usize) {
 }
 
 /// Adds `file` and, recursively, the files of the modules it declares with
-/// `mod name;` (as `name.rs` or `name/mod.rs`, or a `#[path = "..."]`).
-fn follow_modules(file: &Path, depth: usize, files: &mut Vec<PathBuf>, skipped: &mut usize) {
-    if depth > MAX_DEPTH || files.iter().any(|known| known == file) {
+/// `mod name;` (as `name.rs` or `name/mod.rs`, or a `#[path = "..."]`) and
+/// the files it includes with `include!`. Files outside `bound` are never
+/// read, so `..` is followed only while it stays in the workspace.
+fn follow_modules(
+    file: &Path,
+    bound: &Path,
+    depth: usize,
+    files: &mut Vec<PathBuf>,
+    skipped: &mut usize,
+) {
+    if depth > MAX_DEPTH || files.iter().any(|known| known == file) || !is_within(bound, file) {
         return;
     }
     let before = files.len();
@@ -289,19 +330,10 @@ fn follow_modules(file: &Path, depth: usize, files: &mut Vec<PathBuf>, skipped: 
     } else {
         dir.join(stem)
     };
-    for included in included_files(tokens.clone())
-        .into_iter()
-        .filter(|path| !path.contains(".."))
-    {
-        follow_modules(&dir.join(included), depth + 1, files, skipped);
+    for included in included_files(tokens.clone()) {
+        follow_modules(&dir.join(included), bound, depth + 1, files, skipped);
     }
     for (name, explicit_path) in declared_modules(tokens) {
-        if explicit_path
-            .as_deref()
-            .is_some_and(|path| path.contains(".."))
-        {
-            continue;
-        }
         let candidates = match explicit_path {
             Some(path) => vec![dir.join(path)],
             None => vec![
@@ -310,7 +342,7 @@ fn follow_modules(file: &Path, depth: usize, files: &mut Vec<PathBuf>, skipped: 
             ],
         };
         if let Some(found) = candidates.into_iter().find(|path| is_regular_file(path)) {
-            follow_modules(&found, depth + 1, files, skipped);
+            follow_modules(&found, bound, depth + 1, files, skipped);
         }
     }
 }
@@ -1314,7 +1346,14 @@ mod tests {
         std::fs::write(root.join("core/extra_impl.rs"), "").expect("write");
         let mut files = Vec::new();
         let mut skipped = 0;
-        super::follow_modules(&root.join("core/main.rs"), 0, &mut files, &mut skipped);
+        let bound = root.canonicalize().expect("root");
+        super::follow_modules(
+            &root.join("core/main.rs"),
+            &bound,
+            0,
+            &mut files,
+            &mut skipped,
+        );
         let names: Vec<String> = files
             .iter()
             .map(|file| {
@@ -1350,7 +1389,8 @@ mod tests {
         std::fs::write(root.join("src/cli.rs"), "").expect("write");
         let mut files = Vec::new();
         let mut skipped = 0;
-        super::follow_modules(&root.join("build.rs"), 0, &mut files, &mut skipped);
+        let bound = root.canonicalize().expect("root");
+        super::follow_modules(&root.join("build.rs"), &bound, 0, &mut files, &mut skipped);
         let mut names: Vec<String> = files
             .iter()
             .map(|file| {
@@ -1493,6 +1533,63 @@ mod tests {
             "the macro's own dependencies are not generated"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn follows_parent_paths_inside_the_workspace_only() {
+        let base = std::env::temp_dir().join(format!("cargoscope-bound-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("repo");
+        std::fs::create_dir_all(root.join("tests/no-std")).expect("dirs");
+        std::fs::create_dir_all(root.join("tests/include")).expect("dirs");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"tests/no-std\"]\n",
+        )
+        .expect("write");
+        std::fs::write(
+            root.join("tests/no-std/Cargo.toml"),
+            "[package]\nname = \"no-std\"\n",
+        )
+        .expect("write");
+        std::fs::write(
+            root.join("tests/no-std/lib.rs"),
+            "include!(\"../include/basic.rs\");\ninclude!(\"../../../secret.rs\");\n#[path = \"/etc/hosts.rs\"]\nmod abs;\n",
+        )
+        .expect("write");
+        std::fs::write(
+            root.join("tests/include/basic.rs"),
+            "use pin_project_lite::pin_project;\n",
+        )
+        .expect("write");
+        std::fs::write(base.join("secret.rs"), "use leaked::Thing;\n").expect("write");
+
+        let bound = super::source_bound(&root.join("tests/no-std"));
+        assert_eq!(bound, root.canonicalize().expect("root"));
+        let mut files = Vec::new();
+        let mut skipped = 0;
+        super::follow_modules(
+            &root.join("tests/no-std/lib.rs"),
+            &bound,
+            0,
+            &mut files,
+            &mut skipped,
+        );
+        let names: Vec<String> = files
+            .iter()
+            .map(|file| {
+                file.file_name()
+                    .expect("name")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec!["lib.rs", "basic.rs"],
+            "secret.rs is outside the workspace"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
