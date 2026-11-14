@@ -14,7 +14,7 @@ cargo-machete analyses every `Cargo.toml` under a directory, including test fixt
 | Undecided after reading the code | 0 | about 106 |
 | Precision | **98.8%** (98.9% after the fix) | **about 41%** (33% to 53%) |
 
-So on these repositories, cargo-machete reported about **100 times more false positives** than CargoScope's default output, and about the same number of really unused dependencies.
+So on these repositories, cargo-machete reported about **100 times more false positives** than CargoScope's default output, and about the same number of really unused dependencies. **This ratio depends on the kind of project:** on 73 popular library crates judged by rustc, the gap was 1 error against 2 (see [compiler-benchmark.md](compiler-benchmark.md)).
 
 ## How the numbers were obtained
 
