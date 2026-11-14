@@ -1,0 +1,70 @@
+# One-time job: marks the old cargoscope packages as renamed to depscout.
+# - crates.io: publishes cargoscope 0.1.2, a binary that only prints how to
+#   install depscout (crates.io has no deprecation flag).
+# - npm: deprecates every version of the cargoscope package.
+# Run it by hand from the Actions tab, once depscout is published.
+name: Deprecate cargoscope
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  crates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Write the cargoscope 0.1.2 notice crate
+        run: |
+          mkdir -p notice/src
+          cat > notice/Cargo.toml <<'EOF'
+          [package]
+          name = "cargoscope"
+          version = "0.1.2"
+          edition = "2021"
+          license = "MIT"
+          description = "Renamed to depscout: cargo install depscout"
+          repository = "https://github.com/HarpeLm/DepScout"
+          readme = "README.md"
+
+          [[bin]]
+          name = "cargoscope"
+          path = "src/main.rs"
+          EOF
+          cat > notice/README.md <<'EOF'
+          # cargoscope has been renamed to depscout
+
+          CargoScope is now **Dep Scout**. Install the new crate:
+
+              cargo install depscout
+
+          The command is `depscout`, the policy file is `depscout.toml`, and the
+          variables start with `DEPSCOUT_`. See https://github.com/HarpeLm/DepScout.
+          EOF
+          cat > notice/src/main.rs <<'EOF'
+          fn main() {
+              eprintln!("cargoscope has been renamed to depscout.");
+              eprintln!("Install it with: cargo install depscout");
+              eprintln!("See https://github.com/HarpeLm/DepScout");
+              std::process::exit(2);
+          }
+          EOF
+      - name: Publish
+        working-directory: notice
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --allow-dirty
+
+  npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Deprecate cargoscope
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm deprecate cargoscope "Renamed to depscout (npx depscout)"
