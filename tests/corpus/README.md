@@ -4,6 +4,7 @@
 
 - `unused`: the dependency is really unused by the package's code.
 - `used`: CargoScope reported it wrongly at some point. These labels guard against regressions.
+- `known = true`, on a `used` label: a wrong finding that is understood and accepted, such as egui's intentionally empty `tests/test_egui_extras_compilation` crate. It still counts against precision, but does not make the tool fail, so the tool only fails on new problems.
 
 Replay it with:
 
