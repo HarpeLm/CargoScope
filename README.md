@@ -58,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: HarpeLm/CargoScope@v0.1.0
+      - uses: HarpeLm/CargoScope@v0.1.1
         with:
           fail-on: high        # or none, to report without failing
 ```
