@@ -270,6 +270,142 @@ pub fn render_comparison_text(comparison: &Comparison) -> String {
     out
 }
 
+/// First line of the Markdown comparison: a hidden marker that lets the
+/// GitHub Action find and update its own pull request comment.
+pub const MARKDOWN_MARKER: &str = "<!-- cargoscope-pr-comment -->";
+
+/// Makes text safe inside a Markdown table cell.
+fn cell(text: &str) -> String {
+    text.replace('|', "\\|").replace(['\n', '\r'], " ")
+}
+
+fn markdown_list(out: &mut String, items: &[String]) {
+    for item in items {
+        let _ = writeln!(out, "- `{}`", item.replace('`', "'"));
+    }
+}
+
+/// Renders a comparison as Markdown, for a pull request comment: what the
+/// change adds or removes, most important first. Dependency changes are
+/// folded at the end.
+#[must_use]
+pub fn render_comparison_markdown(comparison: &Comparison) -> String {
+    let mut out = format!("{MARKDOWN_MARKER}\n### CargoScope: dependency changes\n\n");
+    let has_findings = !comparison.new_advisories.is_empty()
+        || !comparison.resolved_advisories.is_empty()
+        || !comparison.new_yanked.is_empty()
+        || !comparison.new_unused.is_empty()
+        || !comparison.resolved_unused.is_empty();
+    if !has_findings {
+        out.push_str("No new advisory, yanked version or likely-unused dependency.\n\n");
+    }
+    if !comparison.new_advisories.is_empty() {
+        let _ = writeln!(
+            out,
+            "**New advisories: {}**\n\n| Advisory | Severity | Package | Title |\n|---|---|---|---|",
+            comparison.new_advisories.len()
+        );
+        for (key, severity, kind, title) in &comparison.new_advisories {
+            let id = if key.id.starts_with("RUSTSEC-") {
+                format!("[{0}](https://rustsec.org/advisories/{0})", key.id)
+            } else {
+                cell(&key.id)
+            };
+            let label = if kind == "vulnerability" {
+                severity.clone().unwrap_or_else(|| "unknown".to_owned())
+            } else {
+                kind.clone()
+            };
+            let _ = writeln!(
+                out,
+                "| {id} | {} | `{} {}` | {} |",
+                cell(&label),
+                cell(&key.package),
+                cell(&key.version),
+                cell(title)
+            );
+        }
+        out.push('\n');
+    }
+    if !comparison.resolved_advisories.is_empty() {
+        let _ = writeln!(
+            out,
+            "**Resolved advisories: {}**\n",
+            comparison.resolved_advisories.len()
+        );
+        let resolved: Vec<String> = comparison
+            .resolved_advisories
+            .iter()
+            .map(|key| format!("{} {} {}", key.id, key.package, key.version))
+            .collect();
+        markdown_list(&mut out, &resolved);
+        out.push('\n');
+    }
+    if !comparison.new_yanked.is_empty() {
+        let _ = writeln!(
+            out,
+            "**New yanked versions in use: {}**\n",
+            comparison.new_yanked.len()
+        );
+        markdown_list(&mut out, &comparison.new_yanked);
+        out.push('\n');
+    }
+    if !comparison.new_unused.is_empty() {
+        let _ = writeln!(
+            out,
+            "**New likely-unused dependencies: {}** (static analysis: check before removing)\n",
+            comparison.new_unused.len()
+        );
+        markdown_list(&mut out, &comparison.new_unused);
+        out.push('\n');
+    }
+    if !comparison.resolved_unused.is_empty() {
+        let _ = writeln!(
+            out,
+            "**No longer unused: {}**\n",
+            comparison.resolved_unused.len()
+        );
+        markdown_list(&mut out, &comparison.resolved_unused);
+        out.push('\n');
+    }
+    let package_changes = comparison.changed_versions.len()
+        + comparison.added_packages.len()
+        + comparison.removed_packages.len();
+    if package_changes == 0 {
+        out.push_str("No package added, removed or changed in `Cargo.lock`.\n");
+    } else {
+        let _ = writeln!(
+            out,
+            "<details><summary>Packages: {} changed, {} added, {} removed</summary>\n",
+            comparison.changed_versions.len(),
+            comparison.added_packages.len(),
+            comparison.removed_packages.len()
+        );
+        let changed: Vec<String> = comparison
+            .changed_versions
+            .iter()
+            .map(|(name, before, after)| {
+                format!("{name} {} -> {}", before.join(", "), after.join(", "))
+            })
+            .collect();
+        markdown_list(&mut out, &changed);
+        let added: Vec<String> = comparison
+            .added_packages
+            .iter()
+            .map(|package| format!("+ {package}"))
+            .collect();
+        markdown_list(&mut out, &added);
+        let removed: Vec<String> = comparison
+            .removed_packages
+            .iter()
+            .map(|package| format!("- {package}"))
+            .collect();
+        markdown_list(&mut out, &removed);
+        out.push_str("\n</details>\n");
+    }
+    out
+}
+
 /// Renders a comparison as JSON, terminated by a newline.
 #[must_use]
 pub fn render_comparison_json(comparison: &Comparison) -> String {
@@ -361,6 +497,34 @@ mod tests {
         assert_eq!(comparison.new_advisories[0].2, "ignored");
         assert!(render_comparison_text(&comparison).contains("- IGN-1 [ignored] a 1.0.0: known\n"));
         assert!(super::render_comparison_json(&comparison).contains("\"kind\": \"ignored\""));
+    }
+
+    #[test]
+    fn renders_markdown_for_a_pull_request_comment() {
+        let baseline = report(
+            json!([{ "id": "OLD-1", "kind": "vulnerability", "severity": "high", "title": "old", "package": { "name": "a", "version": "1.0.0" } }]),
+            json!([{ "name": "a", "version": "1.0.0" }]),
+            json!([]),
+        );
+        let current = report(
+            json!([{ "id": "RUSTSEC-2020-0071", "kind": "vulnerability", "severity": "medium", "title": "Segfault | in time", "package": { "name": "time", "version": "0.1.45" } }]),
+            json!([{ "name": "a", "version": "2.0.0" }, { "name": "time", "version": "0.1.45" }]),
+            json!([{ "manifest": "Cargo.toml", "section": "dependencies", "dependency": "rand", "confidence": "likely-unused", "ignored_reason": null }]),
+        );
+        let markdown = super::render_comparison_markdown(&compare(&baseline, &current));
+        assert!(markdown.starts_with("<!-- cargoscope-pr-comment -->\n"));
+        assert!(markdown.contains(
+            "| [RUSTSEC-2020-0071](https://rustsec.org/advisories/RUSTSEC-2020-0071) | medium | `time 0.1.45` | Segfault \\| in time |"
+        ));
+        assert!(markdown.contains("**Resolved advisories: 1**\n\n- `OLD-1 a 1.0.0`\n"));
+        assert!(markdown.contains("- `Cargo.toml [dependencies] rand`\n"));
+        assert!(markdown.contains("Packages: 1 changed, 1 added, 0 removed"));
+        assert!(markdown.contains("- `a 1.0.0 -> 2.0.0`\n- `+ time 0.1.45`\n"));
+
+        let same = super::render_comparison_markdown(&compare(&current, &current));
+        assert!(same.contains("No new advisory, yanked version or likely-unused dependency."));
+        assert!(same.contains("No package added, removed or changed"));
+        assert!(!same.contains("<details>"));
     }
 
     #[test]

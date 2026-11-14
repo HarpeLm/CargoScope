@@ -16,8 +16,8 @@ const USAGE: &str = "Usage:
   cargoscope update [PATH]
       Download the RustSec advisory database and the crates.io data (versions,
       licenses) of the project at PATH. The only command that uses the network.
-  cargoscope compare BASELINE CURRENT [--format text|json] [--fail-on THRESHOLD]
-      Compare two JSON reports. Exit code 1 when new advisories reach the threshold.
+  cargoscope compare BASELINE CURRENT [--format text|json|markdown] [--fail-on THRESHOLD]
+      Compare two JSON reports (markdown: for a pull request comment). Exit code 1 when new advisories reach the threshold.
   cargoscope scan [PATH] [--format text|json|sarif] [--output FILE] [--fail-on THRESHOLD] [--show-uncertain] [--verbose] [--precise]
       Report on a Cargo project, read-only and offline.
 
@@ -185,10 +185,18 @@ fn read_report(path: &Path) -> Result<serde_json::Value, String> {
     Ok(value)
 }
 
-/// `cargoscope compare BASELINE CURRENT [--format text|json] [--fail-on THRESHOLD]`.
+/// Output formats of `cargoscope compare`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompareFormat {
+    Text,
+    Json,
+    Markdown,
+}
+
+/// `cargoscope compare BASELINE CURRENT [--format text|json|markdown] [--fail-on THRESHOLD]`.
 fn compare_command(arguments: impl Iterator<Item = String>) -> ExitCode {
     let mut files = Vec::new();
-    let mut format = OutputFormat::Text;
+    let mut format = CompareFormat::Text;
     let mut fail_on = FailOn::AnyVulnerability;
     let mut arguments = arguments.peekable();
     while let Some(argument) = arguments.next() {
@@ -205,10 +213,11 @@ fn compare_command(arguments: impl Iterator<Item = String>) -> ExitCode {
             "--format" => value(&mut arguments)
                 .ok_or_else(|| "Missing value for --format.".to_owned())
                 .and_then(|value: String| match value.as_str() {
-                    "text" => Ok(OutputFormat::Text),
-                    "json" => Ok(OutputFormat::Json),
+                    "text" => Ok(CompareFormat::Text),
+                    "json" => Ok(CompareFormat::Json),
+                    "markdown" => Ok(CompareFormat::Markdown),
                     other => Err(format!(
-                        "Unsupported comparison format: {other}. Use text or json."
+                        "Unsupported comparison format: {other}. Use text, json or markdown."
                     )),
                 })
                 .map(|parsed| format = parsed),
@@ -240,11 +249,15 @@ fn compare_command(arguments: impl Iterator<Item = String>) -> ExitCode {
     };
     let comparison = cargoscope_report::compare::compare(&baseline, &current);
     match format {
-        OutputFormat::Json => print!(
+        CompareFormat::Json => print!(
             "{}",
             cargoscope_report::compare::render_comparison_json(&comparison)
         ),
-        _ => print!(
+        CompareFormat::Markdown => print!(
+            "{}",
+            cargoscope_report::compare::render_comparison_markdown(&comparison)
+        ),
+        CompareFormat::Text => print!(
             "{}",
             cargoscope_report::compare::render_comparison_text(&comparison)
         ),

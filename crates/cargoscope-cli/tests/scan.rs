@@ -628,6 +628,21 @@ fn compare_lists_new_advisories_and_fails_on_them() {
     let value: serde_json::Value = serde_json::from_slice(&json.stdout).expect("valid JSON");
     assert_eq!(value["comparison_format_version"], 1);
     assert_eq!(value["new_advisories"][0]["id"], "CARGOSCOPE-TEST-0001");
+
+    let markdown = compare(&[
+        "--format=markdown",
+        baseline.to_str().expect("utf-8"),
+        current.to_str().expect("utf-8"),
+    ]);
+    // Same exit code as the text format: new vulnerabilities fail.
+    assert_eq!(markdown.status.code(), Some(1));
+    let markdown = stdout(&markdown);
+    assert!(
+        markdown.starts_with("<!-- cargoscope-pr-comment -->\n"),
+        "{markdown}"
+    );
+    assert!(markdown.contains("| CARGOSCOPE-TEST-0001 | high | `serde_json 1.0.128` |"));
+    assert!(markdown.contains("**New yanked versions in use: 1**\n\n- `itoa 1.0.11`\n"));
     let _ = std::fs::remove_file(baseline);
     let _ = std::fs::remove_file(current);
 }
