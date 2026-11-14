@@ -19,7 +19,7 @@ CargoScope is an open-source CLI, written in Rust, for Rust/Cargo projects. One 
 
 ## Status
 
-**Early development, not yet ready for production use.** Today, `cargoscope update` downloads the RustSec advisory database and the crates.io data of the project, and `cargoscope scan` reports matching advisories, licenses, outdated and yanked versions, and inventories the packages resolved in `Cargo.lock`, with the dependency chain behind every advisory and transitive package. It also lists likely-unused dependencies found by static analysis, with the evidence behind each one. Output is available as text, JSON and SARIF. Release tooling (binaries, installers, crates.io, Homebrew, npm, PyPI and a GitHub Action) is in place; the first release is not published yet.
+**Early development, not yet ready for production use.** Today, `cargoscope update` downloads the RustSec advisory database and the crates.io data of the project, and `cargoscope scan` reports matching advisories, licenses, outdated and yanked versions, and inventories the packages resolved in `Cargo.lock`, with the dependency chain behind every advisory and transitive package. It also lists likely-unused dependencies found by static analysis, with the evidence behind each one. Output is available as text, JSON and SARIF. Release tooling (binaries, installers, crates.io, Homebrew, npm and a GitHub Action) is in place.
 
 **New here?** [Try CargoScope in two minutes](docs/try-it.md), then tell us how it went.
 
@@ -40,9 +40,8 @@ brew install HarpeLm/tap/cargoscope
 # From crates.io
 cargo install cargoscope
 
-# Without installing, through npm or Python tooling
+# Without installing, through npm
 npx cargoscope scan .
-uvx cargoscope scan .
 ```
 
 Until then, build from source: `cargo install --path crates/cargoscope-cli`.
