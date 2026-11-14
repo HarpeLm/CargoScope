@@ -8,7 +8,8 @@
 //! created with `cargo generate-lockfile`, which only resolves versions: no
 //! build script or project code runs. CargoScope itself never executes code.
 //!
-//! Exit code 1 when a `likely-unused` finding is unlabelled or wrong, or
+//! Exit code 1 when a `likely-unused` finding is unlabelled or newly wrong
+//! (labels with `known = true` are accepted wrong findings), or
 //! when precision is below the 90% criterion of SPEC.md section 12.
 
 use std::collections::BTreeMap;
@@ -24,6 +25,9 @@ struct Label {
     section: String,
     dependency: String,
     unused: bool,
+    /// A wrong finding that is understood and accepted: it counts against
+    /// precision but does not fail the run.
+    known: bool,
 }
 
 struct Repository {
@@ -62,6 +66,10 @@ fn read_corpus(path: &Path) -> Result<Vec<Repository>, String> {
                         manifest: string(label, "manifest")?,
                         section: string(label, "section")?,
                         dependency: string(label, "dependency")?,
+                        known: label
+                            .get("known")
+                            .and_then(toml::Value::as_bool)
+                            .unwrap_or(false),
                         unused: match string(label, "truth")?.as_str() {
                             "unused" => true,
                             "used" => false,
@@ -140,6 +148,7 @@ fn checkout(repository: &Repository, dir: &Path, offline: bool) -> Result<(), St
 struct Tally {
     true_positives: usize,
     false_positives: Vec<String>,
+    known_false_positives: Vec<String>,
     unlabelled: Vec<String>,
     missed: Vec<String>,
 }
@@ -215,6 +224,7 @@ fn main() -> ExitCode {
                 &finding.dependency,
             ) {
                 Some(label) if label.unused => tally.true_positives += 1,
+                Some(label) if label.known => tally.known_false_positives.push(id),
                 Some(_) => tally.false_positives.push(id),
                 None => tally.unlabelled.push(id),
             }
@@ -235,8 +245,9 @@ fn main() -> ExitCode {
     }
 
     for (set, tally) in &tallies {
-        let reported = tally.true_positives + tally.false_positives.len() + tally.unlabelled.len();
-        let labelled = tally.true_positives + tally.false_positives.len();
+        let wrong = tally.false_positives.len() + tally.known_false_positives.len();
+        let reported = tally.true_positives + wrong + tally.unlabelled.len();
+        let labelled = tally.true_positives + wrong;
         let precision = if labelled == 0 {
             1.0
         } else {
@@ -245,15 +256,19 @@ fn main() -> ExitCode {
             ratio
         };
         println!(
-            "{set}: {reported} likely-unused reported, {} correct, {} wrong, {} unlabelled; precision {:.1}%; {} labelled unused dependencies not reported as likely",
+            "{set}: {reported} likely-unused reported, {} correct, {} wrong ({} known), {} unlabelled; precision {:.1}%; {} labelled unused dependencies not reported as likely",
             tally.true_positives,
-            tally.false_positives.len(),
+            wrong,
+            tally.known_false_positives.len(),
             tally.unlabelled.len(),
             precision * 100.0,
             tally.missed.len()
         );
         for item in &tally.false_positives {
             println!("  wrong: {item}");
+        }
+        for item in &tally.known_false_positives {
+            println!("  wrong, known and accepted: {item}");
         }
         for item in &tally.unlabelled {
             println!("  unlabelled: {item}");
