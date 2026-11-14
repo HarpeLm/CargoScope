@@ -2,23 +2,23 @@
 
 CargoScope reads your `Cargo.lock` and `Cargo.toml` files and tells you, in one report, which dependencies have known advisories, which look unused, which are yanked or outdated, and why each one is in your project. It never modifies your files and never runs your code.
 
-This is a pre-release (`0.1.0-alpha.4`). Your feedback decides what the first stable version looks like: see the end of this page.
+This is the first stable version (`0.1.0`), and it is young: your feedback decides what comes next. See the end of this page.
 
 ## 1. Install (about 10 seconds)
 
 macOS and Linux:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/HarpeLm/CargoScope/releases/download/v0.1.0-alpha.4/cargoscope-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/HarpeLm/CargoScope/releases/latest/download/cargoscope-installer.sh | sh
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://github.com/HarpeLm/CargoScope/releases/download/v0.1.0-alpha.4/cargoscope-installer.ps1 | iex
+irm https://github.com/HarpeLm/CargoScope/releases/latest/download/cargoscope-installer.ps1 | iex
 ```
 
-Or from source, with a Rust toolchain: `cargo install --git https://github.com/HarpeLm/CargoScope --tag v0.1.0-alpha.4 cargoscope`.
+Or with a Rust toolchain: `cargo install cargoscope`, or with Homebrew: `brew install HarpeLm/tap/cargoscope`.
 
 ## 2. Download the advisory data (the only step that uses the network)
 

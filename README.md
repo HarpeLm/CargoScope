@@ -19,13 +19,11 @@ CargoScope is an open-source CLI, written in Rust, for Rust/Cargo projects. One 
 
 ## Status
 
-**Early development, not yet ready for production use.** Today, `cargoscope update` downloads the RustSec advisory database and the crates.io data of the project, and `cargoscope scan` reports matching advisories, licenses, outdated and yanked versions, and inventories the packages resolved in `Cargo.lock`, with the dependency chain behind every advisory and transitive package. It also lists likely-unused dependencies found by static analysis, with the evidence behind each one. Output is available as text, JSON and SARIF. Release tooling (binaries, installers, crates.io, Homebrew, npm and a GitHub Action) is in place.
+**Version 0.1.0, the first stable release.** `cargoscope update` downloads the RustSec advisory database and the crates.io data of a project; `cargoscope scan` then reports, offline, matching advisories, likely-unused dependencies with the evidence behind each one, licenses, yanked and outdated versions, a `cargoscope.toml` policy, and the dependency chain behind every finding, as text, JSON or SARIF. It is young: please report anything wrong in the [feedback issue](https://github.com/HarpeLm/CargoScope/issues/1).
 
 **New here?** [Try CargoScope in two minutes](docs/try-it.md), then tell us how it went.
 
 ## Install
-
-Not released yet: the commands below work from the first release (v0.1.0) on.
 
 ```sh
 # Prebuilt binary, macOS and Linux
@@ -44,7 +42,7 @@ cargo install cargoscope
 npx cargoscope scan .
 ```
 
-Until then, build from source: `cargo install --path crates/cargoscope-cli`.
+From a clone of this repository: `cargo install --path crates/cargoscope-cli`.
 
 ## GitHub Action
 
