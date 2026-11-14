@@ -32,7 +32,7 @@ install-updater = false
 # Build provenance attestations on GitHub
 github-attestations = true
 # The npm package name
-npm-package = "depscout"
+npm-package = "cargoscope"
 # release.yml is patched by hand: dist 0.34 writes the custom publish job as
 # `uses: $/.github/...` instead of `./.github/...`, and the job needs
 # `contents: read` added to its permissions.

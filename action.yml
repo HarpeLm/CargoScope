@@ -1,26 +1,26 @@
 name: Dep Scout
-description: Scan a Rust project for advisories, unused dependencies, licenses and versions, with SARIF for code scanning.
-author: Dep Scout contributors
+description: Scan a Rust project with CargoScope - advisories, unused dependencies, licenses and versions, with SARIF for code scanning.
+author: CargoScope contributors
 branding:
   icon: search
   color: orange
 
 inputs:
   version:
-    description: Dep Scout version to install, such as 0.1.0, or "latest".
+    description: CargoScope version to install, such as 0.1.0, or "latest".
     default: latest
   path:
     description: Directory of the Cargo project to scan.
     default: "."
   fail-on:
-    description: none, low, medium, high or critical. Empty means the Dep Scout default (any vulnerability).
+    description: none, low, medium, high or critical. Empty means the CargoScope default (any vulnerability).
     default: ""
   checks:
     description: Comma-separated checks (inventory, advisories, unused, licenses, versions). Empty means all.
     default: ""
   sarif:
     description: Path of the SARIF file to write.
-    default: depscout.sarif
+    default: cargoscope.sarif
   upload-sarif:
     description: "Upload the SARIF file to GitHub code scanning (needs `security-events: write`)."
     default: "true"
@@ -30,27 +30,27 @@ outputs:
     description: Path of the SARIF file.
     value: ${{ inputs.sarif }}
   exit-code:
-    description: "Dep Scout exit code: 0 OK, 1 threshold reached, 2 execution error."
+    description: "CargoScope exit code: 0 OK, 1 threshold reached, 2 execution error."
     value: ${{ steps.scan.outputs.exit-code }}
 
 runs:
   using: composite
   steps:
-    - name: Install Dep Scout
+    - name: Install CargoScope
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
       run: |
         # Prebuilt binary from the GitHub Release: no compilation.
         if [ "$VERSION" = "latest" ]; then
-          base="https://github.com/HarpeLm/DepScout/releases/latest/download"
+          base="https://github.com/HarpeLm/CargoScope/releases/latest/download"
         else
-          base="https://github.com/HarpeLm/DepScout/releases/download/v${VERSION#v}"
+          base="https://github.com/HarpeLm/CargoScope/releases/download/v${VERSION#v}"
         fi
         if [ "$RUNNER_OS" = "Windows" ]; then
-          powershell -NoProfile -ExecutionPolicy Bypass -Command "irm $base/depscout-installer.ps1 | iex"
+          powershell -NoProfile -ExecutionPolicy Bypass -Command "irm $base/cargoscope-installer.ps1 | iex"
         else
-          curl --proto '=https' --tlsv1.2 -LsSf "$base/depscout-installer.sh" | sh
+          curl --proto '=https' --tlsv1.2 -LsSf "$base/cargoscope-installer.sh" | sh
         fi
         echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
 
@@ -58,22 +58,22 @@ runs:
       id: cache-key
       shell: bash
       run: |
-        echo "DEPSCOUT_CACHE_DIR=$RUNNER_TEMP/depscout-cache" >> "$GITHUB_ENV"
+        echo "CARGOSCOPE_CACHE_DIR=$RUNNER_TEMP/cargoscope-cache" >> "$GITHUB_ENV"
         # A new key every day, so advisories are refreshed daily at most.
         echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
 
     - name: Restore RustSec and crates.io data
       uses: actions/cache@v4
       with:
-        path: ${{ runner.temp }}/depscout-cache
-        key: depscout-data-${{ runner.os }}-${{ steps.cache-key.outputs.day }}
-        restore-keys: depscout-data-${{ runner.os }}-
+        path: ${{ runner.temp }}/cargoscope-cache
+        key: cargoscope-data-${{ runner.os }}-${{ steps.cache-key.outputs.day }}
+        restore-keys: cargoscope-data-${{ runner.os }}-
 
     - name: Download advisory and registry data
       shell: bash
       env:
         PROJECT: ${{ inputs.path }}
-      run: depscout update "$PROJECT"
+      run: cargoscope update "$PROJECT"
 
     - name: Scan
       id: scan
@@ -88,9 +88,9 @@ runs:
         [ -n "$FAIL_ON" ] && args+=(--fail-on "$FAIL_ON")
         [ -n "$CHECKS" ] && args+=(--checks "$CHECKS")
         # Readable report in the job log; never fails this step.
-        depscout scan "$PROJECT" "${args[@]}" --fail-on none || true
+        cargoscope scan "$PROJECT" "${args[@]}" --fail-on none || true
         set +e
-        depscout scan "$PROJECT" "${args[@]}" --format sarif --output "$SARIF"
+        cargoscope scan "$PROJECT" "${args[@]}" --format sarif --output "$SARIF"
         code=$?
         set -e
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
@@ -103,11 +103,11 @@ runs:
       uses: github/codeql-action/upload-sarif@v3
       with:
         sarif_file: ${{ inputs.sarif }}
-        category: depscout
+        category: cargoscope
 
     - name: Apply the failure threshold
       if: ${{ steps.scan.outputs.exit-code == '1' }}
       shell: bash
       run: |
-        echo "::error::Dep Scout found advisories at or above the threshold."
+        echo "::error::CargoScope found advisories at or above the threshold."
         exit 1

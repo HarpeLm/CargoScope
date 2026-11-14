@@ -1,6 +1,6 @@
-# Contributing to Dep Scout
+# Contributing to CargoScope
 
-Thank you for your interest in contributing! Dep Scout welcomes contributions of all kinds: bug reports, documentation improvements, new features, and fixtures.
+Thank you for your interest in contributing! CargoScope welcomes contributions of all kinds: bug reports, documentation improvements, new features, and fixtures.
 
 ## Getting Started
 
@@ -50,7 +50,7 @@ renamed crates and workspace-inherited dependencies.
 
 ## Reporting a False Positive
 
-Dep Scout only supports Rust/Cargo. The most valuable contribution is a false-positive report for unused-dependency detection:
+CargoScope only supports Rust/Cargo. The most valuable contribution is a false-positive report for unused-dependency detection:
 
 1. Open an issue with the `false-positive` label.
 2. Include the `Cargo.toml` excerpt and the code that uses the crate (or a link to a public repository and commit).

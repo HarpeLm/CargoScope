@@ -1,0 +1,31 @@
+[package]
+name = "cargoscope"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage = "https://github.com/HarpeLm/CargoScope#readme"
+readme = "../../README.md"
+# The end-to-end tests need fixtures from the repository root.
+exclude = ["tests"]
+description = "Understand every dependency in your Rust project: advisories, unused dependencies, licenses, versions and why each one is there"
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "cargoscope"
+path = "src/main.rs"
+
+[dependencies]
+cargoscope-advisory = { path = "../cargoscope-advisory", version = "0.2.0-dev" }
+cargoscope-cargo = { path = "../cargoscope-cargo", version = "0.2.0-dev" }
+cargoscope-core = { path = "../cargoscope-core", version = "0.2.0-dev" }
+cargoscope-report = { path = "../cargoscope-report", version = "0.2.0-dev" }
+serde_json = "1"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+jsonschema = { version = "0.61", default-features = false }

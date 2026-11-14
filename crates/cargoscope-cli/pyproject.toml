@@ -1,0 +1,25 @@
+# Packages the cargoscope binary as a Python wheel with maturin, so that
+# `pip install cargoscope` and `uvx cargoscope scan .` work without a Rust
+# toolchain. The wheel contains no Python code.
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "cargoscope"
+description = "Understand every dependency in your Rust project: advisories, unused dependencies, licenses, versions and why each one is there"
+readme = "../../README.md"
+license = "MIT"
+requires-python = ">=3.8"
+dynamic = ["version"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Environment :: Console",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.urls]
+Repository = "https://github.com/HarpeLm/CargoScope"
+
+[tool.maturin]
+bindings = "bin"

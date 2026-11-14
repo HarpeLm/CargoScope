@@ -13,6 +13,6 @@
 .DS_Store
 Thumbs.db
 
-# Dep Scout output
-depscout-report.json
+# CargoScope output
+cargoscope-report.json
 results.sarif

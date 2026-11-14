@@ -1,19 +1,19 @@
 name: Feedback on a pre-release
-description: Tell us how Dep Scout behaved on your project, good or bad.
+description: Tell us how CargoScope behaved on your project, good or bad.
 title: "Feedback: "
 labels: ["feedback"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for trying Dep Scout. Short answers are fine; skip what does not apply.
+        Thanks for trying CargoScope. Short answers are fine; skip what does not apply.
         Please do not paste private code or secrets: a `Cargo.toml` excerpt is usually enough.
   - type: input
     id: version
     attributes:
       label: Version
-      description: Output of `depscout --version`.
-      placeholder: depscout 0.1.0-alpha.4
+      description: Output of `cargoscope --version`.
+      placeholder: cargoscope 0.1.0-alpha.4
     validations:
       required: true
   - type: dropdown
@@ -62,4 +62,4 @@ body:
     id: compare
     attributes:
       label: What do you use today?
-      description: cargo-audit, cargo-deny, cargo-machete, cargo-udeps, Dependabot, Renovate... What would make you switch, or use Dep Scout next to them?
+      description: cargo-audit, cargo-deny, cargo-machete, cargo-udeps, Dependabot, Renovate... What would make you switch, or use CargoScope next to them?

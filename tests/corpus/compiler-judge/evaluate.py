@@ -1,4 +1,4 @@
-"""Scores Dep Scout and cargo-machete against the compiler verdicts."""
+"""Scores CargoScope and cargo-machete against the compiler verdicts."""
 import glob
 import json
 import os
@@ -111,8 +111,8 @@ def main():
             machete.append((repo, manifest, dependency, None))
 
     results = [
-        score("Dep Scout (likely-unused, default output)", cs_likely, verdicts_by_repo, sure),
-        score("Dep Scout (likely + possibly, --show-uncertain)", cs_all, verdicts_by_repo, sure),
+        score("CargoScope (likely-unused, default output)", cs_likely, verdicts_by_repo, sure),
+        score("CargoScope (likely + possibly, --show-uncertain)", cs_all, verdicts_by_repo, sure),
         score("cargo-machete (default)", machete, verdicts_by_repo, sure),
     ]
     for result in results:

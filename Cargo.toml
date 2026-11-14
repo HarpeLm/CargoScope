@@ -1,21 +1,21 @@
 [workspace]
 members = [
-    "crates/depscout-advisory",
-    "crates/depscout-cargo",
-    "crates/depscout-cli",
-    "crates/depscout-core",
-    "crates/depscout-corpus",
-    "crates/depscout-report",
+    "crates/cargoscope-advisory",
+    "crates/cargoscope-cargo",
+    "crates/cargoscope-cli",
+    "crates/cargoscope-core",
+    "crates/cargoscope-corpus",
+    "crates/cargoscope-report",
 ]
 exclude = ["tests/fixtures"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.0-dev"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT"
-repository = "https://github.com/HarpeLm/DepScout"
+repository = "https://github.com/HarpeLm/CargoScope"
 keywords = ["dependencies", "security", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 

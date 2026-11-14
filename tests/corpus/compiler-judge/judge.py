@@ -1,4 +1,4 @@
-"""Compiler judge for unused dependencies, independent of Dep Scout's code.
+"""Compiler judge for unused dependencies, independent of CargoScope's code.
 
 Input: Cargo's --message-format=json output of
   RUSTFLAGS="-W unused-crate-dependencies" cargo check --workspace --all-targets [--all-features]
