@@ -25,7 +25,7 @@ pretty_assertions = "1"                           # unused
 cc = "1"                                          # used in build.rs
 pkg-config = "0.3"                                # unused
 
-[package.metadata.cargoscope]
+[package.metadata.depscout]
 ignore-unused = [
   { name = "once_cell", reason = "kept for an upcoming feature" },
 ]

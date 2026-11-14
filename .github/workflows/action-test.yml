@@ -1,4 +1,4 @@
-# Runs the CargoScope GitHub Action from this repository against this
+# Runs the Dep Scout GitHub Action from this repository against this
 # repository, on each OS. It needs a published release to download, so it
 # runs when a release is published, or by hand.
 name: Action test
@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: CargoScope version to test ("latest" ignores pre-releases)
+        description: Dep Scout version to test ("latest" ignores pre-releases)
         default: latest
 
 permissions:
@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - id: cargoscope
+      - id: depscout
         uses: ./
         with:
           version: ${{ inputs.version || 'latest' }}
@@ -36,5 +36,5 @@ jobs:
       - name: Check the outputs
         shell: bash
         run: |
-          test -s "${{ steps.cargoscope.outputs.sarif }}"
-          test "${{ steps.cargoscope.outputs.exit-code }}" = 0
+          test -s "${{ steps.depscout.outputs.sarif }}"
+          test "${{ steps.depscout.outputs.exit-code }}" = 0

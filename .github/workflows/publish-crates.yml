@@ -1,4 +1,4 @@
-# Publishes the CargoScope crates to crates.io. Called by release.yml (dist)
+# Publishes the Dep Scout crates to crates.io. Called by release.yml (dist)
 # once the GitHub Release is built. Needs the CARGO_REGISTRY_TOKEN secret.
 name: Publish crates
 
@@ -23,6 +23,6 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Publish the workspace crates in dependency order
-        run: cargo publish --workspace --exclude cargoscope-corpus --locked
+        run: cargo publish --workspace --exclude depscout-corpus --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

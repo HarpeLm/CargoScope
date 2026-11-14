@@ -1,4 +1,4 @@
-# Builds Python wheels that contain the cargoscope binary and publishes them
+# Builds Python wheels that contain the depscout binary and publishes them
 # to PyPI when a version tag is pushed. Uses PyPI trusted publishing: no
 # token is stored, but the project must be registered on PyPI first (see
 # docs/releasing.md).
@@ -38,7 +38,7 @@ jobs:
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
-          args: --release --locked --out dist --manifest-path crates/cargoscope-cli/Cargo.toml
+          args: --release --locked --out dist --manifest-path crates/depscout-cli/Cargo.toml
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.runner }}-${{ matrix.target }}
@@ -53,7 +53,7 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           command: sdist
-          args: --out dist --manifest-path crates/cargoscope-cli/Cargo.toml
+          args: --out dist --manifest-path crates/depscout-cli/Cargo.toml
       - uses: actions/upload-artifact@v4
         with:
           name: sdist
