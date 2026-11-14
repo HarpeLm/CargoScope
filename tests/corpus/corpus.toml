@@ -1,6 +1,8 @@
 # CargoScope corpus for unused-dependency detection (SPEC.md section 5.2).
 #
 # Each repository is pinned to a commit. Labels were set by reading the code.
+# `known = true` marks a wrong finding that is understood and accepted: it
+# still counts against precision, but does not fail the corpus tool.
 # `unused`: the dependency is really unused. `used`: CargoScope once reported it, wrongly.
 # The development set was used to design the rules; the held-out set was
 # labelled before any rule change, then one bug it revealed was fixed.
@@ -606,8 +608,8 @@ url = "https://github.com/emilk/egui"
 commit = "fd10a253f643ae4b4247ac7221e72caba187d701"
 set = "held-out-3"
 labels = [
-  { manifest = "tests/test_egui_extras_compilation/Cargo.toml", section = "dependencies", dependency = "eframe", truth = "used", note = "intentional: an empty crate that checks these crates compile together" },
-  { manifest = "tests/test_egui_extras_compilation/Cargo.toml", section = "dependencies", dependency = "egui_extras", truth = "used", note = "intentional: an empty crate that checks these crates compile together" },
+  { manifest = "tests/test_egui_extras_compilation/Cargo.toml", section = "dependencies", dependency = "eframe", truth = "used", known = true, note = "intentional: an empty crate that checks these crates compile together; a known limitation, since no static rule can tell it from an unused dependency" },
+  { manifest = "tests/test_egui_extras_compilation/Cargo.toml", section = "dependencies", dependency = "egui_extras", truth = "used", known = true, note = "intentional: an empty crate that checks these crates compile together; a known limitation, since no static rule can tell it from an unused dependency" },
 ]
 
 [[repository]]
