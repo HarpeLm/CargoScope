@@ -1,0 +1,65 @@
+name: Feedback on a pre-release
+description: Tell us how CargoScope behaved on your project, good or bad.
+title: "Feedback: "
+labels: ["feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying CargoScope. Short answers are fine; skip what does not apply.
+        Please do not paste private code or secrets: a `Cargo.toml` excerpt is usually enough.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `cargoscope --version`.
+      placeholder: cargoscope 0.1.0-alpha.4
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [macOS, Linux, Windows, Other]
+    validations:
+      required: true
+  - type: input
+    id: project
+    attributes:
+      label: Project scanned
+      description: A public repository URL if possible, otherwise its size (number of crates, workspace or not).
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What are you reporting?
+      multiple: true
+      options:
+        - A dependency wrongly reported as unused
+        - An unused dependency that was not reported
+        - A wrong or missing advisory
+        - A wrong license, version or yanked status
+        - Something confusing in the report
+        - An error or a crash
+        - An installation problem
+        - A missing feature
+        - It just worked
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: What happened, and what did you expect?
+      description: For a wrong unused finding, include the `Cargo.toml` line and where or how the crate is used.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: The part of the report that matters. It will be shown as code.
+      render: text
+  - type: textarea
+    id: compare
+    attributes:
+      label: What do you use today?
+      description: cargo-audit, cargo-deny, cargo-machete, cargo-udeps, Dependabot, Renovate... What would make you switch, or use CargoScope next to them?
