@@ -30,7 +30,7 @@ Checked on 2026-11-14 at commit 3ce08db. ✅ done, ⬜ to do before the tag.
 - ✅ `dist plan`: 6 binaries, shell and PowerShell installers, Homebrew formula, npm package.
 - ✅ Python wheel builds with maturin.
 - ✅ GitHub Action passes on the 3 operating systems with the last pre-release.
-- ⬜ **Decide the copyright holder.** `LICENSE` says "HarpeLm" and `LICENSE-MIT` says "CargoScope contributors": keep one file, or make both say the same.
+- ✅ One license file, `LICENSE` (MIT, "CargoScope contributors").
 
 **Accounts and secrets (maintainer, see below)**
 
