@@ -41,10 +41,10 @@ Checked on 2026-11-14 at commit 3ce08db. ✅ done, ⬜ to do before the tag.
 
 **Release**
 
-- ⬜ Set the version to `0.1.0` (workspace and path dependencies), `dist plan`, commit.
-- ⬜ Tag `v0.1.0` and push it.
-- ⬜ Check each channel: GitHub Release, `cargo install cargoscope`, `brew install HarpeLm/tap/cargoscope`, `npx cargoscope --version`, the Action with `version: 0.1.0`.
-- ⬜ Set the version back to `0.2.0-dev`.
+- ✅ Set the version to `0.1.0`, `dist plan`, commit.
+- ✅ Tag `v0.1.0` and push it (2026-11-14).
+- ✅ Checked: GitHub Release, installer, `cargo install cargoscope`, `npx cargoscope`, the Action on 3 OS. ⬜ Homebrew: the first publish failed (403, the token could not write to `homebrew-tap`).
+- ✅ Set the version back to `0.2.0-dev`.
 
 ## One-time setup (maintainer)
 

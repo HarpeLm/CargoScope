@@ -11,7 +11,7 @@ categories.workspace = true
 description = "Cargo manifest and lockfile parsing for CargoScope"
 
 [dependencies]
-cargoscope-core = { path = "../cargoscope-core", version = "0.1.0" }
+cargoscope-core = { path = "../cargoscope-core", version = "0.2.0-dev" }
 proc-macro2 = "1"
 semver = "1"
 serde_json = "1"
