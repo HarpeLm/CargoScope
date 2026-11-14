@@ -1,4 +1,4 @@
-# Dependency Policy (`cargoscope.toml`)
+# Dependency Policy and Ignored Advisories (`cargoscope.toml`)
 
 Put a `cargoscope.toml` next to the root `Cargo.toml` to enforce rules on every resolved package that is not part of the project itself. Without the file, no policy is checked.
 
@@ -27,7 +27,28 @@ deny = [
 ]
 ```
 
-## Behaviour
+## Ignoring an advisory
+
+```toml
+[advisories]
+ignore = [
+  # Matched by advisory ID or by alias (CVE, GHSA).
+  { id = "RUSTSEC-2020-0071", reason = "time is only used by a build tool" },
+  # Optional last day; afterwards the advisory counts again.
+  { id = "CVE-2024-1234", reason = "fix planned for the next release", until = "2027-01-31" },
+]
+```
+
+- An ignored advisory **stays in the report**, with its reason, but never fails the scan or `compare`.
+- In SARIF it is a suppressed result (`suppressions`, kind `external`, with the reason as justification), so code scanning shows it as dismissed.
+- The JSON report carries the reason in `ignored_reason`.
+- After its `until` date, an ignore stops applying, with a warning.
+- An ignore that matches no advisory of the project produces a warning, so that stale entries get removed.
+- A reason is required; an entry without one is an error.
+
+A file with only `[advisories]` defines no policy.
+
+## Behaviour of the policy
 
 - Violations are listed in the report with the dependency path that pulls the package in, in text, JSON (`policy`) and SARIF (`cargoscope/policy-license`, `-source`, `-ban`, level `error`).
 - **Violations fail the scan** (exit code 1) unless `--fail-on none`.
