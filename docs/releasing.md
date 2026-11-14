@@ -46,6 +46,10 @@ Checked on 2026-11-14 at commit 3ce08db. ✅ done, ⬜ to do before the tag.
 - ✅ Checked: GitHub Release, installer, `cargo install cargoscope`, `npx cargoscope`, the Action on 3 OS. ✅ Homebrew: the first publish failed (403: the token had no Contents permission on `homebrew-tap`); after fixing the token, a re-run published `Formula/cargoscope.rb`, whose checksums match the release.
 - ✅ Set the version back to `0.2.0-dev`.
 
+## v0.1.1
+
+Released on 2026-11-14 to list the GitHub Action on the Marketplace as **Dep Scout** (the name CargoScope is taken there). No change to the CLI. ✅ GitHub Release, crates.io, npm, Homebrew and the installer report 0.1.1.
+
 ## One-time setup (maintainer)
 
 1. **crates.io**: create an API token with the `publish-new` and `publish-update` scopes, then add it as the repository secret `CARGO_REGISTRY_TOKEN`.
