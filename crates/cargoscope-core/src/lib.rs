@@ -82,9 +82,8 @@ impl Inventory {
     /// Crates resolved in more than one version, which Cargo compiles once
     /// per version. Packages of the scanned project are left out.
     ///
-    /// Each entry is a crate name and the indices of its versions, in
-    /// package order (sorted by version as in the lockfile); entries are
-    /// sorted by name.
+    /// Each entry is a crate name and the indices of its versions, oldest
+    /// first (semantic version order); entries are sorted by name.
     #[must_use]
     pub fn duplicates(&self) -> Vec<(String, Vec<usize>)> {
         let mut by_name: std::collections::BTreeMap<&str, Vec<usize>> =
@@ -103,7 +102,17 @@ impl Inventory {
                     .collect();
                 versions.len() > 1
             })
-            .map(|(name, indices)| (name.to_owned(), indices))
+            .map(|(name, mut indices)| {
+                indices.sort_by(|&left, &right| {
+                    let (left, right) =
+                        (&self.packages[left].version, &self.packages[right].version);
+                    match (semver::Version::parse(left), semver::Version::parse(right)) {
+                        (Ok(left), Ok(right)) => left.cmp(&right),
+                        _ => left.cmp(right),
+                    }
+                });
+                (name.to_owned(), indices)
+            })
             .collect()
     }
 }
@@ -423,8 +432,8 @@ mod tests {
             packages: vec![
                 versioned("app", "0.1.0", true),
                 versioned("app", "0.2.0", false),
-                versioned("syn", "1.0.109", false),
-                versioned("syn", "2.0.87", false),
+                versioned("syn", "1.10.0", false),
+                versioned("syn", "1.9.0", false),
                 versioned("serde", "1.0.0", false),
                 versioned("member", "0.1.0", true),
                 versioned("member", "0.2.0", true),
@@ -432,7 +441,8 @@ mod tests {
         };
         // A registry crate with the name of a member counts only once;
         // members themselves are never duplicates.
-        assert_eq!(inventory.duplicates(), vec![("syn".to_owned(), vec![2, 3])]);
+        // Oldest first, in semantic version order: 1.9.0 before 1.10.0.
+        assert_eq!(inventory.duplicates(), vec![("syn".to_owned(), vec![3, 2])]);
     }
 
     #[test]
