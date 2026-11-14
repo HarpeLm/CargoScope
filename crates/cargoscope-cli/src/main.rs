@@ -683,6 +683,7 @@ mod tests {
             kind,
             severity,
             patched: Vec::new(),
+            ignored: None,
         }
     }
 

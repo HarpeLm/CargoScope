@@ -402,6 +402,7 @@ impl Advisory {
                 .map_or(AdvisoryKind::Vulnerability, AdvisoryKind::Informational),
             severity: self.severity,
             patched: self.patched_text,
+            ignored: None,
         }
     }
 }

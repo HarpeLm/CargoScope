@@ -699,6 +699,7 @@ mod tests {
             kind,
             severity: Some(Severity::High),
             patched,
+            ignored: None,
         }
     }
 

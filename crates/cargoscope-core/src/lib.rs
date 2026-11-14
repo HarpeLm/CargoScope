@@ -139,6 +139,9 @@ pub struct AdvisoryFinding {
     pub severity: Option<Severity>,
     /// Version requirements that fix the advisory; empty when no fix exists.
     pub patched: Vec<String>,
+    /// Reason given in `cargoscope.toml` when this advisory is ignored.
+    /// Ignored advisories stay in the report but never fail the scan.
+    pub ignored: Option<String>,
 }
 
 /// Manifest section a dependency is declared in.
