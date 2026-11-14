@@ -147,7 +147,11 @@ pub fn compare(baseline: &Value, current: &Value) -> Comparison {
                     .get("severity")
                     .and_then(Value::as_str)
                     .map(str::to_owned);
-                let vulnerability = text(advisory, "kind") == "vulnerability";
+                // An ignored advisory is reported but never fails.
+                let ignored = advisory
+                    .get("ignored_reason")
+                    .is_some_and(|reason| !reason.is_null());
+                let vulnerability = text(advisory, "kind") == "vulnerability" && !ignored;
                 (key, severity, vulnerability, text(advisory, "title"))
             })
         })
