@@ -11,6 +11,41 @@ A release is started by pushing a version tag. Everything else runs in GitHub Ac
 | PyPI (`pip install cargoscope`, `uvx cargoscope`) | `pypi.yml` | PyPI trusted publisher (no token) |
 | GitHub Action (`uses: HarpeLm/CargoScope@v0.1.0`) | `action.yml` at the repository root | The GitHub Release |
 
+## v0.1.0 checklist
+
+Checked on 2026-11-14 at commit 3ce08db. ✅ done, ⬜ to do before the tag.
+
+**Product (SPEC.md, v0.1 exit criteria)**
+
+- ✅ Every MVP item works on the fixtures: 70+ end-to-end and unit tests, CI green on Linux, macOS and Windows.
+- ✅ JSON schema documented (`docs/schema/report-v1.json`) and checked against the output in tests.
+- ✅ Unused-dependency precision of at least 90% on unseen code: 90.4% to 93.6% on three held-out sets, 91.7% judged by rustc (`tests/corpus`). The corpus tool passes.
+- ✅ Advisories identical to cargo-audit on 20 projects with same-day databases.
+
+**Packaging**
+
+- ✅ `cargo publish --workspace --exclude cargoscope-corpus --dry-run`: the 5 crates package, build from their archives, and stop before upload.
+- ✅ Metadata of every crate: description, MIT license, repository, readme, keywords, categories.
+- ✅ Minimum Rust version: 1.90, built and tested with Rust 1.90.0, and checked in CI on every commit. (Dependencies need at least 1.88; 1.88 and 1.89 are not tested.)
+- ✅ `dist plan`: 6 binaries, shell and PowerShell installers, Homebrew formula, npm package.
+- ✅ Python wheel builds with maturin.
+- ✅ GitHub Action passes on the 3 operating systems with the last pre-release.
+- ⬜ **Decide the copyright holder.** `LICENSE` says "HarpeLm" and `LICENSE-MIT` says "CargoScope contributors": keep one file, or make both say the same.
+
+**Accounts and secrets (maintainer, see below)**
+
+- ⬜ crates.io token in `CARGO_REGISTRY_TOKEN`.
+- ⬜ `HarpeLm/homebrew-tap` repository and `HOMEBREW_TAP_TOKEN`.
+- ⬜ npm token in `NPM_TOKEN`.
+- ⬜ PyPI trusted publisher and the `pypi` environment.
+
+**Release**
+
+- ⬜ Set the version to `0.1.0` (workspace and path dependencies), `dist plan`, commit.
+- ⬜ Tag `v0.1.0` and push it.
+- ⬜ Check each channel: GitHub Release, `cargo install cargoscope`, `brew install HarpeLm/tap/cargoscope`, `npx cargoscope --version`, `uvx cargoscope --version`, the Action with `version: 0.1.0`.
+- ⬜ Set the version back to `0.2.0-dev`.
+
 ## One-time setup (maintainer)
 
 1. **crates.io**: create an API token with the `publish-new` and `publish-update` scopes, then add it as the repository secret `CARGO_REGISTRY_TOKEN`.
