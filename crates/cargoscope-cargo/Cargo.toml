@@ -9,7 +9,7 @@ readme = "../../README.md"
 description = "Cargo manifest and lockfile parsing for CargoScope"
 
 [dependencies]
-cargoscope-core = { path = "../cargoscope-core", version = "0.1.0-alpha.3" }
+cargoscope-core = { path = "../cargoscope-core", version = "0.1.0-alpha.4" }
 proc-macro2 = "1"
 semver = "1"
 serde_json = "1"
