@@ -185,12 +185,12 @@ pub fn parse_advisory_ignores(text: &str) -> Result<Vec<AdvisoryIgnore>, String>
             .filter(|reason| !reason.trim().is_empty())
             .ok_or_else(|| format!("[advisories] `{id}` needs a non-empty `reason`"))?;
         let until = field("until");
-        if let Some(date) = &until {
-            if !is_date(date) {
-                return Err(format!(
-                    "[advisories] `{id}` until must be a YYYY-MM-DD date, not `{date}`"
-                ));
-            }
+        if let Some(date) = &until
+            && !is_date(date)
+        {
+            return Err(format!(
+                "[advisories] `{id}` until must be a YYYY-MM-DD date, not `{date}`"
+            ));
         }
         ignores.push(AdvisoryIgnore { id, reason, until });
     }

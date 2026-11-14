@@ -676,36 +676,31 @@ fn collect_doc_text(tokens: TokenStream, out: &mut Vec<String>, dir: Option<&Pat
                 ],
                 Some(dir),
             ) = (inner.as_slice(), dir)
+                && ident == "doc"
+                && eq.as_char() == '='
+                && macro_name == "include_str"
+                && bang.as_char() == '!'
             {
-                if ident == "doc"
-                    && eq.as_char() == '='
-                    && macro_name == "include_str"
-                    && bang.as_char() == '!'
-                {
-                    let path = arguments.stream().to_string();
-                    let path = path.trim().trim_matches('"');
-                    let file = dir.join(path);
-                    let readable = fs::symlink_metadata(&file).is_ok_and(|metadata| {
-                        metadata.is_file() && metadata.len() <= MAX_SOURCE_BYTES
-                    });
-                    if readable {
-                        if let Ok(text) = fs::read_to_string(&file) {
-                            out.push(text);
-                        }
-                    }
-                    continue;
+                let path = arguments.stream().to_string();
+                let path = path.trim().trim_matches('"');
+                let file = dir.join(path);
+                let readable = fs::symlink_metadata(&file)
+                    .is_ok_and(|metadata| metadata.is_file() && metadata.len() <= MAX_SOURCE_BYTES);
+                if readable && let Ok(text) = fs::read_to_string(&file) {
+                    out.push(text);
                 }
+                continue;
             }
             if let [
                 TokenTree::Ident(ident),
                 TokenTree::Punct(eq),
                 TokenTree::Literal(text),
             ] = inner.as_slice()
+                && ident == "doc"
+                && eq.as_char() == '='
             {
-                if ident == "doc" && eq.as_char() == '=' {
-                    out.push(text.to_string());
-                    continue;
-                }
+                out.push(text.to_string());
+                continue;
             }
             collect_doc_text(group.stream(), out, dir);
         }
@@ -961,10 +956,9 @@ fn collect_quoted_references(tokens: TokenStream, names: &mut BTreeSet<String>) 
             {
                 if let (Some(TokenTree::Punct(bang)), Some(TokenTree::Group(body))) =
                     (tokens.get(index + 1), tokens.get(index + 2))
+                    && bang.as_char() == '!'
                 {
-                    if bang.as_char() == '!' {
-                        collect_references(body.stream(), names);
-                    }
+                    collect_references(body.stream(), names);
                 }
             }
             TokenTree::Group(group) => collect_quoted_references(group.stream(), names),
@@ -1076,19 +1070,19 @@ pub fn check_package(
                 .iter()
                 .map(|declared| declared.key.replace('-', "_"))
                 .collect();
-        if !renamed && ident == dependency.key.replace('-', "_") {
-            if let Some(guess) = library_name_guesses(&dependency.package)
+        if !renamed
+            && ident == dependency.key.replace('-', "_")
+            && let Some(guess) = library_name_guesses(&dependency.package)
                 .into_iter()
                 // A guess that is itself a declared dependency (`tokio` for
                 // `tokio-test`) is explained by that dependency.
                 .filter(|guess| !declared_idents.contains(guess))
                 .find(|guess| references.contains(guess))
-            {
-                exceptions.push(format!(
-                    "`{guess}::` is used: the library name of `{}` may differ from its package name",
-                    dependency.package
-                ));
-            }
+        {
+            exceptions.push(format!(
+                "`{guess}::` is used: the library name of `{}` may differ from its package name",
+                dependency.package
+            ));
         }
         if dependency.kind != DependencyKind::Dev
             && features_forwarded_to(package.manifest).contains(dependency.key.as_str())

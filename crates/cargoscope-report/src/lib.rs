@@ -257,10 +257,10 @@ fn render_inventory_text(out: &mut String, report: &Report) {
             if info.yanked == Some(true) {
                 out.push_str(" YANKED");
             }
-            if info.outdated {
-                if let Some(latest) = &info.latest_version {
-                    let _ = write!(out, " -> {latest} available");
-                }
+            if info.outdated
+                && let Some(latest) = &info.latest_version
+            {
+                let _ = write!(out, " -> {latest} available");
             }
         }
         out.push('\n');

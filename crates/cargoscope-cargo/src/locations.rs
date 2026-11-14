@@ -14,10 +14,10 @@ pub fn lockfile_lines(contents: &str) -> Vec<((String, String), u32)> {
             current = None;
         } else if let Some(name) = quoted(line, "name") {
             current = Some((name, number));
-        } else if let Some(version) = quoted(line, "version") {
-            if let Some((name, name_line)) = current.take() {
-                lines.push(((name, version), name_line));
-            }
+        } else if let Some(version) = quoted(line, "version")
+            && let Some((name, name_line)) = current.take()
+        {
+            lines.push(((name, version), name_line));
         }
     }
     lines
