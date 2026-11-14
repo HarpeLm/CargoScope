@@ -104,12 +104,18 @@ pub fn render_sarif(report: &Report, locations: &SarifLocations, show_uncertain:
         } else {
             format!(" Fix: upgrade to {}.", finding.patched.join(" or "))
         };
-        results.push(json!({
+        let mut result = json!({
             "ruleId": finding.id,
             "level": level(finding),
             "message": { "text": format!("{} {} is affected by {}: {}.{via}{fix}", package.name, package.version, finding.id, finding.title) },
             "locations": [location(&locations.lockfile_uri, package_line(finding.package))],
-        }));
+        });
+        // Ignored advisories are kept as suppressed results, so that code
+        // scanning shows them as dismissed with the reason.
+        if let Some(reason) = &finding.ignored {
+            result["suppressions"] = json!([{ "kind": "external", "justification": reason }]);
+        }
+        results.push(result);
     }
 
     for (index, info) in report.package_info.iter().enumerate() {
