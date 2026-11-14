@@ -16,7 +16,6 @@ edition = "2024"
 rust-version = "1.85"
 license = "MIT"
 repository = "https://github.com/HarpeLm/CargoScope"
-homepage = "https://github.com/HarpeLm/CargoScope"
 keywords = ["dependencies", "security", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 
