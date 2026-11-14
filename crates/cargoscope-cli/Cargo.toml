@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage = "https://github.com/HarpeLm/CargoScope#readme"
 readme = "../../README.md"
 # The end-to-end tests need fixtures from the repository root.
 exclude = ["tests"]
@@ -17,10 +18,10 @@ name = "cargoscope"
 path = "src/main.rs"
 
 [dependencies]
-cargoscope-advisory = { path = "../cargoscope-advisory", version = "0.1.0-alpha.3" }
-cargoscope-cargo = { path = "../cargoscope-cargo", version = "0.1.0-alpha.3" }
-cargoscope-core = { path = "../cargoscope-core", version = "0.1.0-alpha.3" }
-cargoscope-report = { path = "../cargoscope-report", version = "0.1.0-alpha.3" }
+cargoscope-advisory = { path = "../cargoscope-advisory", version = "0.1.0-alpha.4" }
+cargoscope-cargo = { path = "../cargoscope-cargo", version = "0.1.0-alpha.4" }
+cargoscope-core = { path = "../cargoscope-core", version = "0.1.0-alpha.4" }
+cargoscope-report = { path = "../cargoscope-report", version = "0.1.0-alpha.4" }
 serde_json = "1"
 
 [lints]
