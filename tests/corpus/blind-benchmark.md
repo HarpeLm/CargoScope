@@ -60,7 +60,7 @@ Feature list from the tools' documented behaviour, not re-checked against their 
 
 | Capability | Who has it | CargoScope |
 |---|---|---|
-| Ignore one advisory, with a reason | cargo-audit (`audit.toml`), cargo-deny | **No** (only `--baseline` and `--fail-on`) |
+| Ignore one advisory, with a reason | cargo-audit (`audit.toml`), cargo-deny | Yes since this benchmark (`[advisories] ignore`, with an optional expiry date) |
 | Audit compiled binaries | cargo-audit (`cargo audit bin`) | No |
 | Suggest or apply advisory fixes | cargo-audit (`fix`, experimental), Dependabot, Renovate | No |
 | Automatic update pull requests, continuous monitoring | Dependabot, Renovate | No, by design |

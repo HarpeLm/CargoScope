@@ -164,6 +164,16 @@ cargoscope compare baseline.json current.json                  # what changed be
 
 `compare` lists new and resolved advisories, new yanked versions, new and resolved likely-unused dependencies, and version changes. It exits with 1 when new advisories reach `--fail-on`.
 
+## Ignoring an Advisory
+
+```toml
+# cargoscope.toml
+[advisories]
+ignore = [{ id = "RUSTSEC-2020-0071", reason = "only used by a build tool", until = "2027-01-31" }]
+```
+
+Ignored advisories stay visible with their reason, but never fail the scan; in SARIF they are suppressed. See [docs/policy.md](docs/policy.md).
+
 ## Dependency Policy
 
 A `cargoscope.toml` next to `Cargo.toml` enforces allowed licenses, allowed sources and banned crates, in the spirit of cargo-deny. Violations fail the scan. See [docs/policy.md](docs/policy.md).
