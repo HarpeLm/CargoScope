@@ -114,19 +114,30 @@ pub fn summary(report: &Report) -> String {
     };
     let mut parts = Vec::new();
     if report.checks.advisories {
+        let ignored = report
+            .advisories
+            .iter()
+            .filter(|finding| finding.ignored.is_some())
+            .count();
         let vulnerabilities = report
             .advisories
             .iter()
             .filter(|finding| matches!(finding.kind, AdvisoryKind::Vulnerability))
+            .filter(|finding| finding.ignored.is_none())
             .count();
+        let informational = report.advisories.len() - vulnerabilities - ignored;
+        let ignored_note = if ignored > 0 {
+            format!(", {ignored} ignored")
+        } else {
+            String::new()
+        };
         parts.push(format!(
-            "{} ({} informational)",
+            "{} ({informational} informational{ignored_note})",
             if vulnerabilities == 1 {
                 "1 vulnerability".to_owned()
             } else {
                 format!("{vulnerabilities} vulnerabilities")
             },
-            report.advisories.len() - vulnerabilities
         ));
     }
     if report.checks.unused {
@@ -216,6 +227,9 @@ fn render_advisories_text(out: &mut String, report: &Report) {
         }
         if let Some(url) = &finding.url {
             let _ = writeln!(out, "    {url}");
+        }
+        if let Some(reason) = &finding.ignored {
+            let _ = writeln!(out, "    ignored in cargoscope.toml: {reason}");
         }
     }
     if report.advisories.is_empty() {
@@ -486,7 +500,11 @@ pub fn render_json(project_root: &Path, report: &Report) -> String {
             json_string_array(&finding.patched),
         );
         write_path(&mut out, inventory, finding.package);
-        out.push('}');
+        let _ = write!(
+            out,
+            ",\"ignored_reason\":{}}}",
+            json_string_or_null(finding.ignored.as_deref())
+        );
     }
     out.push_str("],");
 
@@ -752,7 +770,7 @@ mod tests {
             "\"advisory_database\":{\"source\":\"RustSec\",\"downloaded_on\":\"2026-01-02\"}"
         ));
         assert!(json.contains(
-            "{\"id\":\"TEST-0001\",\"aliases\":[\"CVE-TEST\"],\"title\":\"Beta is broken\",\"date\":\"2025-05-05\",\"url\":\"https://example.test/report\",\"kind\":\"vulnerability\",\"informational\":null,\"severity\":\"high\",\"package\":{\"name\":\"beta\",\"version\":\"1.0.0\"},\"patched\":[\">= 1.2.0\"],\"path\":[{\"name\":\"app\",\"version\":\"1.0.0\"},{\"name\":\"alpha\",\"version\":\"1.0.0\"},{\"name\":\"beta\",\"version\":\"1.0.0\"}]}"
+            "{\"id\":\"TEST-0001\",\"aliases\":[\"CVE-TEST\"],\"title\":\"Beta is broken\",\"date\":\"2025-05-05\",\"url\":\"https://example.test/report\",\"kind\":\"vulnerability\",\"informational\":null,\"severity\":\"high\",\"package\":{\"name\":\"beta\",\"version\":\"1.0.0\"},\"patched\":[\">= 1.2.0\"],\"path\":[{\"name\":\"app\",\"version\":\"1.0.0\"},{\"name\":\"alpha\",\"version\":\"1.0.0\"},{\"name\":\"beta\",\"version\":\"1.0.0\"}],\"ignored_reason\":null}"
         ));
         assert!(json.contains(
             "{\"name\":\"orphan\",\"version\":\"1.0.0\",\"scope\":\"transitive\",\"direct\":false,\"source\":null,\"path\":null,\"license\":null,\"latest_version\":null,\"latest_published\":null,\"outdated\":false,\"yanked\":null}"
