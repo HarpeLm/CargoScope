@@ -18,10 +18,10 @@ name = "depscout"
 path = "src/main.rs"
 
 [dependencies]
-depscout-advisory = { path = "../depscout-advisory", version = "0.2.0-dev" }
-depscout-cargo = { path = "../depscout-cargo", version = "0.2.0-dev" }
-depscout-core = { path = "../depscout-core", version = "0.2.0-dev" }
-depscout-report = { path = "../depscout-report", version = "0.2.0-dev" }
+depscout-advisory = { path = "../depscout-advisory", version = "0.2.0" }
+depscout-cargo = { path = "../depscout-cargo", version = "0.2.0" }
+depscout-core = { path = "../depscout-core", version = "0.2.0" }
+depscout-report = { path = "../depscout-report", version = "0.2.0" }
 serde_json = "1"
 
 [lints]

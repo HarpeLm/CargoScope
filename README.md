@@ -19,7 +19,7 @@ Dep Scout is an open-source CLI, written in Rust, for Rust/Cargo projects. One c
 
 ## Status
 
-**Version 0.1.0, the first stable release.** `depscout update` downloads the RustSec advisory database and the crates.io data of a project; `depscout scan` then reports, offline, matching advisories, likely-unused dependencies with the evidence behind each one, licenses, yanked and outdated versions, a `depscout.toml` policy, and the dependency chain behind every finding, as text, JSON or SARIF. It is young: please report anything wrong in the [feedback issue](https://github.com/HarpeLm/DepScout/issues/1).
+**Version 0.2.0.** Dep Scout was called CargoScope until 0.1.1; the commands, `depscout.toml` and `DEPSCOUT_*` variables replace the old `cargoscope` names. `depscout update` downloads the RustSec advisory database and the crates.io data of a project; `depscout scan` then reports, offline, matching advisories, likely-unused dependencies with the evidence behind each one, licenses, yanked and outdated versions, a `depscout.toml` policy, and the dependency chain behind every finding, as text, JSON or SARIF. It is young: please report anything wrong in the [feedback issue](https://github.com/HarpeLm/DepScout/issues/1).
 
 **New here?** [Try Dep Scout in two minutes](docs/try-it.md), then tell us how it went.
 
@@ -56,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: HarpeLm/DepScout@v0.1.1
+      - uses: HarpeLm/DepScout@v0.2.0
         with:
           fail-on: high        # or none, to report without failing
 ```
@@ -76,7 +76,7 @@ depscout scan .
 ### Example Output
 
 ```
-Dep Scout 0.1.0
+Dep Scout 0.2.0
 Target: .
 
 Advisories: 1 (RustSec database downloaded 2026-11-12)

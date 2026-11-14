@@ -127,7 +127,7 @@ checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
 name = "depscout"
-version = "0.2.0-dev"
+version = "0.2.0"
 dependencies = [
  "depscout-advisory",
  "depscout-cargo",
@@ -139,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "depscout-advisory"
-version = "0.2.0-dev"
+version = "0.2.0"
 dependencies = [
  "cvss",
  "depscout-core",
@@ -153,7 +153,7 @@ dependencies = [
 
 [[package]]
 name = "depscout-cargo"
-version = "0.2.0-dev"
+version = "0.2.0"
 dependencies = [
  "depscout-core",
  "proc-macro2",
@@ -164,14 +164,14 @@ dependencies = [
 
 [[package]]
 name = "depscout-core"
-version = "0.2.0-dev"
+version = "0.2.0"
 dependencies = [
  "semver",
 ]
 
 [[package]]
 name = "depscout-corpus"
-version = "0.2.0-dev"
+version = "0.2.0"
 dependencies = [
  "depscout-cargo",
  "depscout-core",
@@ -180,7 +180,7 @@ dependencies = [
 
 [[package]]
 name = "depscout-report"
-version = "0.2.0-dev"
+version = "0.2.0"
 dependencies = [
  "depscout-core",
  "serde_json",

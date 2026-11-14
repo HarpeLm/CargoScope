@@ -9,7 +9,7 @@ A release is started by pushing a version tag. Everything else runs in GitHub Ac
 | Homebrew (`brew install HarpeLm/tap/depscout`) | `release.yml` | `HarpeLm/homebrew-tap` repository and `HOMEBREW_TAP_TOKEN` secret |
 | npm (`npx depscout`) | `release.yml` | `NPM_TOKEN` secret |
 | PyPI (`pip install depscout`, `uvx depscout`) | `pypi.yml`, **not enabled yet** | PyPI trusted publisher (no token), then restore the tag trigger in `pypi.yml` |
-| GitHub Action (`uses: HarpeLm/DepScout@v0.1.1`) | `action.yml` at the repository root | The GitHub Release |
+| GitHub Action (`uses: HarpeLm/DepScout@v0.2.0`) | `action.yml` at the repository root | The GitHub Release |
 
 ## v0.1.0 checklist
 

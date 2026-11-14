@@ -11,7 +11,7 @@ categories.workspace = true
 description = "RustSec advisory database access and caching for Dep Scout"
 
 [dependencies]
-depscout-core = { path = "../depscout-core", version = "0.2.0-dev" }
+depscout-core = { path = "../depscout-core", version = "0.2.0" }
 cvss = "2"
 flate2 = "1"
 semver = "1"

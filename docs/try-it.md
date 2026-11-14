@@ -2,7 +2,7 @@
 
 Dep Scout reads your `Cargo.lock` and `Cargo.toml` files and tells you, in one report, which dependencies have known advisories, which look unused, which are yanked or outdated, and why each one is in your project. It never modifies your files and never runs your code.
 
-This is the first stable version (`0.1.0`), and it is young: your feedback decides what comes next. See the end of this page.
+This is version `0.2.0` (it was called CargoScope until 0.1.1), and it is young: your feedback decides what comes next. See the end of this page.
 
 ## 1. Install (about 10 seconds)
 
