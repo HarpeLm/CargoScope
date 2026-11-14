@@ -7,6 +7,8 @@
 
 ---
 
+![cargoscope scan on a small project: two RustSec advisories with their dependency chain and fix, one unused dependency, licenses and outdated versions](docs/images/scan.gif)
+
 CargoScope is an open-source CLI, written in Rust, for Rust/Cargo projects. One command produces one report: inventory, security advisories, available versions, licenses, likely-unused dependencies, and the dependency chain behind each finding. No more running cargo-audit, cargo-deny, cargo-machete and cargo-tree separately and reconciling their output.
 
 ## Principles
