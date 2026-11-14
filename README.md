@@ -54,6 +54,7 @@ On the GitHub Marketplace the action is listed as **Dep Scout** (the name CargoS
 permissions:
   contents: read
   security-events: write   # to upload SARIF to code scanning
+  pull-requests: write     # to comment on pull requests
 
 jobs:
   cargoscope:
@@ -65,7 +66,9 @@ jobs:
           fail-on: high        # or none, to report without failing
 ```
 
-The action downloads the prebuilt binary (no compilation), caches advisory data for a day, prints the report in the log, and uploads SARIF results to the Security tab. Inputs: `version`, `path`, `fail-on`, `checks`, `sarif`, `upload-sarif`.
+The action downloads the prebuilt binary (no compilation), caches advisory data for a day, prints the report in the log, and uploads SARIF results to the Security tab. Inputs: `version`, `path`, `fail-on`, `checks`, `sarif`, `upload-sarif`, `comment`, `new-only`.
+
+On a pull request, the action also scans the base branch and comments with only what the pull request changes: new and resolved advisories, new yanked versions, new likely-unused dependencies, and added, removed or changed packages. A later run updates the same comment. Advisories already on the base branch do not fail the pull request (`new-only: false` to fail on all of them). Pull requests from forks get a read-only token: the comparison then goes to the job summary instead of a comment. The comment needs CargoScope 0.2.0 or later.
 
 ## Quick Start
 
@@ -165,7 +168,7 @@ cargoscope scan . --baseline baseline.json                     # later: only new
 cargoscope compare baseline.json current.json                  # what changed between two reports
 ```
 
-`compare` lists new and resolved advisories, new yanked versions, new and resolved likely-unused dependencies, and version changes. It exits with 1 when new advisories reach `--fail-on`.
+`compare` lists new and resolved advisories, new yanked versions, new and resolved likely-unused dependencies, and version changes, as text, JSON (`--format json`) or Markdown for a pull request comment (`--format markdown`). It exits with 1 when new advisories reach `--fail-on`.
 
 ## Ignoring an Advisory
 
