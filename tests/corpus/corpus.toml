@@ -1,13 +1,13 @@
-# CargoScope corpus for unused-dependency detection (SPEC.md section 5.2).
+# Dep Scout corpus for unused-dependency detection (SPEC.md section 5.2).
 #
 # Each repository is pinned to a commit. Labels were set by reading the code.
 # `known = true` marks a wrong finding that is understood and accepted: it
 # still counts against precision, but does not fail the corpus tool.
-# `unused`: the dependency is really unused. `used`: CargoScope once reported it, wrongly.
+# `unused`: the dependency is really unused. `used`: Dep Scout once reported it, wrongly.
 # The development set was used to design the rules; the held-out set was
 # labelled before any rule change, then one bug it revealed was fixed.
 #
-# Run: cargo run -p cargoscope-corpus -- <work-dir>
+# Run: cargo run -p depscout-corpus -- <work-dir>
 
 [[repository]]
 name = "BurntSushi/ripgrep"

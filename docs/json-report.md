@@ -1,6 +1,6 @@
 # JSON Report
 
-`cargoscope scan --format json` prints a single JSON object. Its structure is described by the JSON Schema [`schema/report-v1.json`](schema/report-v1.json), and every test run checks the output of the fixtures against it.
+`depscout scan --format json` prints a single JSON object. Its structure is described by the JSON Schema [`schema/report-v1.json`](schema/report-v1.json), and every test run checks the output of the fixtures against it.
 
 ## Compatibility policy
 
@@ -12,7 +12,7 @@
 
 | Field | Content |
 |---|---|
-| `advisory_database`, `registry` | Data source and the date it was downloaded by `cargoscope update` (`null` if never) |
+| `advisory_database`, `registry` | Data source and the date it was downloaded by `depscout update` (`null` if never) |
 | `advisories` | Known advisories affecting resolved packages, with severity, fix and dependency `path` |
 | `packages` | Every resolved package: scope, source, dependency `path`, license, latest version, yanked status |
 | `unused` | Every dependency with no usage found, `likely-unused` or `possibly-unused`, with evidence; ignored ones carry `ignored_reason` |

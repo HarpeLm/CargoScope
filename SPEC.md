@@ -1,15 +1,15 @@
-# CargoScope — Product Specification
+# Dep Scout — Product Specification
 
 > **Version 2.0**
 > Open-source dependency intelligence engine, written in Rust.
 
 ## 1. Executive Summary
 
-CargoScope is an open-source engine that helps developers **discover, evaluate, and improve** their project dependencies. It aims to unify inventory, known vulnerabilities, maintenance signals, versions, likely-unused dependencies, and transitive relationships into understandable, CI-integrable reports.
+Dep Scout is an open-source engine that helps developers **discover, evaluate, and improve** their project dependencies. It aims to unify inventory, known vulnerabilities, maintenance signals, versions, likely-unused dependencies, and transitive relationships into understandable, CI-integrable reports.
 
-**Positioning:** "Understand every dependency in your Rust project: why it's there, what it risks, and what to do." CargoScope starts with Rust/Cargo only; other ecosystems are a long-term possibility, considered only once the Rust experience is clearly better than combining existing tools (see 5.1).
+**Positioning:** "Understand every dependency in your Rust project: why it's there, what it risks, and what to do." Dep Scout starts with Rust/Cargo only; other ecosystems are a long-term possibility, considered only once the Rust experience is clearly better than combining existing tools (see 5.1).
 
-CargoScope is designed to complement Dependabot, Renovate, Snyk, and OSV-Scanner. It does not ask teams to replace an already-installed tool: they can start by running a local analysis, then add a report to CI, and progressively adopt comparison and recommendation features. Becoming a primary tool is a possibility to earn through result quality, not a promise.
+Dep Scout is designed to complement Dependabot, Renovate, Snyk, and OSV-Scanner. It does not ask teams to replace an already-installed tool: they can start by running a local analysis, then add a report to CI, and progressively adopt comparison and recommendation features. Becoming a primary tool is a possibility to earn through result quality, not a promise.
 
 Guiding principles (all four are binding): local operation without a mandatory account for the first scan; no source code transmission by default; no silent file modification; recommendations justified by evidence; result quality before number of ecosystems. Adoption, downloads, and contributions are never guaranteed.
 
@@ -31,19 +31,19 @@ Later (not targeted by v0.1):
 
 ### Don't Start with a Migration
 
-CargoScope must be tryable alongside existing tools and without file changes. Its adoption progression has three stages:
+Dep Scout must be tryable alongside existing tools and without file changes. Its adoption progression has three stages:
 
-1. **Local complement**: `cargoscope scan .` produces a standalone diagnostic, without modifying the repository.
+1. **Local complement**: `depscout scan .` produces a standalone diagnostic, without modifying the repository.
 2. **CI presence**: the project publishes JSON or SARIF and applies team-chosen thresholds; existing checks continue to work.
 3. **Continuous intelligence**: scan comparison, prioritization, repository fleet health, and guided recommendations.
 
 ### Competitive Landscape
 
-**Long-term goal: replacement.** CargoScope aims to eventually cover what Rust teams get today from cargo-audit, cargo-deny and cargo-machete, so that one tool is enough. Adoption still starts as a complement (see above): replacement is earned feature by feature, only when CargoScope's result for that check is measurably at least as good as the specialized tool.
+**Long-term goal: replacement.** Dep Scout aims to eventually cover what Rust teams get today from cargo-audit, cargo-deny and cargo-machete, so that one tool is enough. Adoption still starts as a complement (see above): replacement is earned feature by feature, only when Dep Scout's result for that check is measurably at least as good as the specialized tool.
 
 Tool features overlap and evolve. Verify current documentation before any public comparison.
 
-| Project | General Role or Strength | CargoScope Angle to Validate |
+| Project | General Role or Strength | Dep Scout Angle to Validate |
 |---|---|---|
 | cargo-audit | RustSec advisory checks on Cargo.lock | Same advisories, explained with transitive path and fix options |
 | cargo-deny | Policies on licenses, sources, bans and advisories | Cover its checks progressively, in one report with evidence |
@@ -109,7 +109,7 @@ Aggregate exported JSON reports locally or in CI to spot components shared by se
 
 ### 5.1 Rust-first focus
 
-CargoScope supports **only Rust/Cargo** until the Cargo experience is clearly better than running several tools separately. No other adapter is started before that point.
+Dep Scout supports **only Rust/Cargo** until the Cargo experience is clearly better than running several tools separately. No other adapter is started before that point.
 
 The first niche to win: **one report on a Rust project** combining inventory, advisories, unused-dependency candidates and transitive paths.
 
@@ -147,30 +147,30 @@ A local module with the same name as a dependency counts as a use: this can hide
 
 By default only `likely-unused` appears; `--show-uncertain` shows the rest.
 
-**User control:** an ignore list in `[package.metadata.cargoscope]`, `ignore-unused = [{ name = "dep", reason = "..." }]`. The reason is required; an entry without one is not applied and produces a warning. Ignored dependencies are reported back as "ignored, reason: …", so exceptions stay visible. A standalone `cargoscope.toml` may come later.
+**User control:** an ignore list in `[package.metadata.depscout]`, `ignore-unused = [{ name = "dep", reason = "..." }]`. The reason is required; an entry without one is not applied and produces a warning. Ignored dependencies are reported back as "ignored, reason: …", so exceptions stay visible. A standalone `depscout.toml` may come later.
 
-**Corpus** (2026-11-12, see `tests/corpus/README.md`): 70 pinned repositories: 30 used to design the rules, then three held-out sets, each labelled before any rule change. Precision of `likely-unused` on them was **90.9%** (10/11), **93.6%** (103/110) and **90.4%** (47/52): about 91–94% on unseen code. A benchmark judged by rustc in a network-less container (73 popular crates, `tests/corpus/compiler-benchmark.md`) gave 91.7%. The v0.1 criterion is therefore **at least 90%** (see section 12); 97% remains the goal of the compiler-based `--precise` mode. Remaining causes: paths generated by macros from outside the workspace, attribute combinations the module rules miss, and intentionally unreferenced dependencies. `cargo run -p cargoscope-corpus` replays the corpus and fails on any wrong or unlabelled finding, or below 90%.
+**Corpus** (2026-11-12, see `tests/corpus/README.md`): 70 pinned repositories: 30 used to design the rules, then three held-out sets, each labelled before any rule change. Precision of `likely-unused` on them was **90.9%** (10/11), **93.6%** (103/110) and **90.4%** (47/52): about 91–94% on unseen code. A benchmark judged by rustc in a network-less container (73 popular crates, `tests/corpus/compiler-benchmark.md`) gave 91.7%. The v0.1 criterion is therefore **at least 90%** (see section 12); 97% remains the goal of the compiler-based `--precise` mode. Remaining causes: paths generated by macros from outside the workspace, attribute combinations the module rules miss, and intentionally unreferenced dependencies. `cargo run -p depscout-corpus` replays the corpus and fails on any wrong or unlabelled finding, or below 90%.
 
 **Measurement:** v0.1 ships with a hand-labelled corpus of 20–30 varied Rust crates. From v0.2, labels are produced at scale by a compiler oracle run offline in a network-less sandbox: the rustc `unused_crate_dependencies` lint aggregated over targets and features, dependency-removal experiments with `cargo check --all-targets --all-features`, and manifest-only removal commits mined from Git history as human-confirmed cases. Part of the corpus is held out for evaluation. The compiler is only a judge during development; the shipped default analysis stays static. Precision is measured on each release, and a regression blocks the release. User-reported false positives become new fixtures.
 
 ## 6. Rust Architecture
 
 ```text
-cargoscope/
+depscout/
 ├── Cargo.toml
 ├── crates/
-│   ├── cargoscope-cli/        # commands, options, exit codes
-│   ├── cargoscope-core/       # data model, orchestration, configuration
-│   ├── cargoscope-cargo/      # Cargo.toml / Cargo.lock parsing, resolution, unused analysis
-│   ├── cargoscope-advisory/   # RustSec and crates.io data: explicit download, cache, provenance
-│   └── cargoscope-report/     # text, JSON, SARIF, later HTML
+│   ├── depscout-cli/        # commands, options, exit codes
+│   ├── depscout-core/       # data model, orchestration, configuration
+│   ├── depscout-cargo/      # Cargo.toml / Cargo.lock parsing, resolution, unused analysis
+│   ├── depscout-advisory/   # RustSec and crates.io data: explicit download, cache, provenance
+│   └── depscout-report/     # text, JSON, SARIF, later HTML
 └── tests/                     # fixture repositories and integration tests
 ```
 
 Pipeline: `discover → parse → analyze → report`.
 
 - **Cargo-specific data model.** Types such as `Package`, `Dependency`, `Finding`, `Evidence` and `DependencyPath` describe Cargo concepts directly. No cross-ecosystem abstraction is introduced until a second ecosystem is actually started.
-- **Files are read directly** (`toml`, `cargo-lock` crates). CargoScope never invokes `cargo` or `rustc` by default: it works offline, without a Rust toolchain, and executes no project code. `cargo metadata` and builds are reserved for the opt-in `--precise` mode.
+- **Files are read directly** (`toml`, `cargo-lock` crates). Dep Scout never invokes `cargo` or `rustc` by default: it works offline, without a Rust toolchain, and executes no project code. `cargo metadata` and builds are reserved for the opt-in `--precise` mode.
 - Lockfiles are read first; declared and resolved versions are kept distinct.
 - Network access (advisory database updates only) is documented, cached and can be disabled.
 
@@ -185,8 +185,8 @@ Pipeline: `discover → parse → analyze → report`.
 
 ### Network policy
 
-- **`cargoscope scan` never accesses the network.** It uses only local cached data.
-- **`cargoscope update [PATH]`** explicitly downloads the RustSec database and refreshes crates.io data for the project at `PATH` (default `.`). Nothing is downloaded automatically. Missing crates.io data is a warning in the report, not an error.
+- **`depscout scan` never accesses the network.** It uses only local cached data.
+- **`depscout update [PATH]`** explicitly downloads the RustSec database and refreshes crates.io data for the project at `PATH` (default `.`). Nothing is downloaded automatically. Missing crates.io data is a warning in the report, not an error.
 - Every report shows the date of the advisory database and of the crates.io data used. A missing or old cache produces a visible warning, never a silent pass.
 - Caches and mirrors can be configured for isolated environments.
 
@@ -207,23 +207,23 @@ Manifests, lockfiles and sources are treated as untrusted input:
 
 ```sh
 # Download the RustSec database and refresh crates.io data (only network access)
-cargoscope update
+depscout update
 
 # Full report in the terminal, read-only, no network
-cargoscope scan .
+depscout scan .
 
 # JSON report for archiving or comparison
-cargoscope scan . --format json --output cargoscope-report.json
+depscout scan . --format json --output depscout-report.json
 
 # SARIF for GitHub code scanning
-cargoscope scan . --format sarif --output results.sarif
+depscout scan . --format sarif --output results.sarif
 
 # Choose checks and failure threshold
 # (checks: inventory, advisories, unused, licenses, versions; skipped ones show "not checked")
-cargoscope scan . --checks inventory,advisories,unused,licenses,versions --fail-on high
+depscout scan . --checks inventory,advisories,unused,licenses,versions --fail-on high
 
 # Show uncertain unused candidates too
-cargoscope scan . --show-uncertain
+depscout scan . --show-uncertain
 ```
 
 ### Failure behaviour and exit codes
@@ -249,22 +249,22 @@ Exit codes are a stable contract from v0.1.
 
 ```sh
 # Compare two JSON reports; exit 1 when new advisories reach --fail-on
-cargoscope compare baseline.json current.json
+depscout compare baseline.json current.json
 
 # Only advisories absent from a previous report fail the scan
-cargoscope scan . --baseline baseline.json
+depscout scan . --baseline baseline.json
 
 # Confirm unused dependencies with rustc (compiles the project: opt-in only)
-cargoscope scan . --precise
+depscout scan . --precise
 ```
 
-A `cargoscope.toml` policy (allowed licenses, allowed sources, banned crates) is checked by `scan`; violations fail it unless `--fail-on none` (see docs/policy.md).
+A `depscout.toml` policy (allowed licenses, allowed sources, banned crates) is checked by `scan`; violations fail it unless `--fail-on none` (see docs/policy.md).
 
 ### Later
 
 ```sh
-cargoscope fix --dry-run
-cargoscope fix --apply
+depscout fix --dry-run
+depscout fix --apply
 ```
 
 `--help` is useful on every command, and a verbose mode shows the evidence behind each finding. Advisory IDs in examples come from real data, never invented.
@@ -281,27 +281,27 @@ Git tag (v0.1.0)
       ▼
 GitHub Actions (cargo-dist + maturin)
       ├──▶ GitHub Releases (Linux/macOS/Windows binaries + SHA256)
-      ├──▶ crates.io        (cargo install cargoscope)
-      ├──▶ Homebrew tap     (brew install cargoscope)
-      ├──▶ npm              (npx cargoscope)     ──► runs the native binary
-      └──▶ PyPI             (pip/uvx cargoscope) ──► runs the native binary
+      ├──▶ crates.io        (cargo install depscout)
+      ├──▶ Homebrew tap     (brew install depscout)
+      ├──▶ npm              (npx depscout)     ──► runs the native binary
+      └──▶ PyPI             (pip/uvx depscout) ──► runs the native binary
 ```
 
 - **cargo-dist**: generates the release workflow from `Cargo.toml` configuration. Prebuilt binaries for Linux (`x86_64`, `aarch64`, static `musl`), macOS (Intel and Apple Silicon) and Windows (`x86_64`, `aarch64`), with SHA256 checksums and build provenance where available.
 - **Homebrew**: formula updated automatically in a `homebrew-tap` repository.
 - **Shell / PowerShell installers**: one-line installers for CI pipelines that avoid compiling with `cargo install`.
 - **npm**: a thin launcher package (handled by cargo-dist) that runs the prebuilt binary for the user's platform; no functional JavaScript.
-- **PyPI**: `maturin` packages the Rust CLI binary into a wheel, so `pip install cargoscope` or `uvx cargoscope scan .` works without a Rust toolchain.
+- **PyPI**: `maturin` packages the Rust CLI binary into a wheel, so `pip install depscout` or `uvx depscout scan .` works without a Rust toolchain.
 
 **All channels ship from v0.1**: GitHub Releases with installers, crates.io, Homebrew tap, npm and PyPI. npm and PyPI are distribution pipes only, so non-Rust users (for example a Python CI image) can run the tool without a Rust toolchain; they do not mean those ecosystems are analyzed. Check package-name availability on every registry before any announcement.
 
-### Official GitHub Action (`cargoscope-action`)
+### Official GitHub Action (`depscout-action`)
 
-Shipped with v0.1, as a composite `action.yml` at the root of this repository (`uses: HarpeLm/CargoScope@v0.1.0`) rather than a separate repository. It:
+Shipped with v0.1, as a composite `action.yml` at the root of this repository (`uses: HarpeLm/DepScout@v0.1.0`) rather than a separate repository. It:
 
 1. Downloads the prebuilt binary for the requested version from GitHub Releases instead of compiling.
-2. Runs `cargoscope update` and caches the RustSec and crates.io data between runs with `actions/cache`.
-3. Runs `cargoscope scan . --format sarif` and can upload results to the GitHub Security tab via `github/codeql-action/upload-sarif`.
+2. Runs `depscout update` and caches the RustSec and crates.io data between runs with `actions/cache`.
+3. Runs `depscout scan . --format sarif` and can upload results to the GitHub Security tab via `github/codeql-action/upload-sarif`.
 
 The action uses minimal permissions and pinned versions.
 

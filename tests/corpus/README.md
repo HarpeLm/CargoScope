@@ -1,15 +1,15 @@
 # Unused-Dependency Corpus
 
-[`corpus.toml`](corpus.toml) pins 70 open-source Rust repositories to a commit and labels, by reading their code, the dependencies CargoScope reports as `likely-unused`:
+[`corpus.toml`](corpus.toml) pins 70 open-source Rust repositories to a commit and labels, by reading their code, the dependencies Dep Scout reports as `likely-unused`:
 
 - `unused`: the dependency is really unused by the package's code.
-- `used`: CargoScope reported it wrongly at some point. These labels guard against regressions.
+- `used`: Dep Scout reported it wrongly at some point. These labels guard against regressions.
 - `known = true`, on a `used` label: a wrong finding that is understood and accepted, such as egui's intentionally empty `tests/test_egui_extras_compilation` crate. It still counts against precision, but does not make the tool fail, so the tool only fails on new problems.
 
 Replay it with:
 
 ```sh
-cargo run -p cargoscope-corpus -- target/corpus
+cargo run -p depscout-corpus -- target/corpus
 ```
 
 The tool fetches each repository with `git`, creates a `Cargo.lock` with `cargo generate-lockfile` when the repository has none (this only resolves versions; no build script or project code runs), scans it, and compares the findings with the labels. It fails on any wrong or unlabelled finding, or below 90% precision (the v0.1 criterion of SPEC.md).

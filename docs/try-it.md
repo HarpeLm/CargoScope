@@ -1,6 +1,6 @@
-# Try CargoScope in Two Minutes
+# Try Dep Scout in Two Minutes
 
-CargoScope reads your `Cargo.lock` and `Cargo.toml` files and tells you, in one report, which dependencies have known advisories, which look unused, which are yanked or outdated, and why each one is in your project. It never modifies your files and never runs your code.
+Dep Scout reads your `Cargo.lock` and `Cargo.toml` files and tells you, in one report, which dependencies have known advisories, which look unused, which are yanked or outdated, and why each one is in your project. It never modifies your files and never runs your code.
 
 This is the first stable version (`0.1.0`), and it is young: your feedback decides what comes next. See the end of this page.
 
@@ -9,23 +9,23 @@ This is the first stable version (`0.1.0`), and it is young: your feedback decid
 macOS and Linux:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/HarpeLm/CargoScope/releases/latest/download/cargoscope-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/HarpeLm/DepScout/releases/latest/download/depscout-installer.sh | sh
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://github.com/HarpeLm/CargoScope/releases/latest/download/cargoscope-installer.ps1 | iex
+irm https://github.com/HarpeLm/DepScout/releases/latest/download/depscout-installer.ps1 | iex
 ```
 
-Or with a Rust toolchain: `cargo install cargoscope`, or with Homebrew: `brew install HarpeLm/tap/cargoscope`.
+Or with a Rust toolchain: `cargo install depscout`, or with Homebrew: `brew install HarpeLm/tap/depscout`.
 
 ## 2. Download the advisory data (the only step that uses the network)
 
 From the root of a Rust project (where `Cargo.lock` is):
 
 ```sh
-cargoscope update .
+depscout update .
 ```
 
 This downloads the RustSec advisory database and the crates.io data (versions, licenses) for your dependencies, into a local cache.
@@ -33,7 +33,7 @@ This downloads the RustSec advisory database and the crates.io data (versions, l
 ## 3. Scan (offline, read-only)
 
 ```sh
-cargoscope scan .
+depscout scan .
 ```
 
 The first line is a summary. Below it:
@@ -47,21 +47,21 @@ By default, a security vulnerability makes the command exit with code 1, as carg
 ## 4. Optional: go further
 
 ```sh
-cargoscope scan . --show-uncertain     # also list dependencies that are only possibly unused, with the reason
-cargoscope scan . --verbose            # list every resolved package with its dependency chain
-cargoscope scan . --format json        # machine-readable report
-cargoscope scan . --format sarif --output results.sarif   # for GitHub code scanning
-cargoscope scan . --precise            # confirm unused dependencies with rustc (compiles your project)
+depscout scan . --show-uncertain     # also list dependencies that are only possibly unused, with the reason
+depscout scan . --verbose            # list every resolved package with its dependency chain
+depscout scan . --format json        # machine-readable report
+depscout scan . --format sarif --output results.sarif   # for GitHub code scanning
+depscout scan . --precise            # confirm unused dependencies with rustc (compiles your project)
 ```
 
 `--precise` runs `cargo check`, so your build scripts and proc macros run: use it only on code you trust.
 
 ## 5. Tell us what happened
 
-Open a [feedback issue](https://github.com/HarpeLm/CargoScope/issues/new?template=feedback.yml). The most useful things to report:
+Open a [feedback issue](https://github.com/HarpeLm/DepScout/issues/new?template=feedback.yml). The most useful things to report:
 
 - **A wrong finding**: a dependency reported as unused that is used, or an advisory that does not apply. Please include the `Cargo.toml` line and where the crate is used.
 - **Anything confusing** in the report, an error message you did not understand, or an installation problem.
 - **What you would need** to use it in CI, or to replace another tool.
 
-Nothing is sent anywhere by CargoScope: it has no telemetry.
+Nothing is sent anywhere by Dep Scout: it has no telemetry.

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/HarpeLm/CargoScope/blob/main/docs/schema/report-v1.json",
-  "title": "CargoScope JSON report, format version 1",
-  "description": "Output of `cargoscope scan --format json`. See docs/json-report.md for the compatibility policy.",
+  "$id": "https://github.com/HarpeLm/DepScout/blob/main/docs/schema/report-v1.json",
+  "title": "Dep Scout JSON report, format version 1",
+  "description": "Output of `depscout scan --format json`. See docs/json-report.md for the compatibility policy.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -33,7 +33,7 @@
     "packages": { "type": "array", "items": { "$ref": "#/$defs/package" } },
     "unused": { "type": "array", "items": { "$ref": "#/$defs/unused" } },
     "policy": {
-      "description": "Violations of the cargoscope.toml policy, or null when no policy is configured or checked.",
+      "description": "Violations of the depscout.toml policy, or null when no policy is configured or checked.",
       "oneOf": [{ "type": "array", "items": { "$ref": "#/$defs/violation" } }, { "type": "null" }]
     },
     "warnings": { "type": "array", "items": { "type": "string" } }
@@ -99,7 +99,7 @@
         },
         "path": { "$ref": "#/$defs/path" },
         "ignored_reason": {
-          "description": "Reason given in cargoscope.toml [advisories] ignore, or null. Ignored advisories never fail the scan.",
+          "description": "Reason given in depscout.toml [advisories] ignore, or null. Ignored advisories never fail the scan.",
           "$ref": "#/$defs/nullable_string"
         }
       }
