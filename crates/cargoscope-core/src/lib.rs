@@ -78,6 +78,34 @@ impl Inventory {
 
         None
     }
+
+    /// Crates resolved in more than one version, which Cargo compiles once
+    /// per version. Packages of the scanned project are left out.
+    ///
+    /// Each entry is a crate name and the indices of its versions, in
+    /// package order (sorted by version as in the lockfile); entries are
+    /// sorted by name.
+    #[must_use]
+    pub fn duplicates(&self) -> Vec<(String, Vec<usize>)> {
+        let mut by_name: std::collections::BTreeMap<&str, Vec<usize>> =
+            std::collections::BTreeMap::new();
+        for (index, package) in self.packages.iter().enumerate() {
+            if !package.root {
+                by_name.entry(&package.name).or_default().push(index);
+            }
+        }
+        by_name
+            .into_iter()
+            .filter(|(_, indices)| {
+                let versions: std::collections::BTreeSet<&str> = indices
+                    .iter()
+                    .map(|&index| self.packages[index].version.as_str())
+                    .collect();
+                versions.len() > 1
+            })
+            .map(|(name, indices)| (name.to_owned(), indices))
+            .collect()
+    }
 }
 
 /// Severity of a finding, on the CVSS qualitative scale.
@@ -383,6 +411,28 @@ mod tests {
         };
         assert_eq!(inventory.path_to(3), Some(vec![0, 4, 3]));
         assert_eq!(inventory.path_to(0), Some(vec![0]));
+    }
+
+    #[test]
+    fn finds_crates_resolved_in_several_versions() {
+        let versioned = |name: &str, version: &str, root: bool| Package {
+            version: version.to_owned(),
+            ..package(name, root, vec![])
+        };
+        let inventory = Inventory {
+            packages: vec![
+                versioned("app", "0.1.0", true),
+                versioned("app", "0.2.0", false),
+                versioned("syn", "1.0.109", false),
+                versioned("syn", "2.0.87", false),
+                versioned("serde", "1.0.0", false),
+                versioned("member", "0.1.0", true),
+                versioned("member", "0.2.0", true),
+            ],
+        };
+        // A registry crate with the name of a member counts only once;
+        // members themselves are never duplicates.
+        assert_eq!(inventory.duplicates(), vec![("syn".to_owned(), vec![2, 3])]);
     }
 
     #[test]
