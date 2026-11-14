@@ -9,7 +9,7 @@
 //! build script or project code runs. CargoScope itself never executes code.
 //!
 //! Exit code 1 when a `likely-unused` finding is unlabelled or wrong, or
-//! when precision is below the 97% target.
+//! when precision is below the 90% criterion of SPEC.md section 12.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -17,7 +17,7 @@ use std::process::{Command, ExitCode};
 
 use cargoscope_core::UnusedConfidence;
 
-const TARGET_PRECISION: f64 = 0.97;
+const TARGET_PRECISION: f64 = 0.90;
 
 struct Label {
     manifest: String,
