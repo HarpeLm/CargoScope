@@ -12,6 +12,7 @@ Small Cargo projects used by integration tests. They are never built: CargoScope
 | `multi-version` | Two versions of one crate: one direct, one pulled in transitively |
 | `unused` | Every unused-detection case: comments, strings, macros, renames, `-sys`, optional, transitive with features, build script, ignore list |
 | `policy` | A `cargoscope.toml` policy broken once by each rule (license, unknown license, git source, ban) |
+| `ignore-advisory` | `[advisories] ignore` in `cargoscope.toml`, matched by a CVE alias, plus an entry that matches nothing |
 | `no-lockfile` | Missing `Cargo.lock` (execution error, exit code 2) |
 
 `advisory-cache` is a fake RustSec and crates.io cache used through `CARGOSCOPE_CACHE_DIR`. Its `CARGOSCOPE-TEST-*` advisories are invented for tests and do not describe real vulnerabilities.

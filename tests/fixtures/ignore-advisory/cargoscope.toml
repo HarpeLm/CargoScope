@@ -1,0 +1,5 @@
+[advisories]
+ignore = [
+  { id = "CVE-TEST-0001", reason = "the vulnerable function is never called" },
+  { id = "RUSTSEC-0000-9999", reason = "no longer relevant" },
+]

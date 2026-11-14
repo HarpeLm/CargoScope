@@ -736,3 +736,89 @@ fn invalid_policy_is_an_execution_error() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("unknown key `alow`"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn ignored_advisories_stay_visible_but_do_not_fail() {
+    let output = scan("ignore-advisory", &[]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the only vulnerability is ignored"
+    );
+    let text = stdout(&output);
+    assert!(
+        text.contains("Summary: 0 vulnerabilities (1 informational, 1 ignored)"),
+        "{text}"
+    );
+    assert!(text.contains("- CARGOSCOPE-TEST-0001 [high] serde_json 1.0.128"));
+    assert!(
+        text.contains("    ignored in cargoscope.toml: the vulnerable function is never called\n")
+    );
+    assert!(text.contains("cargoscope.toml ignores RUSTSEC-0000-9999, which matches no advisory"));
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&scan("ignore-advisory", &["--format", "json"]).stdout)
+            .expect("valid JSON");
+    let advisory = json["advisories"]
+        .as_array()
+        .expect("advisories")
+        .iter()
+        .find(|advisory| advisory["id"] == "CARGOSCOPE-TEST-0001")
+        .expect("ignored advisory kept");
+    assert_eq!(
+        advisory["ignored_reason"],
+        "the vulnerable function is never called"
+    );
+
+    let sarif: serde_json::Value =
+        serde_json::from_slice(&scan("ignore-advisory", &["--format", "sarif"]).stdout)
+            .expect("valid SARIF");
+    let result = sarif["runs"][0]["results"]
+        .as_array()
+        .expect("results")
+        .iter()
+        .find(|result| result["ruleId"] == "CARGOSCOPE-TEST-0001")
+        .expect("suppressed result kept");
+    assert_eq!(result["suppressions"][0]["kind"], "external");
+}
+
+#[test]
+fn expired_ignores_count_again_and_invalid_ones_are_errors() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-expired-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dir");
+    for file in ["Cargo.toml", "Cargo.lock"] {
+        std::fs::copy(fixture("ignore-advisory").join(file), dir.join(file)).expect("copy");
+    }
+    let run = |dir: &std::path::Path| {
+        Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+            .env("CARGO_HOME", fixture("empty-cargo-home"))
+            .arg("scan")
+            .arg(dir)
+            .output()
+            .expect("runs")
+    };
+    std::fs::write(
+        dir.join("cargoscope.toml"),
+        "[advisories]\nignore = [{ id = \"CARGOSCOPE-TEST-0001\", reason = \"temporary\", until = \"2020-01-01\" }]\n",
+    )
+    .expect("write");
+    let output = run(&dir);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expired ignore no longer applies"
+    );
+    assert!(stdout(&output).contains("the ignore of CARGOSCOPE-TEST-0001 expired on 2020-01-01"));
+
+    std::fs::write(
+        dir.join("cargoscope.toml"),
+        "[advisories]\nignore = [{ id = \"X\" }]\n",
+    )
+    .expect("write");
+    let output = run(&dir);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("needs a non-empty `reason`"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
