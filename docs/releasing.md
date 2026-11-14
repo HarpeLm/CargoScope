@@ -43,7 +43,7 @@ Checked on 2026-11-14 at commit 3ce08db. ✅ done, ⬜ to do before the tag.
 
 - ✅ Set the version to `0.1.0`, `dist plan`, commit.
 - ✅ Tag `v0.1.0` and push it (2026-11-14).
-- ✅ Checked: GitHub Release, installer, `cargo install cargoscope`, `npx cargoscope`, the Action on 3 OS. ⬜ Homebrew: the first publish failed (403, the token could not write to `homebrew-tap`).
+- ✅ Checked: GitHub Release, installer, `cargo install cargoscope`, `npx cargoscope`, the Action on 3 OS. ✅ Homebrew: the first publish failed (403: the token had no Contents permission on `homebrew-tap`); after fixing the token, a re-run published `Formula/cargoscope.rb`, whose checksums match the release.
 - ✅ Set the version back to `0.2.0-dev`.
 
 ## One-time setup (maintainer)
