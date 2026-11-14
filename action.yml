@@ -1,5 +1,5 @@
-name: CargoScope
-description: Report advisories, unused dependencies, licenses and versions of a Rust project, with SARIF for code scanning.
+name: Dep Scout
+description: Scan a Rust project with CargoScope - advisories, unused dependencies, licenses and versions, with SARIF for code scanning.
 author: CargoScope contributors
 branding:
   icon: search
