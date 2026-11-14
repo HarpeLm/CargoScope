@@ -1,0 +1,22 @@
+# One-time job: yanks depscout 0.2.0, published by mistake during a rename
+# that was undone. Removed once it has run.
+name: Yank depscout
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  yank:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Yank
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          for crate in depscout depscout-report depscout-cargo depscout-advisory depscout-core; do
+            cargo yank --version 0.2.0 "$crate"
+          done
