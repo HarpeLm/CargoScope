@@ -7,7 +7,7 @@ branding:
 
 inputs:
   version:
-    description: CargoScope version to install, such as 0.1.0, or "latest".
+    description: CargoScope version to install, such as 0.1.0, or "latest". "installed" uses the cargoscope already on the PATH.
     default: latest
   path:
     description: Directory of the Cargo project to scan.
@@ -24,6 +24,12 @@ inputs:
   upload-sarif:
     description: "Upload the SARIF file to GitHub code scanning (needs `security-events: write`)."
     default: "true"
+  comment:
+    description: "On pull requests, post a comment with what the pull request changes: new and resolved advisories, unused dependencies, packages (needs `pull-requests: write`)."
+    default: "true"
+  new-only:
+    description: "On pull requests, fail only on advisories that are not already on the base branch."
+    default: "true"
 
 outputs:
   sarif:
@@ -37,6 +43,7 @@ runs:
   using: composite
   steps:
     - name: Install CargoScope
+      if: ${{ inputs.version != 'installed' }}
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
@@ -75,6 +82,29 @@ runs:
         PROJECT: ${{ inputs.path }}
       run: cargoscope update "$PROJECT"
 
+    - name: Scan the base branch of the pull request
+      id: base
+      if: ${{ github.event.pull_request && (inputs.comment == 'true' || inputs.new-only == 'true') }}
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.path }}
+        CHECKS: ${{ inputs.checks }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      run: |
+        # The base commit, in a separate worktree; any failure only skips the
+        # comparison.
+        base="$RUNNER_TEMP/cargoscope-base"
+        report="$RUNNER_TEMP/cargoscope-base.json"
+        args=()
+        [ -n "$CHECKS" ] && args+=(--checks "$CHECKS")
+        if git fetch --quiet --no-tags --depth=1 origin "$BASE_SHA" \
+          && git worktree add --quiet --detach "$base" "$BASE_SHA" \
+          && cargoscope scan "$base/$PROJECT" "${args[@]}" --format json --fail-on none --output "$report"; then
+          echo "report=$report" >> "$GITHUB_OUTPUT"
+        else
+          echo "::warning::CargoScope could not scan the base branch ($BASE_SHA): no comparison for this pull request."
+        fi
+
     - name: Scan
       id: scan
       shell: bash
@@ -83,12 +113,20 @@ runs:
         FAIL_ON: ${{ inputs.fail-on }}
         CHECKS: ${{ inputs.checks }}
         SARIF: ${{ inputs.sarif }}
+        BASELINE: ${{ inputs.new-only == 'true' && steps.base.outputs.report || '' }}
+        CURRENT: ${{ steps.base.outputs.report && format('{0}/cargoscope-current.json', runner.temp) || '' }}
       run: |
         args=()
         [ -n "$FAIL_ON" ] && args+=(--fail-on "$FAIL_ON")
         [ -n "$CHECKS" ] && args+=(--checks "$CHECKS")
         # Readable report in the job log; never fails this step.
         cargoscope scan "$PROJECT" "${args[@]}" --fail-on none || true
+        if [ -n "$CURRENT" ]; then
+          cargoscope scan "$PROJECT" "${args[@]}" --format json --fail-on none --output "$CURRENT" \
+            && echo "report=$CURRENT" >> "$GITHUB_OUTPUT"
+        fi
+        # Advisories already on the base branch do not fail a pull request.
+        [ -n "$BASELINE" ] && args+=(--baseline "$BASELINE")
         set +e
         cargoscope scan "$PROJECT" "${args[@]}" --format sarif --output "$SARIF"
         code=$?
@@ -96,6 +134,38 @@ runs:
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
         if [ "$code" = 2 ]; then
           exit 2
+        fi
+
+    - name: Comment on the pull request
+      if: ${{ inputs.comment == 'true' && steps.base.outputs.report && steps.scan.outputs.report }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPOSITORY: ${{ github.repository }}
+        PULL_REQUEST: ${{ github.event.pull_request.number }}
+        BASE_REPORT: ${{ steps.base.outputs.report }}
+        CURRENT_REPORT: ${{ steps.scan.outputs.report }}
+      run: |
+        body="$RUNNER_TEMP/cargoscope-comment.md"
+        set +e
+        cargoscope compare "$BASE_REPORT" "$CURRENT_REPORT" --format markdown --fail-on none > "$body"
+        code=$?
+        set -e
+        if [ "$code" != 0 ]; then
+          echo "::warning::This CargoScope version cannot write the pull request comment (compare --format markdown needs 0.2.0 or later)."
+          exit 0
+        fi
+        cat "$body" >> "$GITHUB_STEP_SUMMARY"
+        # Update the comment of an earlier run instead of adding a new one.
+        marker="<!-- cargoscope-pr-comment -->"
+        id=$(gh api --paginate "repos/$REPOSITORY/issues/$PULL_REQUEST/comments" \
+          --jq ".[] | select(.body | startswith(\"$marker\")) | .id" 2>/dev/null | head -n 1) || true
+        if [ -n "$id" ]; then
+          gh api --silent -X PATCH "repos/$REPOSITORY/issues/comments/$id" -F "body=@$body" \
+            || echo "::warning::CargoScope could not update its comment (the token needs pull-requests: write)."
+        else
+          gh api --silent "repos/$REPOSITORY/issues/$PULL_REQUEST/comments" -F "body=@$body" \
+            || echo "::warning::CargoScope could not comment (the token needs pull-requests: write; pull requests from forks get a read-only token). The comparison is in the job summary."
         fi
 
     - name: Upload SARIF to code scanning
@@ -109,5 +179,5 @@ runs:
       if: ${{ steps.scan.outputs.exit-code == '1' }}
       shell: bash
       run: |
-        echo "::error::CargoScope found advisories at or above the threshold."
+        echo "::error::CargoScope found advisories at or above the threshold, or a policy violation."
         exit 1

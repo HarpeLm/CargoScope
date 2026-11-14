@@ -1,11 +1,13 @@
 # Runs the CargoScope GitHub Action from this repository against this
-# repository, on each OS. It needs a published release to download, so it
-# runs when a release is published, or by hand.
+# repository. The `action` job downloads a published release on each OS, so it
+# runs when a release is published, or by hand. The `pull-request` job builds
+# CargoScope from the pull request and checks the comparison comment.
 name: Action test
 
 on:
   release:
     types: [published]
+  pull_request:
   workflow_dispatch:
     inputs:
       version:
@@ -14,10 +16,13 @@ on:
 
 permissions:
   contents: read
-  security-events: write
 
 jobs:
   action:
+    if: ${{ github.event_name != 'pull_request' }}
+    permissions:
+      contents: read
+      security-events: write
     strategy:
       fail-fast: false
       matrix:
@@ -38,3 +43,30 @@ jobs:
         run: |
           test -s "${{ steps.cargoscope.outputs.sarif }}"
           test "${{ steps.cargoscope.outputs.exit-code }}" = 0
+
+  pull-request:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build CargoScope from this pull request
+        run: |
+          cargo build --release --locked -p cargoscope
+          echo "$PWD/target/release" >> "$GITHUB_PATH"
+      - id: cargoscope
+        uses: ./
+        with:
+          version: installed
+          fail-on: none
+          upload-sarif: "false"
+      - name: Check the outputs
+        run: |
+          test -s "${{ steps.cargoscope.outputs.sarif }}"
+          test "${{ steps.cargoscope.outputs.exit-code }}" = 0
+          grep -q "cargoscope-pr-comment" "$RUNNER_TEMP/cargoscope-comment.md"
