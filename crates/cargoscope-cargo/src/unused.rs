@@ -457,7 +457,12 @@ fn collect_modules(
                     position -= 2;
                 }
                 if top_level || explicit_path.is_some() {
-                    modules.push((name.to_string(), explicit_path));
+                    let module_name = name.to_string();
+                    let module_name = module_name
+                        .strip_prefix("r#")
+                        .unwrap_or(&module_name)
+                        .to_owned();
+                    modules.push((module_name, explicit_path));
                 }
             }
             _ => {}
@@ -1098,13 +1103,14 @@ fn collect_identifier_strings(tokens: &[TokenTree], names: &mut BTreeSet<String>
     }
 }
 
-/// Names of packages that `package_name` depends on transitively (at depth
-/// 2 or more in `inventory`). Falls back to the dependencies of all
-/// non-root packages when `package_name` is not a local package in
-/// `inventory`.
-fn transitive_dependencies_of<'a>(
+/// Walks dependencies of `package_name` in `inventory` at depth 2 or more.
+/// When `only_external_sources` is true, only collects dependencies declared by
+/// external packages (`!root`) because workspace packages' `Cargo.lock` entries
+/// also include their `dev-dependencies`.
+fn collect_dependencies_of<'a>(
     inventory: &'a Inventory,
     package_name: &str,
+    only_external_sources: bool,
 ) -> BTreeSet<&'a str> {
     let roots: Vec<usize> = inventory
         .packages
@@ -1127,17 +1133,38 @@ fn transitive_dependencies_of<'a>(
         .flat_map(|&root| inventory.packages[root].dependencies.iter().copied())
         .collect();
     let mut visited = BTreeSet::new();
-    let mut transitive = BTreeSet::new();
+    let mut collected = BTreeSet::new();
     while let Some(index) = stack.pop() {
         if !visited.insert(index) {
             continue;
         }
+        let include = !only_external_sources || !inventory.packages[index].root;
         for &dep in &inventory.packages[index].dependencies {
-            transitive.insert(inventory.packages[dep].name.as_str());
+            if include {
+                collected.insert(inventory.packages[dep].name.as_str());
+            }
             stack.push(dep);
         }
     }
-    transitive
+    collected
+}
+
+/// External transitive dependencies of `package_name` (depth 2 or more,
+/// collecting only from external packages so workspace dev-dependencies do not leak in).
+fn transitive_dependencies_of<'a>(
+    inventory: &'a Inventory,
+    package_name: &str,
+) -> BTreeSet<&'a str> {
+    collect_dependencies_of(inventory, package_name, true)
+}
+
+/// All packages reachable at depth 2 or more from `package_name`, including
+/// workspace proc-macro crates re-exported through sibling packages.
+fn reachable_dependencies_of<'a>(
+    inventory: &'a Inventory,
+    package_name: &str,
+) -> BTreeSet<&'a str> {
+    collect_dependencies_of(inventory, package_name, false)
 }
 
 pub fn check_package(
@@ -1158,7 +1185,7 @@ pub fn check_package(
     }
 
     let transitive_names = transitive_dependencies_of(inventory, package.name);
-    let transitive_idents: BTreeSet<String> = transitive_names
+    let reachable_idents: BTreeSet<String> = reachable_dependencies_of(inventory, package.name)
         .iter()
         .map(|name| name.replace('-', "_"))
         .collect();
@@ -1250,7 +1277,7 @@ pub fn check_package(
                     let proc_macro_reachable = if declared_idents.contains(crate_ident) {
                         references.contains(crate_ident)
                     } else {
-                        transitive_idents.contains(crate_ident)
+                        reachable_idents.contains(crate_ident)
                     };
                     (crate_ident != &ident && proc_macro_reachable && names.contains(&ident))
                         .then_some(crate_ident)
@@ -1292,6 +1319,9 @@ pub fn check_package(
             exceptions.push(
                 "`#[wasm_bindgen]` on an async function expands to wasm-bindgen-futures".to_owned(),
             );
+        }
+        if ident == "strum" && code_refs.contains("strum_macros") {
+            exceptions.push("`strum_macros` derives expand to traits in `strum`".to_owned());
         }
         if sources.has_build_script
             && dependency.kind != DependencyKind::Build
@@ -1739,13 +1769,14 @@ mod tests {
     #[test]
     fn finds_path_modules_declared_inside_functions() {
         let tokens = TokenStream::from_str(
-            "mod top;\nfn build() {\n    #[path = \"src/theme.rs\"]\n    mod theme;\n    mod unknown;\n}\n#[inline]\nmod plain;\n#[path = \"src/args.rs\"]\n#[expect(dead_code)]\nmod args;\n#[path = \"x.rs\"]\nfn f() {}\nmod after_fn;\n",
+            "mod top;\nmod r#enum;\nfn build() {\n    #[path = \"src/theme.rs\"]\n    mod theme;\n    mod unknown;\n}\n#[inline]\nmod plain;\n#[path = \"src/args.rs\"]\n#[expect(dead_code)]\nmod args;\n#[path = \"x.rs\"]\nfn f() {}\nmod after_fn;\n",
         )
         .expect("tokenizes");
         assert_eq!(
             super::declared_modules(tokens),
             vec![
                 ("top".to_owned(), None),
+                ("enum".to_owned(), None),
                 ("theme".to_owned(), Some("src/theme.rs".to_owned())),
                 ("plain".to_owned(), None),
                 ("args".to_owned(), Some("src/args.rs".to_owned())),
@@ -1978,7 +2009,10 @@ mod tests {
 
         // 3. Per-package transitive dependencies and scoped workspace proc-macros.
         // Package `app` transitively reaches `reexport_macro` via `app_helper`,
-        // while `sibling_only_transitive` is only reachable from `sibling`.
+        // `via_depended_sibling_ext` via `depended_sibling` -> `depended_sibling_ext`,
+        // while `sibling_only_transitive` is only reachable from unrelated `sibling`,
+        // and `ws_member_dev` is directly attached to workspace (`root = true`) package
+        // `depended_sibling` (so it could be a dev-dependency of `depended_sibling`).
         let inventory = cargoscope_core::Inventory {
             packages: vec![
                 cargoscope_core::Package {
@@ -1987,7 +2021,7 @@ mod tests {
                     source: None,
                     root: true,
                     direct: false,
-                    dependencies: vec![2, 3, 4], // app_helper, direct_macro, unrelated_dep
+                    dependencies: vec![2, 3, 4, 9], // app_helper, direct_macro, unrelated_dep, depended_sibling
                 },
                 cargoscope_core::Package {
                     name: "sibling".to_owned(),
@@ -2009,7 +2043,7 @@ mod tests {
                     name: "direct_macro".to_owned(),
                     version: "0.1.0".to_owned(),
                     source: None,
-                    root: false,
+                    root: true,
                     direct: true,
                     dependencies: vec![],
                 },
@@ -2033,7 +2067,7 @@ mod tests {
                     name: "reexport_macro".to_owned(),
                     version: "0.1.0".to_owned(),
                     source: None,
-                    root: false,
+                    root: true,
                     direct: false,
                     dependencies: vec![],
                 },
@@ -2045,11 +2079,49 @@ mod tests {
                     direct: false,
                     dependencies: vec![],
                 },
+                cargoscope_core::Package {
+                    name: "ws_member_dev".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    source: Some("registry".to_owned()),
+                    root: false,
+                    direct: false,
+                    dependencies: vec![],
+                },
+                cargoscope_core::Package {
+                    name: "depended_sibling".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    source: None,
+                    root: true,
+                    direct: true,
+                    dependencies: vec![8, 10], // ws_member_dev, depended_sibling_ext
+                },
+                cargoscope_core::Package {
+                    name: "depended_sibling_ext".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    source: Some("registry".to_owned()),
+                    root: false,
+                    direct: false,
+                    dependencies: vec![11], // via_depended_sibling_ext
+                },
+                cargoscope_core::Package {
+                    name: "via_depended_sibling_ext".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    source: Some("registry".to_owned()),
+                    root: false,
+                    direct: false,
+                    dependencies: vec![],
+                },
             ],
         };
         let app_transitive = super::transitive_dependencies_of(&inventory, "app");
         assert!(app_transitive.contains("reexport_macro"));
+        assert!(app_transitive.contains("via_depended_sibling_ext"));
+        assert!(!app_transitive.contains("ws_member_dev"));
         assert!(!app_transitive.contains("sibling_only_transitive"));
+        let app_reachable = super::reachable_dependencies_of(&inventory, "app");
+        assert!(app_reachable.contains("reexport_macro"));
+        assert!(app_reachable.contains("ws_member_dev"));
+        assert!(app_reachable.contains("via_depended_sibling_ext"));
 
         let root = std::env::temp_dir().join(format!("cargoscope-scoped-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -2057,7 +2129,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".git")).expect("git");
         std::fs::write(
             root.join("app/src/lib.rs"),
-            "#[derive(direct_macro::Gen)]\npub struct X;\n",
+            "#[derive(direct_macro::Gen, strum_macros::EnumIter)]\npub struct X;\n",
         )
         .expect("write");
 
@@ -2068,10 +2140,13 @@ mod tests {
             [dependencies]
             direct_macro = "0.1"
             sibling_only_transitive = { version = "0.1", features = ["a"] }
+            ws_member_dev = { version = "0.1", features = ["a"] }
             unreferenced_pm_dep = "0.1"
             used_pm_dep = "0.1"
             reexported_pm_dep = "0.1"
             unused_pm_crate = "0.1"
+            strum = "0.27"
+            strum_macros = "0.28"
             "#,
         )
         .expect("valid");
@@ -2114,10 +2189,34 @@ mod tests {
         };
         use cargoscope_core::UnusedConfidence::{Likely, Possibly};
         assert_eq!(confidence("sibling_only_transitive"), Some(Likely));
+        assert_eq!(confidence("ws_member_dev"), Some(Likely));
         assert_eq!(confidence("unreferenced_pm_dep"), Some(Likely));
         assert_eq!(confidence("unused_pm_crate"), Some(Likely));
         assert_eq!(confidence("used_pm_dep"), Some(Possibly));
         assert_eq!(confidence("reexported_pm_dep"), Some(Possibly));
+        assert_eq!(confidence("strum"), Some(Possibly));
+
+        // Without `strum_macros` referenced, `strum` is `Likely`.
+        std::fs::write(root.join("app/src/lib.rs"), "pub struct X;\n").expect("write");
+        let (without_strum_macros, _) = super::check_package(
+            &super::PackageToCheck {
+                name: "app",
+                dir: &root.join("app"),
+                manifest_label: "app/Cargo.toml",
+                manifest: &manifest,
+                workspace_root: &root,
+            },
+            None,
+            &inventory,
+            &workspace_macros,
+        );
+        assert_eq!(
+            without_strum_macros
+                .iter()
+                .find(|finding| finding.dependency == "strum")
+                .map(|finding| finding.confidence),
+            Some(Likely)
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

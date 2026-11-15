@@ -47,12 +47,22 @@ The rules behind CargoScope's misses were made narrower, each on a fact the scan
 - **Workspace macros**: a macro of a workspace crate can only explain a dependency if the package uses that crate.
 - Two new cautious rules found while labelling: a package without `tests/` that runs trybuild compiles test files from elsewhere against its dev-dependencies (deno's `compile_test_runner`), and `#[wasm_bindgen]` on an async function expands to `wasm-bindgen-futures`.
 
-| | Before | After |
-|---|---|---|
-| Libraries (rustc judge): correct of reported, certain unused found | 10 of 10, 10 of 15 | **12 of 12, 12 of 15** |
-| Applications (labelled corpus): correct of reported | 181 of 183 | **221 of 223** |
+| | Before | After `112740c` | After `b1b49a6` + follow-up |
+|---|---|---|---:|
+| Libraries (rustc judge): correct of reported, certain unused found | 10 of 10, 10 of 15 | **12 of 12, 12 of 15** | *(not re-run)* |
+| Applications (labelled corpus): correct of reported | 181 of 183 (98.9%) | **221 of 223** (99.1%) | **233 of 235** (99.1%) |
 
-The sharper rules brought 37 new application findings, all checked by reading the code: 35 really unused, and 2 wrong, which led to the two new rules above. Both wrong findings that remain are the known, accepted ones of egui. cargo-shear still finds more on libraries (14 of 15), with errors CargoScope does not make.
+The sharper rules in `112740c` brought 37 new application findings, all checked by reading the code: 35 really unused, and 2 wrong, which led to the two new rules above.
+
+### Second pass on the application corpus (commit `b1b49a6` and follow-up)
+
+A second set of refinements tightened three checks to package scope and fixed two edge cases found during corpus validation:
+
+- **Built-in attributes & generic library affixes**: Rust built-in attributes (`#[doc]`, `#[cfg]`, `#[allow]`, etc.) no longer count as external crate references, and generic affixes (`impl`, `assert`, `macros`, `test`, ...) are filtered from fallback library-name guesses (`b1b49a6`).
+- **Per-package reachability**: both transitive feature-selection (`sets_features`, now also ignoring empty `features = []`) and sibling workspace proc-macro reachability are scoped to packages reachable from the checked package rather than the entire workspace (`b1b49a6`, with traversal through reachable workspace members onto their external dependencies fixed afterwards so workspace `dev-dependencies` still do not leak in).
+- **Corpus validation additions**: raw module identifiers (`mod r#enum;`) resolve to `enum.rs` (preventing a false positive on `indexmap` in deno's `libs/ops`), and `strum` is recognized as required when `strum_macros` is used because derives such as `EnumIter` expand to `::strum::IntoEnumIterator` (protecting atuin's `atuin-common` and correcting `examples/function_memory_game`'s `strum` label in `yewstack/yew`).
+
+On the 70-repository corpus (`cargo run --release -p cargoscope-corpus --offline`), this surfaced **13 newly detected genuinely unused dependencies** with **0 new false positives** (**233 of 235** correct, **99.1%**: 20/20 development, 11/11 held-out, 134/134 held-out-2, 68/70 held-out-3). Both wrong findings that remain are the known, accepted ones of egui. cargo-shear still finds more on libraries (14 of 15 in the `rustc` run above, which has not been re-run since `112740c`), with errors CargoScope does not make.
 
 ## Limits
 
