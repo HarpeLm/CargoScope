@@ -5,6 +5,12 @@
 //! dependency is unused when rustc reports it unused in every compiled target
 //! that receives it.
 //!
+//! From Rust 1.100, Cargo turns that lint into its own `unused_dependencies`
+//! lint: it prints one warning per unused normal or build dependency on its
+//! error output, and rustc's JSON messages no longer carry it. CargoScope
+//! then reads Cargo's warnings; dev-dependencies, which that lint does not
+//! check, keep their static result.
+//!
 //! **This compiles the project: build scripts and proc macros of the project
 //! and of its dependencies run.** It is never enabled by default.
 
@@ -39,6 +45,9 @@ struct Target {
 #[derive(Debug, Default)]
 pub struct CompilerReport {
     targets: BTreeMap<PathBuf, BTreeMap<(String, String), Target>>,
+    /// With Cargo 1.100 or later: the dependencies Cargo's
+    /// `unused_dependencies` lint reports, by manifest, as `(kind, ident)`.
+    cargo_lint: Option<BTreeMap<PathBuf, BTreeSet<(DependencyKind, String)>>>,
 }
 
 impl CompilerReport {
@@ -48,6 +57,9 @@ impl CompilerReport {
     /// compiled (for example a dependency of another platform).
     #[must_use]
     pub fn is_unused(&self, manifest: &Path, kind: DependencyKind, ident: &str) -> Option<bool> {
+        if !self.checks(kind) {
+            return None;
+        }
         let targets = self.targets.get(&canonical(manifest))?;
         let relevant: Vec<&Target> = targets
             .values()
@@ -64,12 +76,43 @@ impl CompilerReport {
         if relevant.is_empty() {
             return None;
         }
+        if let Some(lint) = &self.cargo_lint {
+            return Some(
+                lint.get(&canonical(manifest))
+                    .is_some_and(|unused| unused.contains(&(kind, ident.to_owned()))),
+            );
+        }
         Some(relevant.iter().all(|target| target.unused.contains(ident)))
     }
 
-    /// Crates rustc reports unused somewhere in `manifest`.
+    /// Whether the compiler checks dependencies of `kind`: Cargo's lint does
+    /// not check dev-dependencies.
+    #[must_use]
+    pub fn checks(&self, kind: DependencyKind) -> bool {
+        self.cargo_lint.is_none() || kind != DependencyKind::Dev
+    }
+
+    /// The lint the answers come from, for evidence.
+    #[must_use]
+    pub fn source(&self) -> &'static str {
+        if self.cargo_lint.is_some() {
+            "Cargo's unused_dependencies lint"
+        } else {
+            "rustc's unused_crate_dependencies lint in every compiled target that receives it"
+        }
+    }
+
+    /// Crates the compiler reports unused somewhere in `manifest`.
     #[must_use]
     pub fn reported(&self, manifest: &Path) -> BTreeSet<String> {
+        if let Some(lint) = &self.cargo_lint {
+            return lint
+                .get(&canonical(manifest))
+                .into_iter()
+                .flatten()
+                .map(|(_, ident)| ident.clone())
+                .collect();
+        }
         self.targets
             .get(&canonical(manifest))
             .into_iter()
@@ -158,6 +201,99 @@ pub fn parse_messages(output: &str) -> CompilerReport {
     report
 }
 
+/// Section of the dependency declared at 1-based `line` of a manifest: the
+/// kind named by the nearest table header above it (or on it, for the
+/// `[dependencies.name]` form).
+fn section_at(manifest: &str, line: usize) -> Option<DependencyKind> {
+    manifest
+        .lines()
+        .take(line)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(str::trim)
+        .find(|text| text.starts_with('['))
+        .map(|header| {
+            let header = header
+                .trim_start_matches('[')
+                .split(']')
+                .next()
+                .unwrap_or("");
+            if header.contains("dev-dependencies") || header.contains("dev_dependencies") {
+                DependencyKind::Dev
+            } else if header.contains("build-dependencies") || header.contains("build_dependencies")
+            {
+                DependencyKind::Build
+            } else {
+                DependencyKind::Normal
+            }
+        })
+}
+
+/// Reads the warnings of Cargo's `unused_dependencies` lint (Cargo 1.100 or
+/// later) from its error output:
+///
+/// ```text
+/// warning: unused dependency `cfg-if`
+///  --> crates/app/Cargo.toml:6:1
+/// ```
+///
+/// Paths are relative to `project_root`, where Cargo ran.
+#[must_use]
+pub fn parse_cargo_lint(
+    stderr: &str,
+    project_root: &Path,
+) -> BTreeMap<PathBuf, BTreeSet<(DependencyKind, String)>> {
+    let mut unused: BTreeMap<PathBuf, BTreeSet<(DependencyKind, String)>> = BTreeMap::new();
+    let mut pending: Option<String> = None;
+    for line in stderr.lines() {
+        if let Some(rest) = line.strip_prefix("warning: unused dependency `") {
+            pending = rest.split('`').next().map(str::to_owned);
+            continue;
+        }
+        let Some(location) = line.trim_start().strip_prefix("--> ") else {
+            continue;
+        };
+        let Some(name) = pending.take() else {
+            continue;
+        };
+        // `path:line:column`, from the right: Windows paths contain `:`.
+        let mut parts = location.trim().rsplitn(3, ':');
+        let (Some(_column), Some(number), Some(path)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let Ok(number) = number.parse::<usize>() else {
+            continue;
+        };
+        let manifest = project_root.join(path);
+        let Some(kind) = std::fs::read_to_string(&manifest)
+            .ok()
+            .and_then(|text| section_at(&text, number))
+        else {
+            continue;
+        };
+        unused
+            .entry(canonical(&manifest))
+            .or_default()
+            .insert((kind, name.replace('-', "_")));
+    }
+    unused
+}
+
+/// Whether this Cargo reports unused dependencies itself (1.100 or later).
+fn cargo_has_unused_dependencies_lint(cargo: &std::ffi::OsStr) -> bool {
+    let Ok(output) = Command::new(cargo).arg("--version").output() else {
+        return false;
+    };
+    // "cargo 1.100.0 (3acc79c0c 2026-11-05)"
+    String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .nth(1)
+        .and_then(|version| version.split('.').nth(1)?.parse::<u32>().ok())
+        .is_some_and(|minor| minor >= 100)
+}
+
 /// Runs the precise build of `project_root`.
 ///
 /// # Errors
@@ -165,7 +301,9 @@ pub fn parse_messages(output: &str) -> CompilerReport {
 /// Returns Cargo's error output when the build cannot run or fails.
 pub fn run(project_root: &Path) -> Result<CompilerReport, String> {
     let flags = std::env::var("RUSTFLAGS").unwrap_or_default();
-    let output = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let cargo_lint = cargo_has_unused_dependencies_lint(&cargo);
+    let output = Command::new(&cargo)
         .current_dir(project_root)
         .env(
             "RUSTFLAGS",
@@ -185,13 +323,17 @@ pub fn run(project_root: &Path) -> Result<CompilerReport, String> {
         .output()
         .map_err(|error| format!("could not run cargo: {error}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         let tail: Vec<&str> = stderr.lines().rev().take(15).collect();
         let tail: Vec<&str> = tail.into_iter().rev().collect();
         return Err(format!("cargo check failed:\n{}", tail.join("\n")));
     }
-    Ok(parse_messages(&stdout))
+    let mut report = parse_messages(&stdout);
+    if cargo_lint {
+        report.cargo_lint = Some(parse_cargo_lint(&stderr, project_root));
+    }
+    Ok(report)
 }
 
 /// Replaces static findings with the compiler's answer where it has one.
@@ -227,16 +369,19 @@ pub fn refine(
         match compiler.is_unused(&manifest, finding.kind, &ident) {
             Some(true) => {
                 finding.confidence = UnusedConfidence::Likely;
-                finding.evidence = vec![
-                    "confirmed by rustc's unused_crate_dependencies lint in every compiled target that receives it (--precise, all features, this platform)".to_owned(),
-                ];
+                finding.evidence = vec![format!(
+                    "confirmed by {} (--precise, all features, this platform)",
+                    compiler.source()
+                )];
                 refined.push(finding);
             }
             Some(false) => {}
             None => {
-                finding.evidence.push(
-                    "not compiled by --precise on this platform: static result kept".to_owned(),
-                );
+                finding.evidence.push(if compiler.checks(finding.kind) {
+                    "not compiled by --precise on this platform: static result kept".to_owned()
+                } else {
+                    "Cargo's unused_dependencies lint does not check dev-dependencies: static result kept".to_owned()
+                });
                 refined.push(finding);
             }
         }
@@ -265,9 +410,10 @@ pub fn refine(
                 package: dependency.package.clone(),
                 kind: dependency.kind,
                 confidence: UnusedConfidence::Likely,
-                evidence: vec![
-                    "reported by rustc's unused_crate_dependencies lint in every compiled target that receives it (--precise), although the static analysis found a reference".to_owned(),
-                ],
+                evidence: vec![format!(
+                    "reported by {} (--precise), although the static analysis found a reference",
+                    compiler.source()
+                )],
                 ignored: None,
             });
         }
@@ -338,5 +484,67 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn reads_cargo_unused_dependencies_warnings() {
+        let root = std::env::temp_dir().join(format!("cargoscope-lint-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("crates/app")).expect("dirs");
+        std::fs::write(
+            root.join("crates/app/Cargo.toml"),
+            "[package]\nname = \"app\"\n\n[dependencies]\ncfg-if = \"1\"\nitoa = \"1\"\n\n[build-dependencies]\nshlex = \"1\"\n\n[target.'cfg(unix)'.dependencies]\nlibc = \"0.2\"\n",
+        )
+        .expect("write");
+        let stderr = "    Checking app v0.1.0\nwarning: unused dependency `cfg-if`\n --> crates/app/Cargo.toml:5:1\n  |\n5 | cfg-if = \"1\"\n  |\nwarning: unused dependency `shlex`\n --> crates/app/Cargo.toml:9:1\nwarning: unused dependency `libc`\n --> crates/app/Cargo.toml:12:1\nwarning: unused variable `x`\n --> crates/app/src/lib.rs:1:5\nwarning: `app` (manifest) generated 3 warnings\n";
+        let lint = super::parse_cargo_lint(stderr, &root);
+        let manifest = root
+            .join("crates/app/Cargo.toml")
+            .canonicalize()
+            .expect("exists");
+        let found: Vec<(DependencyKind, String)> = lint[&manifest].iter().cloned().collect();
+        assert_eq!(
+            found,
+            vec![
+                (DependencyKind::Normal, "cfg_if".to_owned()),
+                (DependencyKind::Normal, "libc".to_owned()),
+                (DependencyKind::Build, "shlex".to_owned()),
+            ]
+        );
+
+        // With Cargo's lint, compiled targets answer for normal and build
+        // dependencies; dev-dependencies are not checked.
+        let mut report = parse_messages(&format!(
+            "{}\n{}\n{}",
+            artifact(manifest.to_str().expect("utf-8"), "lib", "app", false),
+            artifact(manifest.to_str().expect("utf-8"), "lib", "app", true),
+            artifact(
+                manifest.to_str().expect("utf-8"),
+                "custom-build",
+                "build-script-build",
+                false
+            ),
+        ));
+        report.cargo_lint = Some(lint);
+        assert_eq!(
+            report.is_unused(&manifest, DependencyKind::Normal, "cfg_if"),
+            Some(true)
+        );
+        assert_eq!(
+            report.is_unused(&manifest, DependencyKind::Normal, "itoa"),
+            Some(false)
+        );
+        assert_eq!(
+            report.is_unused(&manifest, DependencyKind::Build, "shlex"),
+            Some(true)
+        );
+        assert_eq!(
+            report.is_unused(&manifest, DependencyKind::Dev, "itoa"),
+            None
+        );
+        assert!(!report.checks(DependencyKind::Dev));
+        assert!(report.source().starts_with("Cargo's"));
+        assert!(report.reported(&manifest).contains("libc"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

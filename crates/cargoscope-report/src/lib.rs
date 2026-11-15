@@ -301,7 +301,7 @@ fn render_unused_text(
         out,
         "\nLikely-unused dependencies: {likely} ({})",
         if precise {
-            "confirmed by rustc where it compiled them, static analysis elsewhere"
+            "confirmed by the compiler where it checked them, static analysis elsewhere"
         } else {
             "static analysis: candidates to verify"
         }
@@ -1078,7 +1078,7 @@ mod tests {
         report.unused_precise = true;
         let text = render_text(Path::new("."), &report, VERBOSE);
         assert!(text.contains(
-            "Likely-unused dependencies: 1 (confirmed by rustc where it compiled them, static analysis elsewhere)\n"
+            "Likely-unused dependencies: 1 (confirmed by the compiler where it checked them, static analysis elsewhere)\n"
         ));
     }
 
