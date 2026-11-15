@@ -34,8 +34,11 @@ inputs:
     description: "Outside pull requests (on a schedule, say), update vulnerable packages in Cargo.lock (and Cargo.toml when needed) with `cargoscope fix --advisories` and open or update a pull request (needs `contents: write` and `pull-requests: write`)."
     default: "false"
   pr-branch:
-    description: Branch of the security update pull request.
+    description: Branch of the security update pull request (with pr-per-package, the prefix of one branch per package).
     default: cargoscope/security-updates
+  pr-per-package:
+    description: "With open-pr, one pull request per vulnerable package instead of one for all."
+    default: "false"
   token:
     description: "Token used to push and open the pull request. The default token works when the repository allows GitHub Actions to create pull requests, but the pull request then starts no workflow; a personal access token or a GitHub App token starts them."
     default: ${{ github.token }}
@@ -51,7 +54,7 @@ outputs:
     description: "CargoScope exit code: 0 OK, 1 threshold reached, 2 execution error."
     value: ${{ steps.scan.outputs.exit-code }}
   pr-url:
-    description: URL of the security update pull request, when one was opened or updated.
+    description: URL of the (first) security update pull request opened or updated.
     value: ${{ steps.security-pr.outputs.url }}
 
 runs:
@@ -183,7 +186,7 @@ runs:
             || echo "::warning::CargoScope could not comment (the token needs pull-requests: write; pull requests from forks get a read-only token). The comparison is in the job summary."
         fi
 
-    - name: Open or update the security update pull request
+    - name: Open, update or close the security update pull requests
       id: security-pr
       if: ${{ inputs.open-pr == 'true' && !github.event.pull_request }}
       shell: bash
@@ -192,51 +195,94 @@ runs:
         TOKEN: ${{ inputs.token }}
         PROJECT: ${{ inputs.path }}
         BRANCH: ${{ inputs.pr-branch }}
+        PER_PACKAGE: ${{ inputs.pr-per-package }}
         BASE: ${{ github.ref_name }}
         CI_WORKFLOW: ${{ inputs.ci-workflow }}
         REPOSITORY: ${{ github.repository }}
       run: |
-        body="$RUNNER_TEMP/cargoscope-security-pr.md"
-        if ! cargoscope fix --advisories "$PROJECT" --apply --format markdown > "$body"; then
-          echo "::warning::CargoScope could not update the vulnerable packages: no pull request."
+        plan="$RUNNER_TEMP/cargoscope-security-plan.json"
+        if ! cargoscope fix --advisories "$PROJECT" --format json > "$plan"; then
+          echo "::warning::CargoScope could not plan the security updates: no pull request opened or closed."
           exit 0
         fi
-        changed=$(git status --porcelain -- '*Cargo.lock' 'Cargo.lock' '*Cargo.toml' 'Cargo.toml' | awk '{print $2}' | sort -u)
-        existing=$(gh pr list --repo "$REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)
-        if [ -z "$changed" ]; then
-          echo "No vulnerable package can be updated in Cargo.lock: no pull request."
-          exit 0
-        fi
+        packages=$(jq -r '.updates[].package' "$plan")
         git config user.name "github-actions[bot]"
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-        git switch -q -C "$BRANCH"
-        # shellcheck disable=SC2086
-        git add $changed
-        git commit -q -m "Update vulnerable dependencies (cargoscope fix --advisories)"
-        # The extra header actions/checkout leaves would replace the token.
-        if ! git -c http.https://github.com/.extraheader= push -q --force \
-          "https://x-access-token:${TOKEN}@github.com/${REPOSITORY}.git" "HEAD:refs/heads/${BRANCH}"; then
-          echo "::error::CargoScope could not push ${BRANCH}: the token needs contents: write."
-          exit 1
+        kept=" "
+        first_url=""
+
+        # Opens or updates the pull request of BRANCH, from the commit the
+        # workflow runs on, with the updates of the given packages (all when
+        # none is given).
+        open_pr() {
+          branch="$1"; title="$2"; shift 2
+          body="$RUNNER_TEMP/cargoscope-security-pr.md"
+          git checkout -q --detach --force "$GITHUB_SHA"
+          only=()
+          [ "$#" -gt 0 ] && only=(--only "$(IFS=,; echo "$*")")
+          cargoscope fix --advisories "$PROJECT" --apply --format markdown "${only[@]}" > "$body" || return 0
+          changed=$(git status --porcelain -- '*Cargo.lock' 'Cargo.lock' '*Cargo.toml' 'Cargo.toml' | awk '{print $2}' | sort -u)
+          [ -n "$changed" ] || return 0
+          git switch -q -C "$branch"
+          # shellcheck disable=SC2086
+          git add $changed
+          git commit -q -m "$title (cargoscope fix --advisories)"
+          # The extra header actions/checkout leaves would replace the token.
+          if ! git -c http.https://github.com/.extraheader= push -q --force \
+            "https://x-access-token:${TOKEN}@github.com/${REPOSITORY}.git" "HEAD:refs/heads/${branch}"; then
+            echo "::error::CargoScope could not push ${branch}: the token needs contents: write."
+            exit 1
+          fi
+          kept="$kept$branch "
+          existing=$(gh pr list --repo "$REPOSITORY" --head "$branch" --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --repo "$REPOSITORY" --title "$title" --body-file "$body" > /dev/null
+            url=$(gh pr view "$existing" --repo "$REPOSITORY" --json url --jq .url)
+            echo "Updated the security pull request: $url"
+          elif url=$(gh pr create --repo "$REPOSITORY" --base "$BASE" --head "$branch" \
+              --title "$title" --body-file "$body"); then
+            echo "Opened the security pull request: $url"
+          else
+            echo "::error::CargoScope pushed ${branch} but could not open the pull request: give the job pull-requests: write, and allow GitHub Actions to create pull requests (Settings, Actions, General), or pass a personal access token or GitHub App token as token."
+            exit 1
+          fi
+          [ -n "$first_url" ] || first_url="$url"
+          if [ -n "$CI_WORKFLOW" ]; then
+            # A workflow_dispatch started with the default token does run,
+            # unlike pull request events; its checks show on the commit.
+            gh workflow run "$CI_WORKFLOW" --repo "$REPOSITORY" --ref "$branch" \
+              || echo "::warning::CargoScope could not start ${CI_WORKFLOW} on ${branch}: it needs a workflow_dispatch trigger, and the job actions: write."
+          fi
+        }
+
+        if [ "$PER_PACKAGE" = "true" ]; then
+          for package in $packages; do
+            open_pr "$BRANCH-$package" "Security update for $package from CargoScope" "$package"
+          done
+        elif [ -n "$packages" ]; then
+          # shellcheck disable=SC2086
+          open_pr "$BRANCH" "Security updates from CargoScope" $packages
         fi
-        if [ -n "$existing" ]; then
-          gh pr edit "$existing" --repo "$REPOSITORY" --body-file "$body" > /dev/null
-          url=$(gh pr view "$existing" --repo "$REPOSITORY" --json url --jq .url)
-          echo "Updated the security pull request: $url"
-        elif url=$(gh pr create --repo "$REPOSITORY" --base "$BASE" --head "$BRANCH" \
-            --title "Security updates from CargoScope" --body-file "$body"); then
-          echo "Opened the security pull request: $url"
-        else
-          echo "::error::CargoScope pushed ${BRANCH} but could not open the pull request: give the job pull-requests: write, and allow GitHub Actions to create pull requests (Settings, Actions, General), or pass a personal access token or GitHub App token as token."
-          exit 1
-        fi
-        echo "url=$url" >> "$GITHUB_OUTPUT"
-        if [ -n "$CI_WORKFLOW" ]; then
-          # A workflow_dispatch started with the default token does run, unlike
-          # pull request events; its checks show on the pull request commit.
-          gh workflow run "$CI_WORKFLOW" --repo "$REPOSITORY" --ref "$BRANCH" \
-            || echo "::warning::CargoScope could not start ${CI_WORKFLOW} on ${BRANCH}: it needs a workflow_dispatch trigger, and the job actions: write."
-        fi
+        [ -n "$packages" ] || echo "No vulnerable package can be updated."
+
+        # Close the pull requests of this action that no longer match an
+        # update: fixed on the base branch, no longer updatable, or the other
+        # pull request mode.
+        gh pr list --repo "$REPOSITORY" --state open --limit 200 --json number,headRefName \
+          --jq '.[] | "\(.number) \(.headRefName)"' 2>/dev/null | while read -r number head; do
+          case "$head" in
+            "$BRANCH" | "$BRANCH"-*) ;;
+            *) continue ;;
+          esac
+          case "$kept" in
+            *" $head "*) continue ;;
+          esac
+          gh pr close "$number" --repo "$REPOSITORY" --delete-branch \
+            --comment "CargoScope: nothing left to update in this pull request (the vulnerable version is gone from the base branch, it can no longer be updated, or the pull request mode changed)." > /dev/null \
+            && echo "Closed the obsolete security pull request #$number ($head)."
+        done || true
+        git checkout -q --detach --force "$GITHUB_SHA"
+        echo "url=$first_url" >> "$GITHUB_OUTPUT"
 
     - name: Upload SARIF to code scanning
       if: ${{ inputs.upload-sarif == 'true' && steps.scan.outputs.exit-code != '2' }}

@@ -91,7 +91,8 @@ jobs:
         run: |
           cargo build --release --locked -p cargoscope
           echo "$PWD/target/release" >> "$GITHUB_PATH"
-      - id: cargoscope
+      - name: One pull request for all updates
+        id: grouped
         uses: ./
         with:
           version: installed
@@ -101,11 +102,41 @@ jobs:
           open-pr: "true"
           pr-branch: cargoscope/security-updates-test
           ci-workflow: ci.yml
-      - name: Check the pull request
+      - name: One pull request per package, which closes the grouped one
+        id: per-package
+        uses: ./
+        with:
+          version: installed
+          path: tests/fixtures/security-update
+          fail-on: none
+          upload-sarif: "false"
+          open-pr: "true"
+          pr-per-package: "true"
+          pr-branch: cargoscope/security-updates-test
+      - name: Check the pull requests
         env:
-          URL: ${{ steps.cargoscope.outputs.pr-url }}
+          GROUPED: ${{ steps.grouped.outputs.pr-url }}
+          PER_PACKAGE: ${{ steps.per-package.outputs.pr-url }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          test -n "$URL"
-          gh pr view "$URL" --json body --jq .body | grep -q "cargoscope-security-pr"
-          gh pr diff "$URL" | grep -q '^+version = "0.4.20"'
+          test -n "$GROUPED" && test -n "$PER_PACKAGE"
+          gh pr view "$GROUPED" --json state --jq .state | grep -qx CLOSED
+          gh pr view "$PER_PACKAGE" --json state,headRefName --jq '.state + " " + .headRefName' | grep -qx "OPEN cargoscope/security-updates-test-chrono"
+          gh pr diff "$PER_PACKAGE" | grep -q '^+version = "0.4.20"'
+      - name: Nothing left to update closes it
+        uses: ./
+        with:
+          version: installed
+          path: tests/fixtures/simple
+          checks: inventory
+          fail-on: none
+          upload-sarif: "false"
+          open-pr: "true"
+          pr-branch: cargoscope/security-updates-test
+      - name: Check that no test pull request is left open
+        env:
+          PER_PACKAGE: ${{ steps.per-package.outputs.pr-url }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr view "$PER_PACKAGE" --json state --jq .state | grep -qx CLOSED
+          test -z "$(gh pr list --state open --json headRefName --jq '.[].headRefName' | grep '^cargoscope/security-updates-test' || true)"
