@@ -56,6 +56,8 @@ CargoScope's `scan` is offline; its download step (`cargoscope update`) is not t
 
 ## Where competitors are better, or we have nothing yet
 
+Updated on 2026-11-15. Since then, [cargo-shear was measured](compiler-benchmark.md#re-run-with-cargo-shear-2026-11-15): it finds more unused dependencies than CargoScope's default output on library crates, and Cargo 1.100 now warns about unused normal and build dependencies by itself.
+
 Feature list from the tools' documented behaviour, not re-checked against their latest documentation.
 
 | Capability | Who has it | CargoScope |
@@ -65,9 +67,9 @@ Feature list from the tools' documented behaviour, not re-checked against their 
 | Suggest or apply advisory fixes | cargo-audit (`fix`, experimental), Dependabot, Renovate | No |
 | Automatic update pull requests, continuous monitoring | Dependabot, Renovate | No, by design |
 | License clarifications and per-crate exceptions | cargo-deny | No |
-| Ban duplicate versions, or features | cargo-deny | No |
+| Ban duplicate versions, or features | cargo-deny | Duplicate versions since 0.4 (`[bans] multiple-versions`); features: no |
 | Check only the graph of chosen features and targets | cargo-deny, cargo-tree | No: always the whole `Cargo.lock` |
-| Remove unused dependencies automatically | cargo-machete (`--fix`) | No (`fix` is on the roadmap) |
+| Remove unused dependencies automatically | cargo-machete and cargo-shear (`--fix`) | Since 0.4 (`cargoscope fix --apply`) |
 | Compiler-accurate unused detection, proven at scale | cargo-udeps | `--precise` exists, not measured at scale |
 | Compatible versus latest update | cargo-outdated | Latest only |
 | Inverted tree, duplicates, feature edges | cargo-tree (`-i`, `-d`, `-e features`) | Shortest path only |
