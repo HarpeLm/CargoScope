@@ -189,6 +189,22 @@ cargoscope compare baseline.json current.json                  # what changed be
 
 `compare` lists new and resolved advisories, new yanked versions, new and resolved likely-unused dependencies, new and resolved crates in several versions, and version changes, as text, JSON (`--format json`) or Markdown for a pull request comment (`--format markdown`). It exits with 1 when new advisories reach `--fail-on`.
 
+## Updating Vulnerable Packages
+
+```sh
+cargoscope fix --advisories .            # dry run: what can be updated, and what blocks the rest
+cargoscope fix --advisories . --apply    # updates Cargo.lock
+```
+
+```
+chrono 0.4.19 (RUSTSEC-2020-0159)
+  - update to 0.4.20
+time 0.1.45 (RUSTSEC-2020-0071)
+  = cannot update: error: failed to select a version for the requirement `time = "^0.1.43"` / required by package `chrono v0.4.19`
+```
+
+For each vulnerability with a fix, CargoScope tries the smallest fixed version first with `cargo update --precise ... --dry-run`, so Cargo, which knows every version requirement, decides whether `Cargo.lock` can move without changing a manifest. When it cannot, Cargo's explanation shows which dependency to upgrade or which requirement to relax. Only `Cargo.lock` changes, and only with `--apply`. This runs `cargo update`, which may read the registry index; it compiles and runs nothing.
+
 ## Auditing a Compiled Binary
 
 ```sh
