@@ -1073,3 +1073,49 @@ fn every_subcommand_has_its_own_help() {
         String::from_utf8_lossy(&wrong.stderr).contains("Run cargoscope fix --help for usage.")
     );
 }
+
+fn audit_bin(file: &str, extra: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+        .arg("audit-bin")
+        .arg(fixture("binary").join(file))
+        .args(extra)
+        .output()
+        .expect("cargoscope binary runs")
+}
+
+#[test]
+fn audit_bin_reads_cargo_auditable_data_and_falls_back_to_registry_paths() {
+    let exact = audit_bin("auditable.bin", &[]);
+    assert_eq!(exact.status.code(), Some(1));
+    let text = stdout(&exact);
+    assert!(
+        text.contains("- CARGOSCOPE-TEST-0001 [high] serde_json 1.0.128"),
+        "{text}"
+    );
+    assert!(text.contains("    via app -> serde_json\n"));
+    assert!(!text.contains("no cargo-auditable data"));
+    assert_eq!(
+        audit_bin("auditable.bin", &["--fail-on", "none"])
+            .status
+            .code(),
+        Some(0)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&audit_bin("auditable.bin", &["--format", "json"]).stdout)
+            .expect("valid JSON");
+    assert_eq!(json["advisories"][0]["id"], "CARGOSCOPE-TEST-0001");
+
+    let partial = audit_bin("paths.bin", &["--fail-on", "none"]);
+    assert_eq!(partial.status.code(), Some(0));
+    let text = stdout(&partial);
+    assert!(
+        text.contains("CARGOSCOPE-TEST-0001 [high] serde_json 1.0.128"),
+        "{text}"
+    );
+    assert!(text.contains("no cargo-auditable data in this binary: 2 crate(s)"));
+
+    let not_rust = audit_bin("not-rust.bin", &[]);
+    assert_eq!(not_rust.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&not_rust.stderr).contains("no dependency information found"));
+}

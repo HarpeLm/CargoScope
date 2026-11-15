@@ -4,6 +4,7 @@
 //! `0` no finding at or above the threshold, `1` threshold reached,
 //! `2` execution error.
 
+mod audit_bin;
 mod compare;
 mod fix;
 mod scan;
@@ -21,6 +22,12 @@ const UPDATE_USAGE: &str = "  cargoscope update [PATH]
 
 const COMPARE_USAGE: &str = "  cargoscope compare BASELINE CURRENT [--format text|json|markdown] [--fail-on THRESHOLD]
       Compare two JSON reports (markdown: for a pull request comment). Exit code 1 when new advisories reach the threshold.";
+
+const AUDIT_BIN_USAGE: &str =
+    "  cargoscope audit-bin FILE... [--format text|json] [--fail-on THRESHOLD]
+      Report the advisories of the crates compiled into Rust binaries. Exact
+      with binaries built by `cargo auditable build`; otherwise the crates
+      named by panic message paths only (incomplete). The files are only read.";
 
 const FIX_USAGE: &str = "  cargoscope fix [PATH] [--dry-run | --apply] [--only NAMES] [--precise]
       Remove likely-unused dependencies from the Cargo.toml files, and the
@@ -76,6 +83,7 @@ fn main() -> ExitCode {
         Some("compare") => Some(COMPARE_USAGE),
         Some("fix") => Some(FIX_USAGE),
         Some("update") => Some(UPDATE_USAGE),
+        Some("audit-bin") => Some(AUDIT_BIN_USAGE),
         _ => None,
     };
     if let Some(section) = section
@@ -97,6 +105,7 @@ fn main() -> ExitCode {
         },
         Some("compare") => compare::compare_command(rest.into_iter()),
         Some("fix") => fix::fix_command(rest.into_iter()),
+        Some("audit-bin") => audit_bin::audit_bin_command(rest.into_iter()),
         Some("update") => match rest.as_slice() {
             [] => update(Path::new(".")),
             [path] => update(Path::new(path)),
@@ -112,7 +121,13 @@ fn main() -> ExitCode {
         Some("--help" | "-h") | None => {
             println!(
                 "{}",
-                usage(&[UPDATE_USAGE, COMPARE_USAGE, FIX_USAGE, SCAN_USAGE])
+                usage(&[
+                    UPDATE_USAGE,
+                    COMPARE_USAGE,
+                    FIX_USAGE,
+                    AUDIT_BIN_USAGE,
+                    SCAN_USAGE
+                ])
             );
             ExitCode::SUCCESS
         }
