@@ -168,6 +168,103 @@ pub fn remove_workspace_dependencies(
     Ok((document.to_string(), removed))
 }
 
+fn table_mut<'a>(
+    document: &'a mut DocumentMut,
+    path: &[String],
+) -> Option<&'a mut dyn toml_edit::TableLike> {
+    let mut item: &mut Item = document.as_item_mut();
+    for step in path {
+        item = item.get_mut(step.as_str())?;
+    }
+    item.as_table_like_mut()
+}
+
+/// Sets the version requirement of every declaration of the crate `package`
+/// (by key, or by `package = "..."` for a renamed dependency) to
+/// `requirement`, in the dependency tables of a manifest, its
+/// `[target.'...']` tables and its `[workspace.dependencies]`. Entries
+/// inherited with `workspace = true` and path or git dependencies without a
+/// version are left alone. Returns the new contents and whether anything
+/// changed.
+///
+/// # Errors
+///
+/// Returns a message when the manifest is not valid TOML.
+pub fn set_requirement(
+    contents: &str,
+    package: &str,
+    requirement: &str,
+) -> Result<(String, bool), String> {
+    let mut document: DocumentMut = contents.parse().map_err(|error| format!("{error}"))?;
+    let sections = [
+        "dependencies",
+        "dev-dependencies",
+        "dev_dependencies",
+        "build-dependencies",
+        "build_dependencies",
+    ];
+    let mut paths: Vec<Vec<String>> = sections.iter().map(|s| vec![(*s).to_owned()]).collect();
+    paths.push(vec!["workspace".to_owned(), "dependencies".to_owned()]);
+    let targets: Vec<String> = document
+        .get("target")
+        .and_then(Item::as_table_like)
+        .map(|targets| targets.iter().map(|(name, _)| name.to_owned()).collect())
+        .unwrap_or_default();
+    for target in &targets {
+        for section in sections {
+            paths.push(vec![
+                "target".to_owned(),
+                target.clone(),
+                section.to_owned(),
+            ]);
+        }
+    }
+
+    let mut changed = false;
+    for path in paths {
+        let Some(table) = table_mut(&mut document, &path) else {
+            continue;
+        };
+        for (key, value) in table.iter_mut() {
+            let renamed_to = value
+                .as_table_like()
+                .and_then(|entry| entry.get("package"))
+                .and_then(Item::as_str)
+                .map(str::to_owned);
+            if renamed_to.as_deref().unwrap_or(key.get()) != package {
+                continue;
+            }
+            if value.is_str() {
+                if value.as_str() != Some(requirement) {
+                    // `name = "1.2"`: keep the surrounding spaces and comment.
+                    let decor = value.as_value().map(|v| v.decor().clone());
+                    *value = toml_edit::value(requirement);
+                    if let (Some(decor), Some(new)) = (decor, value.as_value_mut()) {
+                        *new.decor_mut() = decor;
+                    }
+                    changed = true;
+                }
+            } else if let Some(entry) = value.as_table_like_mut()
+                && entry.get("version").is_some()
+                && entry.get("version").and_then(Item::as_str) != Some(requirement)
+            {
+                let decor = entry
+                    .get("version")
+                    .and_then(Item::as_value)
+                    .map(|v| v.decor().clone());
+                entry.insert("version", toml_edit::value(requirement));
+                if let (Some(decor), Some(new)) =
+                    (decor, entry.get_mut("version").and_then(Item::as_value_mut))
+                {
+                    *new.decor_mut() = decor;
+                }
+                changed = true;
+            }
+        }
+    }
+    Ok((document.to_string(), changed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Outcome, remove_dependencies};
@@ -258,6 +355,25 @@ extra = ["dep:optional-thing"]
             super::remove_workspace_dependencies(root, &["regex", "absent"]).expect("valid");
         assert_eq!(removed, vec!["regex"]);
         assert_eq!(edited, root.replace("regex = \"1\"\n", ""));
+    }
+
+    #[test]
+    fn sets_the_requirement_of_a_crate_everywhere_it_is_declared() {
+        let manifest = "[dependencies]\nchrono = \"=0.4.19\" # pinned\nold = { package = \"chrono\", version = \"0.4\", default-features = false }\nserde = \"1\"\nshared.workspace = true\n\n[dev-dependencies.chrono]\nversion = \"0.4.19\"\n\n[target.'cfg(unix)'.dependencies]\nchrono = { version = \"0.4.19\", optional = true }\n\n[workspace.dependencies]\nchrono = \"0.4.19\"\n";
+        let (edited, changed) =
+            super::set_requirement(manifest, "chrono", "0.4.20").expect("valid");
+        assert!(changed);
+        assert_eq!(
+            edited,
+            "[dependencies]\nchrono = \"0.4.20\" # pinned\nold = { package = \"chrono\", version = \"0.4.20\", default-features = false }\nserde = \"1\"\nshared.workspace = true\n\n[dev-dependencies.chrono]\nversion = \"0.4.20\"\n\n[target.'cfg(unix)'.dependencies]\nchrono = { version = \"0.4.20\", optional = true }\n\n[workspace.dependencies]\nchrono = \"0.4.20\"\n"
+        );
+        let (again, changed_again) =
+            super::set_requirement(&edited, "chrono", "0.4.20").expect("valid");
+        assert!(!changed_again);
+        assert_eq!(again, edited);
+        let (same, changed) = super::set_requirement(manifest, "regex", "1.9.0").expect("valid");
+        assert!(!changed);
+        assert_eq!(same, manifest);
     }
 
     #[test]

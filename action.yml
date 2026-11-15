@@ -201,7 +201,7 @@ runs:
           echo "::warning::CargoScope could not update the vulnerable packages: no pull request."
           exit 0
         fi
-        changed=$(git status --porcelain -- '*Cargo.lock' 'Cargo.lock' | awk '{print $2}' | sort -u)
+        changed=$(git status --porcelain -- '*Cargo.lock' 'Cargo.lock' '*Cargo.toml' 'Cargo.toml' | awk '{print $2}' | sort -u)
         existing=$(gh pr list --repo "$REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)
         if [ -z "$changed" ]; then
           echo "No vulnerable package can be updated in Cargo.lock: no pull request."

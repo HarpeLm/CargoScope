@@ -1119,3 +1119,127 @@ fn audit_bin_reads_cargo_auditable_data_and_falls_back_to_registry_paths() {
     assert_eq!(not_rust.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&not_rust.stderr).contains("no dependency information found"));
 }
+
+#[test]
+fn fix_advisories_updates_pinned_manifest_when_lockfile_alone_fails() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-fix-adv-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    copy_dir(&fixture("simple"), &dir);
+
+    let pinned = "[package]\nname = \"simple\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nserde_json = \"=1.0.128\"\n";
+    std::fs::write(dir.join("Cargo.toml"), pinned).expect("write manifest");
+
+    let fake_src = dir.join("fake_cargo.rs");
+    let fake_bin = dir.join(format!("fake-cargo{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(
+        &fake_src,
+        r#"fn main() {
+    let manifest = std::fs::read_to_string("Cargo.toml").unwrap();
+    let dry_run = std::env::args().any(|a| a == "--dry-run");
+    if manifest.contains("\"=1.0.128\"") {
+        eprintln!("error: failed to select a version for the requirement `serde_json = \"=1.0.128\"`\nrequired by package `simple v0.1.0`");
+        std::process::exit(1);
+    }
+    if manifest.contains("\"=1.0.200\"") {
+        if std::env::var_os("FAKE_CARGO_STALE").is_some() {
+            eprintln!("Adding serde_json v1.0.200");
+            return;
+        }
+        eprintln!("Updating serde_json v1.0.128 -> v1.0.200");
+        if !dry_run {
+            let lock = std::fs::read_to_string("Cargo.lock").unwrap();
+            std::fs::write(
+                "Cargo.lock",
+                lock.replace("version = \"1.0.128\"", "version = \"1.0.200\""),
+            )
+            .unwrap();
+        }
+        return;
+    }
+    eprintln!("unexpected manifest:\n{manifest}");
+    std::process::exit(1);
+}
+"#,
+    )
+    .expect("write fake cargo");
+
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let compiled = Command::new(rustc)
+        .arg(&fake_src)
+        .arg("-o")
+        .arg(&fake_bin)
+        .output()
+        .expect("rustc runs");
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+
+    let run = |extra: &[&str], stale: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_cargoscope"));
+        command
+            .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+            .env("CARGO_HOME", fixture("empty-cargo-home"))
+            .env("CARGO", &fake_bin)
+            .args(["fix", "--advisories"])
+            .arg(&dir)
+            .args(extra);
+        if stale {
+            command.env("FAKE_CARGO_STALE", "1");
+        }
+        command.output().expect("cargoscope binary runs")
+    };
+
+    // If another dependency still keeps the vulnerable version, refuse the edit.
+    let stale = run(&[], true);
+    assert_eq!(stale.status.code(), Some(0));
+    let stale_text = stdout(&stale);
+    assert!(
+        stale_text
+            .contains("= cannot update: another dependency still requires serde_json 1.0.128"),
+        "{stale_text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("Cargo.toml")).expect("manifest"),
+        pinned
+    );
+
+    // Dry run announces the manifest edit and leaves disk untouched.
+    let dry = run(&[], false);
+    assert_eq!(dry.status.code(), Some(0));
+    let dry_text = stdout(&dry);
+    assert!(
+        dry_text.contains("serde_json 1.0.128 (CARGOSCOPE-TEST-0001)"),
+        "{dry_text}"
+    );
+    assert!(
+        dry_text.contains("  - update to 1.0.200 (in Cargo.toml)\n"),
+        "{dry_text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("Cargo.toml")).expect("manifest"),
+        pinned
+    );
+
+    // --apply locks 1.0.200 via `=1.0.200`, then writes `"1.0.200"` to Cargo.toml.
+    let applied = run(&["--apply"], false);
+    assert_eq!(
+        applied.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    let updated_manifest = std::fs::read_to_string(dir.join("Cargo.toml")).expect("manifest");
+    assert!(
+        updated_manifest.contains("serde_json = \"1.0.200\"\n"),
+        "{updated_manifest}"
+    );
+    let updated_lock = std::fs::read_to_string(dir.join("Cargo.lock")).expect("lock");
+    assert!(
+        updated_lock.contains("version = \"1.0.200\""),
+        "{updated_lock}"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
