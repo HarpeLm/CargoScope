@@ -43,6 +43,8 @@ Identical. A first run differed by 7 advisories only because cargo-audit's local
 
 The 4 extra ones (`CDLA-Permissive-2.0`, `LGPL-3.0`, `WTFPL`) really are outside the allow list. They are pulled in only by non-default features: cargo-deny checks the default-feature graph, CargoScope the whole `Cargo.lock`. Both choices are defensible; CargoScope is stricter, and cannot yet be told to follow the default-feature graph.
 
+**Correction (2026-11-15):** the explanation above was incomplete. Of the 4 extra packages, 2 come only from dev-dependencies (`webpki-roots` in h2, `gnuplot` in skim) and 2 only from features that are off by default (`webpki-root-certs` in ratatui, `terminfo` in skim). CargoScope can now follow the same graph: with `[graph] exclude-dev = true` in `cargoscope.toml`, it reports exactly the same 4 packages as cargo-deny on these 15 repositories (computed with `cargo tree`, see [docs/policy.md](../../docs/policy.md)).
+
 ### Speed (one run per repository, warm caches)
 
 | | Median | Slowest | 15 repositories |

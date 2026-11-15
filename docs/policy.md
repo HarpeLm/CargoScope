@@ -4,9 +4,13 @@ Put a `cargoscope.toml` next to the root `Cargo.toml` to enforce rules on every 
 
 ```toml
 [graph]
-# Optional: limit every rule below to the packages these targets build.
-# Without it, the whole lockfile (every platform) is checked.
-targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]
+# Optional: limit every rule below to the packages a build uses.
+# Without [graph], the whole lockfile (every platform, every feature) is checked.
+targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]   # default: every platform
+features = ["tls"]              # features to enable ("member/feature" in a workspace)
+all-features = false
+no-default-features = false
+exclude-dev = true              # leave out what only dev-dependencies pull in
 
 [licenses]
 # Allowed licenses. An SPDX expression passes when some choice of its
@@ -47,14 +51,21 @@ multiple-versions = "deny"
 skip-multiple-versions = ["windows-sys"]
 ```
 
-## Limiting the policy to some targets
+## Limiting the policy to a build: targets, features, dev-dependencies
 
-`Cargo.lock` lists the dependencies of every platform, so by default a Windows-only crate with an unwanted license fails a Linux-only project. `[graph] targets` limits the license, source, ban and `multiple-versions` rules to the packages that at least one of the listed target triples builds (a duplicate counts only when two of its versions are built by the targets).
+`Cargo.lock` lists the dependencies of every platform and every feature, so by default a Windows-only crate, or a crate behind a feature you never enable, with an unwanted license fails the policy. With a `[graph]` table, the license, source, ban and `multiple-versions` rules only apply to the packages that build uses (a duplicate counts only when two of its versions are used):
 
-- The packages come from `cargo metadata --locked --filter-platform <target>`, which evaluates the `cfg(...)` of every dependency. The sources of the dependencies must be on disk: run `cargo fetch` first (this is also what cargo-deny needs). Nothing is compiled or run.
-- If Cargo cannot answer (sources missing, unknown target, outdated lockfile), the scan stops with exit code 2 and Cargo's reason, rather than silently checking too much or too little.
+- `targets`: the platforms (target triples) to consider; without it, every platform.
+- `features`, `all-features`, `no-default-features`: the features of the project, as with `cargo build`; without them, the default features. `features = []` alone selects the default features on every platform.
+- `exclude-dev`: leaves out the packages that only the project's dev-dependencies pull in (test and benchmark tools).
+
+How it works:
+
+- The packages come from `cargo tree --workspace --locked` with those targets, features and edges, which runs Cargo's own feature resolver. (`cargo metadata` is not used: its graph ignores the feature flags.) The sources of the dependencies must be on disk: run `cargo fetch` first (this is also what cargo-deny needs). Nothing is compiled or run.
+- If Cargo cannot answer (sources missing, unknown target or feature, outdated lockfile), the scan stops with exit code 2 and Cargo's reason, rather than silently checking too much or too little.
 - Targets are plain triples such as `x86_64-pc-windows-msvc`; anything else is an error.
 - Advisories, unused dependencies, the package list and the "crates in several versions" listing still cover the whole lockfile. `[graph]` alone sets no rule.
+- On the 15 repositories of the [first blind benchmark](../tests/corpus/blind-benchmark.md), `[graph] exclude-dev = true` gives exactly the 4 license findings cargo-deny gives, against 8 for the whole lockfile.
 
 ## Ignoring an advisory
 
@@ -89,4 +100,4 @@ A file with only `[advisories]` defines no policy.
 
 ## Compared with cargo-deny
 
-This covers the license, source and ban checks most projects use, limited to the platforms you build for with `[graph] targets`. cargo-deny has more: license clarifications pinned to the hash of the license files, duplicate rules per version or with wrappers, feature bans, the feature graph, and advisory configuration. Use it when you need those.
+This covers the license, source and ban checks most projects use, limited to the build you care about with `[graph]` (targets, features, dev-dependencies). cargo-deny has more: license clarifications pinned to the hash of the license files, duplicate rules per version or with wrappers, feature bans, and advisory configuration. Use it when you need those.
