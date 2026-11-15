@@ -245,10 +245,11 @@ jobs:
         with:
           fail-on: none
           open-pr: true
+          pr-per-package: false  # optional: one PR per vulnerable package
           ci-workflow: ci.yml   # optional: starts your CI on the pull request
 ```
 
-It runs `cargoscope fix --advisories --apply`; when `Cargo.lock` or a `Cargo.toml` changes, it commits both, pushes the branch `cargoscope/security-updates` and opens a pull request listing the fixed advisories, the versions before and after, and what stays vulnerable with Cargo's reason. A later run updates the same pull request. Two GitHub rules apply:
+It runs `cargoscope fix --advisories --apply`; when `Cargo.lock` or a `Cargo.toml` changes, it commits both, pushes the branch `cargoscope/security-updates` and opens a pull request listing the fixed advisories, the versions before and after, and what stays vulnerable with Cargo's reason. A later run updates the same pull request. With `pr-per-package: true`, it opens one pull request per vulnerable package (on branch `cargoscope/security-updates/<package>`) and closes security pull requests that no longer apply. Two GitHub rules apply:
 
 - With the default token, the repository must allow GitHub Actions to create pull requests (Settings, Actions, General, Workflow permissions). A personal access token or a GitHub App token passed as `token` does not need it.
 - A pull request opened with the default token starts no workflow. `ci-workflow` works around it: a `workflow_dispatch` started by the default token does run, and its checks show on the pull request commit (your CI needs a `workflow_dispatch` trigger). A personal access token or a GitHub App token starts the usual pull request workflows.
@@ -274,7 +275,7 @@ Ignored advisories stay visible with their reason, but never fail the scan; in S
 
 ## Dependency Policy
 
-A `cargoscope.toml` next to `Cargo.toml` enforces allowed licenses, allowed sources, banned crates and, optionally, a single version per crate, in the spirit of cargo-deny. With `[graph] targets`, the rules only apply to the packages those platforms build. Violations fail the scan. See [docs/policy.md](docs/policy.md).
+A `cargoscope.toml` next to `Cargo.toml` enforces allowed licenses (with per-crate exceptions and clarifications), allowed sources, banned crates and, optionally, a single version per crate, in the spirit of cargo-deny. With `[graph]` (`targets`, `features`, `all-features`, `no-default-features`, `exclude-dev`), the rules only apply to the packages that build uses. Violations fail the scan. See [docs/policy.md](docs/policy.md).
 
 ## Compiler-Accurate Mode
 
