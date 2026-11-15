@@ -158,7 +158,7 @@
       "additionalProperties": false,
       "required": ["rule", "package", "message", "path"],
       "properties": {
-        "rule": { "enum": ["license", "source", "ban"] },
+        "rule": { "enum": ["license", "source", "ban", "multiple-versions"] },
         "package": { "$ref": "#/$defs/package_ref" },
         "message": { "type": "string" },
         "path": { "$ref": "#/$defs/path" }

@@ -48,6 +48,10 @@ pub struct Policy {
     pub allow_git: Vec<String>,
     /// Banned crates.
     pub bans: Vec<Ban>,
+    /// Whether a crate resolved in several versions is a violation.
+    pub deny_multiple_versions: bool,
+    /// Crates allowed in several versions even when they are denied.
+    pub skip_multiple_versions: Vec<String>,
 }
 
 /// Rule a violation breaks.
@@ -59,6 +63,8 @@ pub enum Rule {
     Source,
     /// Banned crate.
     Ban,
+    /// Crate resolved in several versions.
+    MultipleVersions,
 }
 
 impl Rule {
@@ -69,6 +75,7 @@ impl Rule {
             Self::License => "license",
             Self::Source => "source",
             Self::Ban => "ban",
+            Self::MultipleVersions => "multiple-versions",
         }
     }
 }
@@ -199,7 +206,69 @@ impl Policy {
                 }
             }
         }
+        if self.deny_multiple_versions {
+            for (name, indices) in inventory.duplicates() {
+                if self.skip_multiple_versions.contains(&name) {
+                    continue;
+                }
+                let versions: Vec<&str> = indices
+                    .iter()
+                    .map(|&index| inventory.packages[index].version.as_str())
+                    .collect();
+                // Reported on the oldest version, the one to remove.
+                violations.push(Violation {
+                    package: indices[0],
+                    rule: Rule::MultipleVersions,
+                    message: format!(
+                        "`{name}` is resolved in {} versions ({}); add it to [bans] skip-multiple-versions to accept",
+                        versions.len(),
+                        versions.join(", ")
+                    ),
+                });
+            }
+        }
         violations
+    }
+}
+
+#[cfg(test)]
+mod multiple_versions_tests {
+    use super::{Policy, Rule};
+    use crate::{Inventory, Package};
+
+    #[test]
+    fn denies_crates_in_several_versions_unless_skipped() {
+        let package = |name: &str, version: &str, root: bool| Package {
+            name: name.to_owned(),
+            version: version.to_owned(),
+            source: (!root)
+                .then(|| "registry+https://github.com/rust-lang/crates.io-index".to_owned()),
+            root,
+            direct: false,
+            dependencies: Vec::new(),
+        };
+        let inventory = Inventory {
+            packages: vec![
+                package("app", "0.1.0", true),
+                package("syn", "1.0.109", false),
+                package("syn", "2.0.87", false),
+                package("windows-sys", "0.52.0", false),
+                package("windows-sys", "0.59.0", false),
+            ],
+        };
+        let mut policy = Policy::default();
+        assert!(policy.check(&inventory, &[], false).is_empty());
+        policy.deny_multiple_versions = true;
+        policy.skip_multiple_versions = vec!["windows-sys".to_owned()];
+        let violations = policy.check(&inventory, &[], false);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].rule, Rule::MultipleVersions);
+        assert_eq!(violations[0].package, 1);
+        assert!(
+            violations[0]
+                .message
+                .starts_with("`syn` is resolved in 2 versions (1.0.109, 2.0.87)")
+        );
     }
 }
 
@@ -270,6 +339,7 @@ mod tests {
                 version: Some("<0.10".to_owned()),
                 reason: "use rustls".to_owned(),
             }],
+            ..Policy::default()
         }
     }
 

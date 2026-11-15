@@ -89,7 +89,20 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
     }
 
     if let Some(bans) = table("bans")? {
-        check_keys(bans, "bans", &["deny"])?;
+        check_keys(
+            bans,
+            "bans",
+            &["deny", "multiple-versions", "skip-multiple-versions"],
+        )?;
+        policy.deny_multiple_versions =
+            match bans.get("multiple-versions").map(|value| value.as_str()) {
+                None | Some(Some("allow")) => false,
+                Some(Some("deny")) => true,
+                _ => {
+                    return Err("[bans] multiple-versions must be \"deny\" or \"allow\"".to_owned());
+                }
+            };
+        policy.skip_multiple_versions = strings(bans, "skip-multiple-versions", "bans")?;
         let entries = match bans.get("deny") {
             None => Vec::new(),
             Some(toml::Value::Array(entries)) => entries.clone(),
@@ -264,6 +277,8 @@ mod tests {
             allow-git = ["https://github.com/myorg/"]
             [bans]
             deny = [{ name = "openssl", version = "<0.10", reason = "use rustls" }]
+            multiple-versions = "deny"
+            skip-multiple-versions = ["windows-sys"]
             "#,
         )
         .expect("valid")
@@ -272,6 +287,13 @@ mod tests {
         assert_eq!(policy.unknown_license, UnknownLicense::Allow);
         assert_eq!(policy.allow_registries, Some(vec!["crates.io".to_owned()]));
         assert_eq!(policy.bans[0].version.as_deref(), Some("<0.10"));
+        assert!(policy.deny_multiple_versions);
+        assert_eq!(policy.skip_multiple_versions, vec!["windows-sys"]);
+        assert!(
+            parse_policy("[bans]\nmultiple-versions = \"warn\"\n")
+                .unwrap_err()
+                .contains("must be \"deny\" or \"allow\"")
+        );
     }
 
     #[test]
