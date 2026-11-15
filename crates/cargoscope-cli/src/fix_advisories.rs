@@ -68,7 +68,15 @@ fn cargo_update(root: &Path, spec: &str, version: &str, dry_run: bool) -> Result
     let mut command = Command::new(cargo);
     command
         .current_dir(root)
-        .args(["update", "-p", spec, "--precise", version])
+        .args([
+            "update",
+            "--color",
+            "never",
+            "-p",
+            spec,
+            "--precise",
+            version,
+        ])
         .stdin(Stdio::null());
     if dry_run {
         command.arg("--dry-run");
@@ -83,9 +91,29 @@ fn cargo_update(root: &Path, spec: &str, version: &str, dry_run: bool) -> Result
     }
 }
 
+/// Removes terminal color codes (`ESC [ ... m`), in case Cargo colors its
+/// output anyway (`CARGO_TERM_COLOR=always` in CI).
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            for next in chars.by_ref() {
+                if next.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// The useful part of Cargo's resolution error: the lines that name a
 /// requirement and who requires it.
 fn reason(stderr: &str) -> String {
+    let stderr = strip_ansi(stderr);
     let lines: Vec<&str> = stderr
         .lines()
         .map(str::trim)
@@ -367,6 +395,10 @@ mod tests {
     fn keeps_the_lines_that_explain_a_refusal() {
         let stderr = "    Updating crates.io index\nerror: failed to select a version for the requirement `time = \"^0.1.43\"`\ncandidate versions found which didn't match: 0.2.23\nlocation searched: crates.io index\nrequired by package `chrono v0.4.19`\n    ... which satisfies dependency `chrono = \"^0.4\"` of package `app v0.1.0`\n";
         let why = reason(stderr);
+        assert_eq!(
+            reason("\u{1b}[1m\u{1b}[91merror\u{1b}[0m: failed to select a version for `x`"),
+            "error: failed to select a version for `x`"
+        );
         assert!(
             why.contains("failed to select a version for the requirement `time = \"^0.1.43\"`")
         );
