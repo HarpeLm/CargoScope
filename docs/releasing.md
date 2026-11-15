@@ -75,7 +75,8 @@ Prepared on 2026-11-15: `cargoscope fix --advisories` (dry run, `--apply`, `--fo
 - ✅ Versions bumped from `0.5.0-dev` to `0.5.0` across workspace manifests and `Cargo.lock`.
 - ✅ `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` pass.
 - ✅ `dist plan` and `cargo package --workspace --exclude cargoscope-corpus` verified.
-- ⬜ Tag `v0.5.0` pushed (`git tag v0.5.0 && git push origin v0.5.0`) and GitHub Release / crates.io / npm / Homebrew published.
+- ✅ Tag `v0.5.0` pushed (2026-11-15). GitHub Release, crates.io (5 crates), npm, Homebrew and the installer report 0.5.0; the Action passes on the 3 operating systems with 0.5.0. A first local `cargo package` failed on stale `0.5.0` builds of an earlier local packaging (in `target/` and `~/.cargo/registry/src/-*`); after `cargo clean` the 5 crates verify. CI runners start clean, so releases are not affected.
+- ✅ Set the version back to `0.6.0-dev`.
 
 ## One-time setup (maintainer)
 
