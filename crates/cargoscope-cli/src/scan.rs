@@ -180,6 +180,10 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
     } else {
         (vec![PackageInfo::default(); inventory.packages.len()], None)
     };
+    // Clarified licenses replace the registry's everywhere in the report.
+    if let Some(policy) = &policy {
+        policy.clarify(&inventory, &mut package_info);
+    }
     let violations = match policy {
         Some(policy) => Some(check_policy(
             root,
@@ -301,6 +305,7 @@ fn check_policy(
     if policy.check_licenses && registry_date.is_none() {
         warnings.push("license rules of the policy were skipped: no crates.io data".to_owned());
     }
+    warnings.extend(policy.unused_license_entries(inventory));
     // `[graph] targets`: only the packages those targets build are checked.
     let active = if policy.targets.is_empty() {
         None

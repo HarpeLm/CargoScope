@@ -91,7 +91,11 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
     };
 
     if let Some(licenses) = table("licenses")? {
-        check_keys(licenses, "licenses", &["allow", "deny", "unknown"])?;
+        check_keys(
+            licenses,
+            "licenses",
+            &["allow", "deny", "unknown", "exceptions", "clarify"],
+        )?;
         policy.check_licenses = true;
         policy.allow_licenses = strings(licenses, "allow", "licenses")?;
         policy.deny_licenses = strings(licenses, "deny", "licenses")?;
@@ -103,6 +107,66 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
         for license in policy.allow_licenses.iter().chain(&policy.deny_licenses) {
             cargoscope_core::license::parse(license)
                 .map_err(|error| format!("[licenses] `{license}`: {error}"))?;
+        }
+        for entry in crate_entries(
+            licenses,
+            "exceptions",
+            &["name", "version", "allow", "reason"],
+        )? {
+            let allow = strings(entry.table, "allow", "licenses.exceptions")?;
+            if allow.is_empty() {
+                return Err(format!(
+                    "[licenses] exception for `{}` needs a non-empty `allow` list",
+                    entry.name
+                ));
+            }
+            for license in &allow {
+                cargoscope_core::license::parse(license).map_err(|error| {
+                    format!(
+                        "[licenses] exception for `{}`: `{license}`: {error}",
+                        entry.name
+                    )
+                })?;
+            }
+            policy
+                .license_exceptions
+                .push(cargoscope_core::policy::LicenseException {
+                    name: entry.name,
+                    version: entry.version,
+                    allow,
+                    reason: entry.reason,
+                });
+        }
+        for entry in crate_entries(
+            licenses,
+            "clarify",
+            &["name", "version", "expression", "reason"],
+        )? {
+            let expression = entry
+                .table
+                .get("expression")
+                .and_then(toml::Value::as_str)
+                .ok_or_else(|| {
+                    format!(
+                        "[licenses] clarify for `{}` needs an `expression`",
+                        entry.name
+                    )
+                })?
+                .to_owned();
+            cargoscope_core::license::parse(&expression).map_err(|error| {
+                format!(
+                    "[licenses] clarify for `{}`: `{expression}`: {error}",
+                    entry.name
+                )
+            })?;
+            policy
+                .license_clarifications
+                .push(cargoscope_core::policy::LicenseClarification {
+                    name: entry.name,
+                    version: entry.version,
+                    expression,
+                    reason: entry.reason,
+                });
         }
     }
 
@@ -166,6 +230,50 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
     }
 
     Ok(Some(policy))
+}
+
+/// One `{ name, version, reason, ... }` table of a crate list.
+struct CrateEntry<'a> {
+    name: String,
+    version: Option<String>,
+    reason: String,
+    table: &'a toml::Table,
+}
+
+/// Reads `[licenses] KEY = [{ name = "...", reason = "...", ... }]`: every
+/// entry needs a `name` and a non-empty `reason`; `version`, when given, must
+/// be a valid requirement.
+fn crate_entries<'a>(
+    section: &'a toml::Table,
+    key: &str,
+    known: &[&str],
+) -> Result<Vec<CrateEntry<'a>>, String> {
+    let entries = match section.get(key) {
+        None => return Ok(Vec::new()),
+        Some(toml::Value::Array(entries)) => entries,
+        Some(_) => return Err(format!("[licenses] {key} must be an array of tables")),
+    };
+    entries
+        .iter()
+        .map(|entry| {
+            let table = entry.as_table().ok_or_else(|| {
+                format!("[licenses] {key} entries must be tables such as {{ name = \"...\", reason = \"...\" }}")
+            })?;
+            check_keys(table, &format!("licenses.{key}"), known)?;
+            let field = |name: &str| table.get(name).and_then(toml::Value::as_str).map(str::to_owned);
+            let name = field("name").ok_or_else(|| format!("[licenses] {key} entries need a `name`"))?;
+            let reason = field("reason")
+                .filter(|reason| !reason.trim().is_empty())
+                .ok_or_else(|| format!("[licenses] {key} for `{name}` needs a non-empty `reason`"))?;
+            let version = field("version");
+            if let Some(requirement) = &version {
+                semver::VersionReq::parse(requirement).map_err(|error| {
+                    format!("[licenses] {key} for `{name}` version `{requirement}`: {error}")
+                })?;
+            }
+            Ok(CrateEntry { name, version, reason, table })
+        })
+        .collect()
 }
 
 /// An advisory to ignore, from `[advisories] ignore`.
@@ -360,6 +468,44 @@ mod tests {
                 .unwrap_err()
                 .contains("unknown key")
         );
+    }
+
+    #[test]
+    fn parses_license_exceptions_and_clarifications() {
+        let policy = parse_policy(
+            r#"
+            [licenses]
+            allow = ["MIT"]
+            exceptions = [{ name = "ring", version = "^0.17", allow = ["ISC", "OpenSSL"], reason = "reviewed" }]
+            clarify = [{ name = "webpki", expression = "ISC", reason = "LICENSE file checked" }]
+            "#,
+        )
+        .expect("valid")
+        .expect("policy");
+        assert_eq!(policy.license_exceptions[0].name, "ring");
+        assert_eq!(
+            policy.license_exceptions[0].version.as_deref(),
+            Some("^0.17")
+        );
+        assert_eq!(policy.license_exceptions[0].allow, vec!["ISC", "OpenSSL"]);
+        assert_eq!(policy.license_clarifications[0].expression, "ISC");
+
+        let error = |text: &str| parse_policy(text).expect_err("invalid");
+        assert!(
+            error("[licenses]\nexceptions = [{ name = \"a\", allow = [\"MIT\"] }]\n")
+                .contains("needs a non-empty `reason`")
+        );
+        assert!(
+            error("[licenses]\nexceptions = [{ name = \"a\", allow = [], reason = \"r\" }]\n")
+                .contains("non-empty `allow`")
+        );
+        assert!(
+            error("[licenses]\nclarify = [{ name = \"a\", reason = \"r\" }]\n")
+                .contains("needs an `expression`")
+        );
+        assert!(error("[licenses]\nclarify = [{ name = \"a\", expression = \"MIT AND\", reason = \"r\" }]\n").contains("clarify for `a`"));
+        assert!(error("[licenses]\nclarify = [{ name = \"a\", expression = \"MIT\", reason = \"r\", hash = 1 }]\n").contains("unknown key `hash`"));
+        assert!(error("[licenses]\nexceptions = [{ name = \"a\", version = \"one\", allow = [\"MIT\"], reason = \"r\" }]\n").contains("version `one`"));
     }
 
     #[test]

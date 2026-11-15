@@ -1333,3 +1333,46 @@ fn fix_advisories_updates_pinned_manifest_when_lockfile_alone_fails() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn license_exceptions_and_clarifications_remove_violations() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-clarify-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    copy_dir(&fixture("policy"), &dir);
+    std::fs::write(
+        dir.join("cargoscope.toml"),
+        r#"[licenses]
+allow = ["BSD-3-Clause"]
+exceptions = [{ name = "serde_json", allow = ["MIT"], reason = "approved by legal" }]
+clarify = [
+  { name = "itoa", version = "^1", expression = "BSD-3-Clause", reason = "LICENSE file checked" },
+  { name = "gone", expression = "MIT", reason = "left over" },
+]
+"#,
+    )
+    .expect("write");
+    let output = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+        .env("CARGO_HOME", fixture("empty-cargo-home"))
+        .args([
+            "scan",
+            "--checks",
+            "inventory,licenses,policy",
+            "--fail-on",
+            "none",
+        ])
+        .arg(&dir)
+        .output()
+        .expect("cargoscope binary runs");
+    let text = stdout(&output);
+    assert!(!text.contains("[license] serde_json"), "{text}");
+    assert!(!text.contains("[license] itoa"), "{text}");
+    assert!(
+        text.contains("- BSD-3-Clause: "),
+        "clarified license is listed: {text}"
+    );
+    assert!(
+        text.contains("cargoscope.toml clarifies the license of gone, which matches no package")
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
