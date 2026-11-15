@@ -45,6 +45,21 @@
         }
       }
     },
+    "direct_weights": {
+      "description": "Direct dependencies, heaviest first: `exclusive` packages would leave the tree if no member depended on it directly (itself included); `tree` packages are in its own tree (itself included). Added in CargoScope 0.4.0.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "version", "exclusive", "tree"],
+        "properties": {
+          "name": { "type": "string" },
+          "version": { "type": "string" },
+          "exclusive": { "type": "integer", "minimum": 0 },
+          "tree": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
     "policy": {
       "description": "Violations of the cargoscope.toml policy, or null when no policy is configured or checked.",
       "oneOf": [{ "type": "array", "items": { "$ref": "#/$defs/violation" } }, { "type": "null" }]

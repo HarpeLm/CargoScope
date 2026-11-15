@@ -16,6 +16,7 @@
 | `advisories` | Known advisories affecting resolved packages, with severity, fix and dependency `path` |
 | `packages` | Every resolved package: scope, source, dependency `path`, license, latest version, yanked status |
 | `duplicates` | Crates resolved in more than one version, with their versions, oldest first (since 0.3.0) |
+| `direct_weights` | Each direct dependency with the number of packages only it pulls in (`exclusive`) and the size of its own tree (`tree`), heaviest first (since 0.4.0) |
 | `unused` | Every dependency with no usage found, `likely-unused` or `possibly-unused`, with evidence; ignored ones carry `ignored_reason` |
 | `warnings` | Non-fatal problems that may make results incomplete |
 

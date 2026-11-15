@@ -83,6 +83,7 @@ pub fn render_text(project_root: &Path, report: &Report, options: TextOptions) -
     }
     render_registry_text(&mut out, report);
     render_duplicates_text(&mut out, inventory);
+    render_weights_text(&mut out, inventory, options.verbose);
     render_policy_text(&mut out, report);
 
     if options.verbose {
@@ -371,6 +372,39 @@ fn render_duplicates_text(out: &mut String, inventory: &Inventory) {
     }
 }
 
+/// Direct dependencies that pull in packages nothing else needs, heaviest
+/// first: the ten heaviest, or all of them with `verbose`.
+fn render_weights_text(out: &mut String, inventory: &Inventory, verbose: bool) {
+    let heavy: Vec<(usize, usize, usize)> = inventory
+        .direct_weights()
+        .into_iter()
+        .filter(|&(_, exclusive, _)| exclusive > 1)
+        .collect();
+    if heavy.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "\nHeaviest direct dependencies: packages that would leave the tree without each one"
+    );
+    let shown = if verbose {
+        heavy.len()
+    } else {
+        heavy.len().min(10)
+    };
+    for &(index, exclusive, tree) in &heavy[..shown] {
+        let package = &inventory.packages[index];
+        let _ = writeln!(
+            out,
+            "- {} {}: {exclusive} of the {tree} packages it pulls in",
+            package.name, package.version
+        );
+    }
+    if shown < heavy.len() {
+        let _ = writeln!(out, "  ... {} more (use --verbose)", heavy.len() - shown);
+    }
+}
+
 fn render_registry_text(out: &mut String, report: &Report) {
     let date = report.registry_date.as_deref().unwrap_or("never");
     let registry_packages: Vec<(usize, &cargoscope_core::PackageInfo)> = report
@@ -589,6 +623,21 @@ pub fn render_json(project_root: &Path, report: &Report) -> String {
     }
     out.push_str("],");
 
+    out.push_str("\"direct_weights\":[");
+    for (position, (index, exclusive, tree)) in inventory.direct_weights().iter().enumerate() {
+        if position > 0 {
+            out.push(',');
+        }
+        let package = &inventory.packages[*index];
+        let _ = write!(
+            out,
+            "{{\"name\":\"{}\",\"version\":\"{}\",\"exclusive\":{exclusive},\"tree\":{tree}}}",
+            json_escape(&package.name),
+            json_escape(&package.version),
+        );
+    }
+    out.push_str("],");
+
     out.push_str("\"policy\":");
     match &report.policy {
         None => out.push_str("null,"),
@@ -756,6 +805,23 @@ mod tests {
             advisory_db_date: Some("2026-01-02".to_owned()),
             warnings: Vec::new(),
         }
+    }
+
+    #[test]
+    fn lists_the_heaviest_direct_dependencies() {
+        // sample: app -> alpha (direct) -> beta. Removing alpha drops both.
+        let report = sample(Vec::new());
+        let text = render_text(Path::new("."), &report, TextOptions::default());
+        assert!(
+            text.contains("Heaviest direct dependencies: packages that would leave the tree without each one\n- alpha 1.0.0: 2 of the 2 packages it pulls in\n"),
+            "{text}"
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&render_json(Path::new("."), &report)).expect("valid JSON");
+        assert_eq!(
+            json["direct_weights"],
+            serde_json::json!([{ "name": "alpha", "version": "1.0.0", "exclusive": 2, "tree": 2 }])
+        );
     }
 
     #[test]
