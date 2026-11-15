@@ -21,7 +21,7 @@ CargoScope is an open-source CLI, written in Rust, for Rust/Cargo projects. One 
 
 ## Status
 
-**Version 0.5.1.** Unreleased on `main` (`0.6.0-dev`): added standalone offline HTML reports (`--format html`), SemVer compatible vs breaking update classification, CycloneDX 1.5 SBOM export (`--format cyclonedx`), `cargoscope why` reverse dependency chains and pruning weights, `[bans] features` (`allow`, `deny`, `exact`), `[bans.build]` (`allow-build-scripts`, `include-workspace`), `[licenses.clarify]` `license-files` `xxHash32` verification, `"warn"` lint levels, and graph fixes closing the final `deny.toml` parity gaps on `tower-http` (`exclude-unpublished` feature unification) and `portable-atomic` (`cfg(any())` edges under `--target all`) for 34 of 34 parity with cargo-deny 0.20.2. New in 0.5.1: without a `cargoscope.toml`, CargoScope reads cargo-deny's `deny.toml` (same result as cargo-deny on 22 of 28 projects in the recorded run), bans accept `wrappers`, and "or later" licenses such as `MPL-2.0+` pass when their version is allowed. New in 0.5.0: `cargoscope fix --advisories` updates vulnerable packages to the smallest fixed version Cargo accepts (editing `Cargo.lock`, and `Cargo.toml` when a direct requirement blocks the fix), the GitHub Action can open or update security update pull requests (`open-pr: true`), `cargoscope audit-bin` audits compiled binaries, `[graph]` limits `cargoscope.toml` policies to the build you care about (targets, features, `exclude-dev`, computed with `cargo tree`), `[licenses] exceptions` and `clarify` handle per-crate licenses, security pull requests can be one per package and close themselves when obsolete, `--precise` supports Cargo 1.100's `unused_dependencies` lint, and `cargoscope update` honours `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`. Since 0.4: `cargoscope fix` removes unused dependencies (dry run first), the heaviest direct dependencies, a `multiple-versions` policy rule, and sharper unused-dependency rules. Since 0.3.0, crates in several versions; since 0.2.0, pull request comments in the GitHub Action. `cargoscope update` downloads the RustSec advisory database and the crates.io data of a project; `cargoscope scan` then reports, offline, matching advisories, likely-unused dependencies with the evidence behind each one, licenses, yanked and outdated versions, a `cargoscope.toml` policy, and the dependency chain behind every finding, as text, JSON, SARIF, CycloneDX or HTML. It is young: please report anything wrong in the [feedback issue](https://github.com/HarpeLm/CargoScope/issues/1).
+**Version 0.6.0.** New in 0.6.0: standalone offline HTML reports (`--format html`), SemVer compatible vs breaking update classification, CycloneDX 1.5 SBOM export (`--format cyclonedx`), `cargoscope why` reverse dependency chains and pruning weights, `[bans] features` (`allow`, `deny`, `exact`), `[bans.build]` (`allow-build-scripts`, `include-workspace`), `[licenses.clarify]` `license-files` `xxHash32` verification, `"warn"` lint levels, and graph fixes closing the final `deny.toml` parity gaps on `tower-http` (`exclude-unpublished` feature unification) and `portable-atomic` (`cfg(any())` edges under `--target all`) for 34 of 34 parity with cargo-deny 0.20.2. New in 0.5.1: without a `cargoscope.toml`, CargoScope reads cargo-deny's `deny.toml` (same result as cargo-deny on 22 of 28 projects in the recorded run), bans accept `wrappers`, and "or later" licenses such as `MPL-2.0+` pass when their version is allowed. New in 0.5.0: `cargoscope fix --advisories` updates vulnerable packages to the smallest fixed version Cargo accepts (editing `Cargo.lock`, and `Cargo.toml` when a direct requirement blocks the fix), the GitHub Action can open or update security update pull requests (`open-pr: true`), `cargoscope audit-bin` audits compiled binaries, `[graph]` limits `cargoscope.toml` policies to the build you care about (targets, features, `exclude-dev`, computed with `cargo tree`), `[licenses] exceptions` and `clarify` handle per-crate licenses, security pull requests can be one per package and close themselves when obsolete, `--precise` supports Cargo 1.100's `unused_dependencies` lint, and `cargoscope update` honours `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`. Since 0.4: `cargoscope fix` removes unused dependencies (dry run first), the heaviest direct dependencies, a `multiple-versions` policy rule, and sharper unused-dependency rules. Since 0.3.0, crates in several versions; since 0.2.0, pull request comments in the GitHub Action. `cargoscope update` downloads the RustSec advisory database and the crates.io data of a project; `cargoscope scan` then reports, offline, matching advisories, likely-unused dependencies with the evidence behind each one, licenses, yanked and outdated versions, a `cargoscope.toml` policy, and the dependency chain behind every finding, as text, JSON, SARIF, CycloneDX or HTML. It is young: please report anything wrong in the [feedback issue](https://github.com/HarpeLm/CargoScope/issues/1).
 
 **New here?** [Try CargoScope in two minutes](docs/try-it.md), then tell us how it went.
 
@@ -61,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: HarpeLm/CargoScope@v0.5.1
+      - uses: HarpeLm/CargoScope@v0.6.0
         with:
           fail-on: high        # or none, to report without failing
 ```
@@ -132,9 +132,9 @@ The JSON report follows a published schema with a compatibility policy: see [doc
 | **v0.1** | Unified Rust report: inventory, RustSec advisories, crates.io versions, licenses, unused candidates, dependency paths, text/JSON/SARIF, all distribution channels, GitHub Action |
 | **v0.2** | Measured precision: compiler-oracle benchmark, opt-in `--precise` mode |
 | **v0.3** | Report comparison, baselines, license and source policies |
-| **v0.4** | Maintenance indicators, justified recommendations, exportable graph |
+| **v0.4** | Delivered: `cargoscope fix` for unused dependencies, heaviest direct dependencies, `multiple-versions` rule (maintenance indicators and justified recommendations moved later) |
 | **v0.5** | Delivered: `fix --advisories`, `audit-bin`, `deny.toml` parity, `[graph]` scoping, per-crate licenses |
-| **v0.6** | Locally generated HTML report (`--format html`), SemVer compatible vs breaking, CycloneDX 1.5, `cargoscope why` (all landed on `main`), plus further controlled fixes (`fix --dry-run` / `--apply` for unused deps arrived early in 0.4) |
+| **v0.6** | Delivered: offline HTML report (`--format html`), SemVer compatible vs breaking updates, CycloneDX 1.5 SBOM, `cargoscope why`, full `deny.toml` parity (34 of 34 projects) |
 | **v0.7** | Multi-project aggregation of local reports |
 | **1.0** | Stable CLI, JSON schema and compatibility policy |
 
@@ -244,7 +244,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: HarpeLm/CargoScope@v0.5.1
+      - uses: HarpeLm/CargoScope@v0.6.0
         with:
           fail-on: none
           open-pr: true

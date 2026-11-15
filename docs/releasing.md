@@ -9,7 +9,7 @@ A release is started by pushing a version tag. Everything else runs in GitHub Ac
 | Homebrew (`brew install HarpeLm/tap/cargoscope`) | `release.yml` | `HarpeLm/homebrew-tap` repository and `HOMEBREW_TAP_TOKEN` secret |
 | npm (`npx cargoscope`) | `release.yml` | `NPM_TOKEN` secret |
 | PyPI (`pip install cargoscope`, `uvx cargoscope`) | `pypi.yml`, **not enabled yet** | PyPI trusted publisher (no token), then restore the tag trigger in `pypi.yml` |
-| GitHub Action (`uses: HarpeLm/CargoScope@v0.5.1`) | `action.yml` at the repository root | The GitHub Release |
+| GitHub Action (`uses: HarpeLm/CargoScope@v0.6.0`) | `action.yml` at the repository root | The GitHub Release |
 
 ## v0.1.0 checklist
 
@@ -81,6 +81,10 @@ Prepared on 2026-11-15: `cargoscope fix --advisories` (dry run, `--apply`, `--fo
 ## v0.5.1
 
 Released on 2026-11-15: reading cargo-deny's `deny.toml` when there is no `cargoscope.toml` (same result as cargo-deny on 22 of 28 projects), `wrappers` in `[bans]`, "or later" licenses such as `MPL-2.0+`, and corpus-validated unused-dependency rules (`mod r#enum;`, `strum_macros` companion crate, per-package transitive reachability: 233 of 235 correct, 99.1%). ✅ GitHub Release, crates.io (5 crates), npm, Homebrew and the installer report 0.5.1.
+
+## v0.6.0
+
+Released on 2026-11-15: offline HTML report (`--format html`), SemVer compatible vs breaking classification of updates, CycloneDX 1.5 SBOM (`--format cyclonedx`), `cargoscope why`, and full `deny.toml` parity with cargo-deny 0.20.2 on 34 of 34 projects (`[bans] features`, `[bans.build]`, `license-files` hashes, `"warn"` levels, graph fixes). Before tagging: `cargo clean`, then `cargo package --workspace --exclude cargoscope-corpus` (see the 0.5.0 note on stale local builds).
 
 ## One-time setup (maintainer)
 

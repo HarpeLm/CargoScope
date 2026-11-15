@@ -90,7 +90,7 @@ checksum = "175812e0be2bccb6abe50bb8d566126198344f707e304f45c648fd8f2cc0365e"
 
 [[package]]
 name = "cargoscope"
-version = "0.6.0-dev"
+version = "0.6.0"
 dependencies = [
  "cargoscope-advisory",
  "cargoscope-cargo",
@@ -103,7 +103,7 @@ dependencies = [
 
 [[package]]
 name = "cargoscope-advisory"
-version = "0.6.0-dev"
+version = "0.6.0"
 dependencies = [
  "cargoscope-core",
  "cvss",
@@ -117,7 +117,7 @@ dependencies = [
 
 [[package]]
 name = "cargoscope-cargo"
-version = "0.6.0-dev"
+version = "0.6.0"
 dependencies = [
  "cargoscope-core",
  "flate2",
@@ -130,14 +130,14 @@ dependencies = [
 
 [[package]]
 name = "cargoscope-core"
-version = "0.6.0-dev"
+version = "0.6.0"
 dependencies = [
  "semver",
 ]
 
 [[package]]
 name = "cargoscope-corpus"
-version = "0.6.0-dev"
+version = "0.6.0"
 dependencies = [
  "cargoscope-cargo",
  "cargoscope-core",
@@ -146,7 +146,7 @@ dependencies = [
 
 [[package]]
 name = "cargoscope-report"
-version = "0.6.0-dev"
+version = "0.6.0"
 dependencies = [
  "cargoscope-core",
  "semver",
