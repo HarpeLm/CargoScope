@@ -9,7 +9,7 @@ A release is started by pushing a version tag. Everything else runs in GitHub Ac
 | Homebrew (`brew install HarpeLm/tap/cargoscope`) | `release.yml` | `HarpeLm/homebrew-tap` repository and `HOMEBREW_TAP_TOKEN` secret |
 | npm (`npx cargoscope`) | `release.yml` | `NPM_TOKEN` secret |
 | PyPI (`pip install cargoscope`, `uvx cargoscope`) | `pypi.yml`, **not enabled yet** | PyPI trusted publisher (no token), then restore the tag trigger in `pypi.yml` |
-| GitHub Action (`uses: HarpeLm/CargoScope@v0.3.0`) | `action.yml` at the repository root | The GitHub Release |
+| GitHub Action (`uses: HarpeLm/CargoScope@v0.4.0`) | `action.yml` at the repository root | The GitHub Release |
 
 ## v0.1.0 checklist
 
