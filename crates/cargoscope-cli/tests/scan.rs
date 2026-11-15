@@ -1427,3 +1427,64 @@ fn policy_graph_features_limit_the_rules_to_the_selected_features() {
     assert!(text.contains("- [source] forked 0.1.0:"), "{text}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_deny_toml_is_used_without_a_cargoscope_toml() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-deny-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    copy_dir(&fixture("policy"), &dir);
+    std::fs::remove_file(dir.join("cargoscope.toml")).expect("remove");
+    std::fs::write(
+        dir.join("deny.toml"),
+        r#"[licenses]
+allow = ["BSD-3-Clause"]
+confidence-threshold = 0.9
+
+[bans]
+deny = [{ crate = "serde", reason = "testing bans", wrappers = ["serde_json"] }]
+
+[sources]
+unknown-git = "deny"
+allow-git = ["https://github.com/myorg/"]
+"#,
+    )
+    .expect("write");
+    let output = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+        .env("CARGO_HOME", fixture("empty-cargo-home"))
+        .args(["scan", "--fail-on", "none"])
+        .arg(&dir)
+        .output()
+        .expect("cargoscope binary runs");
+    let text = stdout(&output);
+    assert!(text.contains("- [ban] serde 1.0.210:"), "{text}");
+    assert!(text.contains("- [source] forked 0.1.0:"), "{text}");
+    assert!(text.contains("- [license] serde_json 1.0.128:"), "{text}");
+    assert!(
+        text.contains("no cargoscope.toml: the rules of deny.toml (cargo-deny) are used"),
+        "{text}"
+    );
+    assert!(
+        text.contains("[licenses] confidence-threshold not supported"),
+        "{text}"
+    );
+    assert!(
+        text.contains("the wrappers of the ban on `serde` are not supported"),
+        "{text}"
+    );
+
+    // A cargoscope.toml takes over, with no note about deny.toml.
+    std::fs::write(dir.join("cargoscope.toml"), "[bans]\n").expect("write");
+    let text = stdout(
+        &Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+            .env("CARGO_HOME", fixture("empty-cargo-home"))
+            .args(["scan", "--fail-on", "none"])
+            .arg(&dir)
+            .output()
+            .expect("cargoscope binary runs"),
+    );
+    assert!(!text.contains("deny.toml"), "{text}");
+    assert!(!text.contains("- [ban] serde"), "{text}");
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -410,20 +410,24 @@ fn read_config(project_root: &Path) -> Result<Option<String>, String> {
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
-/// Reads `[advisories] ignore` from `project_root/cargoscope.toml`, if present.
+/// Reads `[advisories] ignore` from `project_root/cargoscope.toml`, or,
+/// without one, from cargo-deny's `deny.toml`.
 ///
 /// # Errors
 ///
 /// Returns a message naming the file for unreadable or invalid content.
 pub fn load_advisory_ignores(project_root: &Path) -> Result<Vec<AdvisoryIgnore>, String> {
     match read_config(project_root)? {
-        None => Ok(Vec::new()),
+        None => Ok(crate::deny::load(project_root)?
+            .map(|translation| translation.ignores)
+            .unwrap_or_default()),
         Some(text) => parse_advisory_ignores(&text)
             .map_err(|error| format!("{}: {error}", project_root.join(FILE_NAME).display())),
     }
 }
 
-/// Reads `cargoscope.toml` from `project_root`, if present.
+/// Reads `cargoscope.toml` from `project_root`, or, without one, the rules
+/// of cargo-deny's `deny.toml` (see [`crate::deny`]).
 ///
 /// # Errors
 ///
@@ -432,7 +436,9 @@ pub fn load_policy(project_root: &Path) -> Result<Option<Policy>, String> {
     let path = project_root.join(FILE_NAME);
     let metadata = match std::fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
-        Err(_) => return Ok(None),
+        Err(_) => {
+            return Ok(crate::deny::load(project_root)?.and_then(|translation| translation.policy));
+        }
     };
     if !metadata.is_file() || metadata.len() > 1024 * 1024 {
         return Err(format!(
@@ -443,6 +449,31 @@ pub fn load_policy(project_root: &Path) -> Result<Option<Policy>, String> {
     let text =
         std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
     parse_policy(&text).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+/// Notes for the report when `deny.toml` stands in for a missing
+/// `cargoscope.toml`: which file is used and what it could not translate.
+#[must_use]
+pub fn deny_notes(project_root: &Path) -> Vec<String> {
+    if std::fs::symlink_metadata(project_root.join(FILE_NAME)).is_ok() {
+        return Vec::new();
+    }
+    match crate::deny::load(project_root) {
+        Ok(Some(translation)) => {
+            let name = translation
+                .path
+                .strip_prefix(project_root)
+                .unwrap_or(&translation.path)
+                .display()
+                .to_string();
+            std::iter::once(format!(
+                "no cargoscope.toml: the rules of {name} (cargo-deny) are used; write a cargoscope.toml to replace them"
+            ))
+            .chain(translation.notes)
+            .collect()
+        }
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]

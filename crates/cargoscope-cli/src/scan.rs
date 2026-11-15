@@ -168,6 +168,9 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
     } else {
         Vec::new()
     };
+    if checks.policy || checks.advisories {
+        warnings.extend(cargoscope_cargo::config::deny_notes(root));
+    }
     let policy = if checks.policy {
         load_policy(root)?
     } else {
