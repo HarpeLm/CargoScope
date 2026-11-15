@@ -13,13 +13,17 @@ on:
       version:
         description: CargoScope version to test ("latest" ignores pre-releases)
         default: latest
+      security-pr:
+        description: Also open a test security pull request from tests/fixtures/security-update
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   action:
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name != 'pull_request' && !inputs.security-pr }}
     permissions:
       contents: read
       security-events: write
@@ -70,3 +74,38 @@ jobs:
           test -s "${{ steps.cargoscope.outputs.sarif }}"
           test "${{ steps.cargoscope.outputs.exit-code }}" = 0
           grep -q "cargoscope-pr-comment" "$RUNNER_TEMP/cargoscope-comment.md"
+
+  security-pr:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.security-pr }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build CargoScope from this commit
+        run: |
+          cargo build --release --locked -p cargoscope
+          echo "$PWD/target/release" >> "$GITHUB_PATH"
+      - id: cargoscope
+        uses: ./
+        with:
+          version: installed
+          path: tests/fixtures/security-update
+          fail-on: none
+          upload-sarif: "false"
+          open-pr: "true"
+          pr-branch: cargoscope/security-updates-test
+          ci-workflow: ci.yml
+      - name: Check the pull request
+        env:
+          URL: ${{ steps.cargoscope.outputs.pr-url }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test -n "$URL"
+          gh pr view "$URL" --json body --jq .body | grep -q "cargoscope-security-pr"
+          gh pr diff "$URL" | grep -q '^+version = "0.4.20"'

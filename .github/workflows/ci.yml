@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Lets the CargoScope Action start the checks on its security update branch.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
