@@ -32,6 +32,48 @@ pub struct Ban {
     pub reason: String,
 }
 
+/// Licenses allowed for one crate only (`[licenses] exceptions`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LicenseException {
+    /// Crate name.
+    pub name: String,
+    /// Optional version requirement; without one, every version.
+    pub version: Option<String>,
+    /// Licenses allowed for this crate, even when `deny` lists them.
+    pub allow: Vec<String>,
+    /// Why.
+    pub reason: String,
+}
+
+/// The license of a crate whose metadata is wrong or missing
+/// (`[licenses] clarify`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LicenseClarification {
+    /// Crate name.
+    pub name: String,
+    /// Optional version requirement; without one, every version.
+    pub version: Option<String>,
+    /// SPDX expression that replaces the crate's own.
+    pub expression: String,
+    /// Why, such as where the license was checked.
+    pub reason: String,
+}
+
+/// Whether `version` matches an optional requirement (an unreadable
+/// requirement or version matches, as for bans).
+fn version_matches(requirement: Option<&str>, version: &str) -> bool {
+    match requirement {
+        None => true,
+        Some(requirement) => match (
+            semver::VersionReq::parse(requirement),
+            semver::Version::parse(version),
+        ) {
+            (Ok(requirement), Ok(version)) => requirement.matches(&version),
+            _ => true,
+        },
+    }
+}
+
 /// A dependency policy.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Policy {
@@ -50,6 +92,10 @@ pub struct Policy {
     pub allow_git: Vec<String>,
     /// Banned crates.
     pub bans: Vec<Ban>,
+    /// Licenses allowed for one crate only.
+    pub license_exceptions: Vec<LicenseException>,
+    /// Licenses declared for crates whose metadata is wrong or missing.
+    pub license_clarifications: Vec<LicenseClarification>,
     /// Whether a crate resolved in several versions is a violation.
     pub deny_multiple_versions: bool,
     /// Crates allowed in several versions even when they are denied.
@@ -127,6 +173,58 @@ impl Policy {
         licenses_known: bool,
     ) -> Vec<Violation> {
         self.check_scoped(inventory, info, licenses_known, None)
+    }
+
+    /// The clarification that applies to a package, if any.
+    #[must_use]
+    pub fn clarification(&self, name: &str, version: &str) -> Option<&LicenseClarification> {
+        self.license_clarifications.iter().find(|clarification| {
+            clarification.name == name && version_matches(clarification.version.as_deref(), version)
+        })
+    }
+
+    /// Replaces the license of every clarified package in `info` (inventory
+    /// order), so reports show the clarified license.
+    pub fn clarify(&self, inventory: &Inventory, info: &mut [PackageInfo]) {
+        for (package, info) in inventory.packages.iter().zip(info.iter_mut()) {
+            if let Some(clarification) = self.clarification(&package.name, &package.version) {
+                info.license = Some(clarification.expression.clone());
+            }
+        }
+    }
+
+    /// Warnings for license exceptions and clarifications that match no
+    /// package of the inventory: they may be left over.
+    #[must_use]
+    pub fn unused_license_entries(&self, inventory: &Inventory) -> Vec<String> {
+        let matches = |name: &str, version: Option<&str>| {
+            inventory
+                .packages
+                .iter()
+                .any(|package| package.name == name && version_matches(version, &package.version))
+        };
+        let label = |name: &str, version: Option<&str>| match version {
+            Some(version) => format!("{name} {version}"),
+            None => name.to_owned(),
+        };
+        let mut warnings = Vec::new();
+        for exception in &self.license_exceptions {
+            if !matches(&exception.name, exception.version.as_deref()) {
+                warnings.push(format!(
+                    "cargoscope.toml has a license exception for {}, which matches no package: remove it if it is no longer needed",
+                    label(&exception.name, exception.version.as_deref())
+                ));
+            }
+        }
+        for clarification in &self.license_clarifications {
+            if !matches(&clarification.name, clarification.version.as_deref()) {
+                warnings.push(format!(
+                    "cargoscope.toml clarifies the license of {}, which matches no package: remove it if it is no longer needed",
+                    label(&clarification.name, clarification.version.as_deref())
+                ));
+            }
+        }
+        warnings
     }
 
     /// Like [`Policy::check`], limited to the packages in `active` (the ones
@@ -209,8 +307,44 @@ impl Policy {
                 }
             }
 
-            if self.check_licenses && licenses_known && CRATES_IO.contains(&source) {
-                match info.get(index).and_then(|info| info.license.as_deref()) {
+            let clarified = self.clarification(&package.name, &package.version);
+            if self.check_licenses
+                && (clarified.is_some() || (licenses_known && CRATES_IO.contains(&source)))
+            {
+                // A clarification replaces the crate's license; exceptions
+                // allow more licenses for this crate only.
+                let license = clarified
+                    .map(|clarification| clarification.expression.as_str())
+                    .or_else(|| info.get(index).and_then(|info| info.license.as_deref()));
+                let excepted: Vec<&String> = self
+                    .license_exceptions
+                    .iter()
+                    .filter(|exception| {
+                        exception.name == package.name
+                            && version_matches(exception.version.as_deref(), &package.version)
+                    })
+                    .flat_map(|exception| exception.allow.iter())
+                    .collect();
+                let mut allow = self.allow_licenses.clone();
+                if !allow.is_empty() {
+                    allow.extend(excepted.iter().map(|license| (*license).clone()));
+                }
+                let deny: Vec<String> = self
+                    .deny_licenses
+                    .iter()
+                    .filter(|denied| {
+                        !excepted
+                            .iter()
+                            .any(|license| license.eq_ignore_ascii_case(denied))
+                    })
+                    .cloned()
+                    .collect();
+                let note = if clarified.is_some() {
+                    " (clarified in cargoscope.toml)"
+                } else {
+                    ""
+                };
+                match license {
                     None => {
                         if self.unknown_license == UnknownLicense::Deny {
                             push(
@@ -220,15 +354,11 @@ impl Policy {
                             );
                         }
                     }
-                    Some(expression) => match license::is_allowed(
-                        expression,
-                        &self.allow_licenses,
-                        &self.deny_licenses,
-                    ) {
+                    Some(expression) => match license::is_allowed(expression, &allow, &deny) {
                         Ok(true) => {}
                         Ok(false) => push(
                             Rule::License,
-                            format!("license `{expression}` is not allowed by the policy"),
+                            format!("license `{expression}`{note} is not allowed by the policy"),
                         ),
                         Err(error) => push(
                             Rule::License,
@@ -423,6 +553,70 @@ mod tests {
                 .message
                 .contains("https://github.com/someone/forked is not in")
         );
+    }
+
+    #[test]
+    fn license_exceptions_and_clarifications_apply_to_one_crate() {
+        use super::{LicenseClarification, LicenseException};
+        let (inventory, mut info) = sample();
+        let mut policy = Policy {
+            deny_licenses: vec!["GPL-3.0-only".to_owned()],
+            ..policy()
+        };
+        policy.bans.clear();
+        policy.allow_registries = None;
+        policy.license_exceptions = vec![LicenseException {
+            name: "copyleft".to_owned(),
+            version: Some("^1".to_owned()),
+            allow: vec!["GPL-3.0-only".to_owned()],
+            reason: "only used by a build tool".to_owned(),
+        }];
+        policy.license_clarifications = vec![
+            LicenseClarification {
+                name: "mystery".to_owned(),
+                version: None,
+                expression: "MIT".to_owned(),
+                reason: "LICENSE file checked".to_owned(),
+            },
+            LicenseClarification {
+                name: "openssl".to_owned(),
+                version: Some("<0.9".to_owned()),
+                expression: "OpenSSL".to_owned(),
+                reason: "older versions only".to_owned(),
+            },
+        ];
+        // The exception lifts both the allow list and the deny list for
+        // copyleft only; the clarification gives mystery a known license.
+        assert!(policy.check(&inventory, &info, true).is_empty());
+
+        // An exception for another version no longer applies.
+        policy.license_exceptions[0].version = Some("^2".to_owned());
+        let violations = policy.check(&inventory, &info, true);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(inventory.packages[violations[0].package].name, "copyleft");
+
+        // A clarified license that is not allowed is reported as clarified,
+        // even without registry data.
+        policy.license_clarifications[0].expression = "BSL-1.0".to_owned();
+        let violations = policy.check(&inventory, &info, false);
+        assert_eq!(violations.len(), 1);
+        assert!(
+            violations[0]
+                .message
+                .contains("`BSL-1.0` (clarified in cargoscope.toml) is not allowed")
+        );
+
+        policy.clarify(&inventory, &mut info);
+        assert_eq!(info[3].license.as_deref(), Some("BSL-1.0"));
+        assert_eq!(
+            info[4].license.as_deref(),
+            Some("Apache-2.0"),
+            "0.9.0 is not < 0.9"
+        );
+        let warnings = policy.unused_license_entries(&inventory);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings[0].contains("license exception for copyleft ^2"));
+        assert!(warnings[1].contains("clarifies the license of openssl <0.9"));
     }
 
     #[test]
