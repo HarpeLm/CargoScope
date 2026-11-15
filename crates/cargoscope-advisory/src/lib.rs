@@ -15,6 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use cargoscope_core::{AdvisoryFinding, AdvisoryKind, Inventory, Severity};
 
 pub mod crates_io;
+mod proxy;
 
 /// Where the RustSec database archive is downloaded from.
 pub const DEFAULT_ARCHIVE_URL: &str =
@@ -127,7 +128,9 @@ pub struct UpdateSummary {
 ///
 /// The previous database is replaced only after the new one is fully extracted.
 pub fn update(cache_dir: &Path, url: &str) -> Result<UpdateSummary, AdvisoryError> {
-    let response = ureq::get(url)
+    let agent = proxy::agent(url, None, None).map_err(AdvisoryError::Download)?;
+    let response = agent
+        .get(url)
         .call()
         .map_err(|error| AdvisoryError::Download(error.to_string()))?;
     let mut archive = Vec::new();

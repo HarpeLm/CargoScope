@@ -178,17 +178,19 @@ pub fn refresh(
         }
     }
 
-    let agent = ureq::AgentBuilder::new()
-        .user_agent(USER_AGENT)
-        .timeout(Duration::from_secs(30))
-        .build();
+    // One agent per host: `NO_PROXY` may exempt one of them only.
+    let timeout = Some(Duration::from_secs(30));
+    let index_agent = crate::proxy::agent(INDEX_URL, timeout, Some(USER_AGENT))
+        .map_err(AdvisoryError::Download)?;
+    let api_agent =
+        crate::proxy::agent(API_URL, timeout, Some(USER_AGENT)).map_err(AdvisoryError::Download)?;
     let mut summary = RefreshSummary::default();
     let local_sources = local_registry_sources(cargo_home);
     let mut last_api_call: Option<Instant> = None;
 
     for (name, versions) in wanted {
         let url = format!("{INDEX_URL}/{}", index_path(name));
-        match fetch_text(&agent, &url, MAX_INDEX_BYTES) {
+        match fetch_text(&index_agent, &url, MAX_INDEX_BYTES) {
             Ok(text) => {
                 let target = versions_dir.join(name);
                 fs::write(&target, format_versions(&parse_index(&text)))
@@ -214,7 +216,7 @@ pub fn refresh(
                     }
                 }
                 last_api_call = Some(Instant::now());
-                match api_license(&agent, name, version) {
+                match api_license(&api_agent, name, version) {
                     Ok(license) => {
                         summary.licenses_api += 1;
                         Some(license.unwrap_or_else(|| NO_LICENSE.to_owned()))

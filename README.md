@@ -102,6 +102,10 @@ Resolved packages: 22
 
 Every transitive package shows the shortest dependency chain that pulls it in. The JSON report carries the same chain in a `path` field.
 
+### Behind a Proxy
+
+`cargoscope update` follows the usual environment variables: `HTTPS_PROXY` for the `https://` downloads (RustSec, crates.io), then `ALL_PROXY`, in upper or lower case, with `http://[user:password@]host:port` as value. `NO_PROXY` lists the hosts that go direct (`*`, `crates.io`, `.example.com`; a domain covers its subdomains), and localhost always does. Only `http://` proxies are supported; an unusable proxy setting is an error that names the variable, not a silent direct connection.
+
 ## More Usage
 
 ```sh
