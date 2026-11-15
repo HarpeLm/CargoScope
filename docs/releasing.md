@@ -78,6 +78,10 @@ Prepared on 2026-11-15: `cargoscope fix --advisories` (dry run, `--apply`, `--fo
 - ✅ Tag `v0.5.0` pushed (2026-11-15). GitHub Release, crates.io (5 crates), npm, Homebrew and the installer report 0.5.0; the Action passes on the 3 operating systems with 0.5.0. A first local `cargo package` failed on stale `0.5.0` builds of an earlier local packaging (in `target/` and `~/.cargo/registry/src/-*`); after `cargo clean` the 5 crates verify. CI runners start clean, so releases are not affected.
 - ✅ Set the version back to `0.6.0-dev`.
 
+## v0.5.1
+
+Released on 2026-11-15: reading cargo-deny's `deny.toml` when there is no `cargoscope.toml` (same result as cargo-deny on 22 of 28 projects), `wrappers` in `[bans]`, "or later" licenses such as `MPL-2.0+`, and corpus-validated unused-dependency rules (`mod r#enum;`, `strum_macros` companion crate, per-package transitive reachability: 233 of 235 correct, 99.1%). ✅ GitHub Release, crates.io (5 crates), npm, Homebrew and the installer report 0.5.1.
+
 ## One-time setup (maintainer)
 
 1. **crates.io**: create an API token with the `publish-new` and `publish-update` scopes, then add it as the repository secret `CARGO_REGISTRY_TOKEN`.
