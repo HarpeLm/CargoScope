@@ -60,6 +60,10 @@ A first `v0.2.0` tag had been published under the name depscout during a rename 
 
 Released on 2026-11-15: crates resolved in several versions, in the text and JSON reports, `compare` and the pull request comment. ✅ GitHub Release, crates.io (5 crates), npm (a few minutes after the publish), Homebrew and the installer report 0.3.0; the Action passes on the 3 operating systems with 0.3.0.
 
+## v0.4.0
+
+Released on 2026-11-15: `cargoscope fix` (dry run, `--apply`, `--only`, `[workspace.dependencies]` cleanup), the heaviest direct dependencies with `(dev)`/`(build)` labels, the `multiple-versions` policy rule, and sharper unused-dependency rules. ✅ GitHub Release, crates.io (5 crates), npm, Homebrew and the installer report 0.4.0; the Action passes on the 3 operating systems with 0.4.0.
+
 ## One-time setup (maintainer)
 
 1. **crates.io**: create an API token with the `publish-new` and `publish-update` scopes, then add it as the repository secret `CARGO_REGISTRY_TOKEN`.
