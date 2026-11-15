@@ -79,6 +79,68 @@ impl Inventory {
         None
     }
 
+    /// Marks the packages reachable from the root packages. With `cut`,
+    /// edges from a root package to `cut` are ignored, as if every member
+    /// stopped depending on it directly.
+    fn reachable(&self, cut: Option<usize>) -> Vec<bool> {
+        let count = self.packages.len();
+        let mut seen = vec![false; count];
+        let mut stack: Vec<usize> = (0..count).filter(|&i| self.packages[i].root).collect();
+        for &root in &stack {
+            seen[root] = true;
+        }
+        while let Some(current) = stack.pop() {
+            let from_root = self.packages[current].root;
+            for &next in &self.packages[current].dependencies {
+                if next < count && !seen[next] && !(from_root && Some(next) == cut) {
+                    seen[next] = true;
+                    stack.push(next);
+                }
+            }
+        }
+        seen
+    }
+
+    /// Weight of each direct dependency: `(index, exclusive, tree)`, where
+    /// `exclusive` counts the packages that would leave the dependency tree
+    /// if no member depended on it directly (itself included), and `tree`
+    /// the packages it pulls in (itself included, project packages excluded).
+    ///
+    /// Sorted by `exclusive`, heaviest first, then by package order.
+    #[must_use]
+    pub fn direct_weights(&self) -> Vec<(usize, usize, usize)> {
+        let all = self.reachable(None);
+        let mut weights: Vec<(usize, usize, usize)> = (0..self.packages.len())
+            .filter(|&index| self.packages[index].direct && !self.packages[index].root)
+            .map(|index| {
+                let without = self.reachable(Some(index));
+                let exclusive = all
+                    .iter()
+                    .zip(&without)
+                    .filter(|(before, after)| **before && !**after)
+                    .count();
+                let mut tree = vec![false; self.packages.len()];
+                tree[index] = true;
+                let mut stack = vec![index];
+                while let Some(current) = stack.pop() {
+                    for &next in &self.packages[current].dependencies {
+                        if next < tree.len() && !tree[next] && !self.packages[next].root {
+                            tree[next] = true;
+                            stack.push(next);
+                        }
+                    }
+                }
+                (
+                    index,
+                    exclusive,
+                    tree.iter().filter(|&&in_tree| in_tree).count(),
+                )
+            })
+            .collect();
+        weights.sort_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(&right.0)));
+        weights
+    }
+
     /// Crates resolved in more than one version, which Cargo compiles once
     /// per version. Packages of the scanned project are left out.
     ///
@@ -420,6 +482,34 @@ mod tests {
         };
         assert_eq!(inventory.path_to(3), Some(vec![0, 4, 3]));
         assert_eq!(inventory.path_to(0), Some(vec![0]));
+    }
+
+    #[test]
+    fn weighs_direct_dependencies_by_what_only_they_pull_in() {
+        // app -> heavy -> {a, shared}; app -> light -> shared; app -> shared
+        // tool (member) -> b ; b is not direct of app but reached from tool.
+        let direct = |name: &str, dependencies: Vec<usize>| Package {
+            direct: true,
+            ..package(name, false, dependencies)
+        };
+        let inventory = Inventory {
+            packages: vec![
+                package("app", true, vec![1, 2, 4]),
+                direct("heavy", vec![3, 4]),
+                direct("light", vec![4]),
+                package("a", false, vec![]),
+                direct("shared", vec![]),
+                package("tool", true, vec![6]),
+                direct("b", vec![]),
+            ],
+        };
+        let weights = inventory.direct_weights();
+        // heavy: removing it drops heavy and a (shared stays): 2, tree 3.
+        assert_eq!(weights[0], (1, 2, 3));
+        // light: 1 (itself), tree 2; b: 1; shared: still reached via heavy, 0.
+        assert!(weights.contains(&(2, 1, 2)));
+        assert!(weights.contains(&(6, 1, 1)));
+        assert_eq!(weights.last(), Some(&(4, 0, 1)));
     }
 
     #[test]
