@@ -15,7 +15,7 @@ CargoScope is an open-source CLI, written in Rust, for Rust/Cargo projects. One 
 
 - **Local, no account**: the first scan needs no account and no online service.
 - **Your code never leaves your machine**: nothing is uploaded.
-- **No silent writes**: CargoScope never modifies your files.
+- **No silent writes**: CargoScope never modifies your files, except `cargoscope fix --apply`, which you run on purpose.
 - **Evidence first**: every finding shows its evidence, its source and the date of its data.
 - **No code execution**: CargoScope reads files directly and never runs `cargo`, build scripts or project code by default.
 
@@ -127,7 +127,7 @@ The JSON report follows a published schema with a compatibility policy: see [doc
 | **v0.3** | Report comparison, baselines, license and source policies |
 | **v0.4** | Maintenance indicators, justified recommendations, exportable graph |
 | **v0.5** | Locally generated HTML report |
-| **v0.6** | Controlled fixes (`fix --dry-run`, explicit `fix --apply`) |
+| **v0.6** | Controlled fixes: `fix --dry-run` and `fix --apply` for unused dependencies arrived early, in 0.4; other fixes to come |
 | **v0.7** | Multi-project aggregation of local reports |
 | **1.0** | Stable CLI, JSON schema and compatibility policy |
 
@@ -209,6 +209,23 @@ cargoscope scan . --precise
 ```
 
 Confirms unused dependencies with rustc's `unused_crate_dependencies` lint (`cargo check --all-targets --all-features`, in `target/cargoscope-precise`). **It compiles the project, so build scripts and proc macros run**: use it on code you trust. It is never enabled by default, and covers only the current platform.
+
+## Removing Unused Dependencies
+
+```sh
+cargoscope fix .            # dry run: shows what would be removed, writes nothing
+cargoscope fix . --apply    # removes them from the Cargo.toml files
+cargo check                 # updates Cargo.lock and confirms the build
+```
+
+```
+Cargo.toml
+  - remove `regex` from [dependencies]
+  - remove `pretty_assertions` from [dev-dependencies]
+  = keep `chrono` [dependencies]: `chrono` is named in [features]
+```
+
+Only likely-unused dependencies are removed: possibly-unused and ignored ones are never touched. A dependency is removed from its section and from the same section of `[target.'...']` tables, and kept when `[features]` names it. The manifests are edited with `toml_edit`, so formatting, order and the other comments stay as they were (a comment on the removed line goes with it). `fix` never runs `cargo`: run `cargo check` yourself afterwards. Add `--precise` to confirm the candidates with rustc first.
 
 ## Ignoring an Unused-Dependency Finding
 

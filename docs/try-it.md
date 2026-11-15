@@ -1,6 +1,6 @@
 # Try CargoScope in Two Minutes
 
-CargoScope reads your `Cargo.lock` and `Cargo.toml` files and tells you, in one report, which dependencies have known advisories, which look unused, which are yanked or outdated, and why each one is in your project. It never modifies your files and never runs your code.
+CargoScope reads your `Cargo.lock` and `Cargo.toml` files and tells you, in one report, which dependencies have known advisories, which look unused, which are yanked or outdated, and why each one is in your project. It never runs your code, and modifies your files only if you ask (`cargoscope fix --apply`).
 
 This is version `0.3.0`, and it is young: your feedback decides what comes next. See the end of this page.
 
@@ -52,6 +52,8 @@ cargoscope scan . --verbose            # list every resolved package with its de
 cargoscope scan . --format json        # machine-readable report
 cargoscope scan . --format sarif --output results.sarif   # for GitHub code scanning
 cargoscope scan . --precise            # confirm unused dependencies with rustc (compiles your project)
+cargoscope fix .                       # show which unused dependencies would be removed
+cargoscope fix . --apply               # remove them from Cargo.toml (formatting and comments kept)
 ```
 
 `--precise` runs `cargo check`, so your build scripts and proc macros run: use it only on code you trust.
