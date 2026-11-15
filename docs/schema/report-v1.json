@@ -51,10 +51,11 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "version", "exclusive", "tree"],
+        "required": ["name", "version", "kinds", "exclusive", "tree"],
         "properties": {
           "name": { "type": "string" },
           "version": { "type": "string" },
+          "kinds": { "description": "Sections under which the project declares it (empty when unknown).", "type": "array", "items": { "enum": ["normal", "dev", "build"] } },
           "exclusive": { "type": "integer", "minimum": 0 },
           "tree": { "type": "integer", "minimum": 1 }
         }

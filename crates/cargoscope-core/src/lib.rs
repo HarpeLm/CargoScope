@@ -439,6 +439,10 @@ pub struct Report {
     pub policy: Option<Vec<policy::Violation>>,
     /// Non-fatal problems to show the user, such as unreadable advisory files.
     pub warnings: Vec<String>,
+    /// Sections under which the project's packages declare each direct
+    /// dependency, by crate name (empty when the manifests were not read).
+    pub direct_kinds:
+        std::collections::BTreeMap<String, std::collections::BTreeSet<DependencyKind>>,
 }
 
 #[cfg(test)]

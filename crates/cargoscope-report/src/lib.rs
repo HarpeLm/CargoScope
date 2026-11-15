@@ -7,8 +7,8 @@ use std::fmt::Write;
 use std::path::Path;
 
 use cargoscope_core::{
-    AdvisoryFinding, AdvisoryKind, Inventory, Package, Report, UnusedConfidence, UnusedFinding,
-    VERSION,
+    AdvisoryFinding, AdvisoryKind, DependencyKind, Inventory, Package, Report, UnusedConfidence,
+    UnusedFinding, VERSION,
 };
 
 /// Version of the JSON report format.
@@ -82,8 +82,8 @@ pub fn render_text(project_root: &Path, report: &Report, options: TextOptions) -
         out.push_str("\nUnused dependencies: not checked\n");
     }
     render_registry_text(&mut out, report);
-    render_duplicates_text(&mut out, inventory);
-    render_weights_text(&mut out, inventory, options.verbose);
+    render_duplicates_text(&mut out, report);
+    render_weights_text(&mut out, report, options.verbose);
     render_policy_text(&mut out, report);
 
     if options.verbose {
@@ -346,9 +346,45 @@ fn render_unused_text(
     }
 }
 
+/// `" (dev)"`, `" (build)"` or `" (dev, build)"` when the project declares
+/// the direct dependency `name` only in those sections; empty otherwise.
+fn kind_note(report: &Report, name: &str) -> &'static str {
+    let Some(kinds) = report.direct_kinds.get(name) else {
+        return "";
+    };
+    let dev = kinds.contains(&DependencyKind::Dev);
+    let build = kinds.contains(&DependencyKind::Build);
+    match (kinds.contains(&DependencyKind::Normal), dev, build) {
+        (false, true, false) => " (dev)",
+        (false, false, true) => " (build)",
+        (false, true, true) => " (dev, build)",
+        _ => "",
+    }
+}
+
+/// Section names under which the project declares `name` directly.
+fn kind_names(report: &Report, name: &str) -> Vec<String> {
+    report
+        .direct_kinds
+        .get(name)
+        .map(|kinds| {
+            kinds
+                .iter()
+                .map(|kind| match kind {
+                    DependencyKind::Normal => "normal".to_owned(),
+                    DependencyKind::Dev => "dev".to_owned(),
+                    DependencyKind::Build => "build".to_owned(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Crates resolved in several versions: every version but the newest shows
-/// the chain that pulls it in, since that is what keeps it in the build.
-fn render_duplicates_text(out: &mut String, inventory: &Inventory) {
+/// the chain that pulls it in, since that is what keeps it in the build,
+/// labelled when the chain starts with a dev- or build-dependency.
+fn render_duplicates_text(out: &mut String, report: &Report) {
+    let inventory = &report.inventory;
     let duplicates = inventory.duplicates();
     if duplicates.is_empty() {
         return;
@@ -366,20 +402,35 @@ fn render_duplicates_text(out: &mut String, inventory: &Inventory) {
         let _ = writeln!(out, "- {name} {}", versions.join(", "));
         for &index in &indices[..indices.len() - 1] {
             if let Some(chain) = chain(inventory, index) {
-                let _ = writeln!(out, "    {} via {chain}", inventory.packages[index].version);
+                let note = inventory
+                    .path_to(index)
+                    .and_then(|path| path.get(1).copied())
+                    .map_or("", |first| {
+                        kind_note(report, &inventory.packages[first].name)
+                    });
+                let _ = writeln!(
+                    out,
+                    "    {} via {chain}{note}",
+                    inventory.packages[index].version
+                );
             }
         }
     }
 }
 
 /// Direct dependencies that pull in packages nothing else needs, heaviest
-/// first: the ten heaviest, or all of them with `verbose`.
-fn render_weights_text(out: &mut String, inventory: &Inventory, verbose: bool) {
-    let heavy: Vec<(usize, usize, usize)> = inventory
+/// first, the ones that ship with the project (normal dependencies) before
+/// dev- and build-only ones: the ten first, or all of them with `verbose`.
+fn render_weights_text(out: &mut String, report: &Report, verbose: bool) {
+    let inventory = &report.inventory;
+    let mut heavy: Vec<(usize, usize, usize)> = inventory
         .direct_weights()
         .into_iter()
         .filter(|&(_, exclusive, _)| exclusive > 1)
         .collect();
+    heavy.sort_by_key(|&(index, _, _)| {
+        !kind_note(report, &inventory.packages[index].name).is_empty()
+    });
     if heavy.is_empty() {
         return;
     }
@@ -396,8 +447,10 @@ fn render_weights_text(out: &mut String, inventory: &Inventory, verbose: bool) {
         let package = &inventory.packages[index];
         let _ = writeln!(
             out,
-            "- {} {}: {exclusive} of the {tree} packages it pulls in",
-            package.name, package.version
+            "- {} {}{}: {exclusive} of the {tree} packages it pulls in",
+            package.name,
+            package.version,
+            kind_note(report, &package.name)
         );
     }
     if shown < heavy.len() {
@@ -631,9 +684,10 @@ pub fn render_json(project_root: &Path, report: &Report) -> String {
         let package = &inventory.packages[*index];
         let _ = write!(
             out,
-            "{{\"name\":\"{}\",\"version\":\"{}\",\"exclusive\":{exclusive},\"tree\":{tree}}}",
+            "{{\"name\":\"{}\",\"version\":\"{}\",\"kinds\":{},\"exclusive\":{exclusive},\"tree\":{tree}}}",
             json_escape(&package.name),
             json_escape(&package.version),
+            json_string_array(&kind_names(report, &package.name)),
         );
     }
     out.push_str("],");
@@ -804,6 +858,7 @@ mod tests {
             registry_date: None,
             advisory_db_date: Some("2026-01-02".to_owned()),
             warnings: Vec::new(),
+            direct_kinds: std::collections::BTreeMap::new(),
         }
     }
 
@@ -820,7 +875,49 @@ mod tests {
             serde_json::from_str(&render_json(Path::new("."), &report)).expect("valid JSON");
         assert_eq!(
             json["direct_weights"],
-            serde_json::json!([{ "name": "alpha", "version": "1.0.0", "exclusive": 2, "tree": 2 }])
+            serde_json::json!([{ "name": "alpha", "version": "1.0.0", "kinds": [], "exclusive": 2, "tree": 2 }])
+        );
+    }
+
+    #[test]
+    fn labels_dev_and_build_dependencies_and_lists_normal_ones_first() {
+        // app -> alpha (dev) -> beta ; app -> gamma (normal) -> delta, beta 2.0.0.
+        let mut report = sample(Vec::new());
+        report.inventory.packages[0].dependencies.push(4);
+        report.inventory.packages.push(Package {
+            dependencies: vec![5, 6],
+            ..package("gamma", None, false, true, vec![])
+        });
+        report
+            .inventory
+            .packages
+            .push(package("delta", None, false, false, vec![]));
+        report.inventory.packages.push(Package {
+            version: "2.0.0".to_owned(),
+            ..package("beta", None, false, false, vec![])
+        });
+        report
+            .direct_kinds
+            .insert("alpha".to_owned(), [DependencyKind::Dev].into());
+        report.direct_kinds.insert(
+            "gamma".to_owned(),
+            [DependencyKind::Normal, DependencyKind::Dev].into(),
+        );
+        let text = render_text(Path::new("."), &report, TextOptions::default());
+        // gamma (3 exclusive) is normal and comes first; alpha (2) is dev-only.
+        assert!(
+            text.contains("- gamma 1.0.0: 3 of the 3 packages it pulls in\n- alpha 1.0.0 (dev): 2 of the 2 packages it pulls in\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("    1.0.0 via app -> alpha -> beta (dev)\n"),
+            "{text}"
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&render_json(Path::new("."), &report)).expect("valid JSON");
+        assert_eq!(
+            json["direct_weights"][0]["kinds"],
+            serde_json::json!(["normal", "dev"])
         );
     }
 

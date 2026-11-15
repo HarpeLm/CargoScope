@@ -579,7 +579,10 @@ fn scan(options: &ScanOptions) -> ExitCode {
         }
     }
 
+    // Only labels in the report: a failure leaves the dependencies unlabelled.
+    let direct_kinds = cargoscope_cargo::direct_dependency_kinds(root).unwrap_or_default();
     let report = Report {
+        direct_kinds,
         checks,
         package_info,
         registry_date,

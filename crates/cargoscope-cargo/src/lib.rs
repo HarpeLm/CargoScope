@@ -2,7 +2,7 @@
 //!
 //! Files are read directly; this crate never invokes `cargo` or runs project code.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::path::Path;
@@ -172,6 +172,33 @@ pub struct ProjectPackages {
     pub workspace_dependencies: Option<toml::Value>,
     /// Warnings about skipped workspace member patterns.
     pub warnings: Vec<String>,
+}
+
+/// Sections (`dependencies`, `dev-dependencies`, `build-dependencies`)
+/// under which the project's packages declare each dependency, by real
+/// crate name.
+///
+/// # Errors
+///
+/// Returns an error when the project manifests cannot be read.
+pub fn direct_dependency_kinds(
+    project_root: &Path,
+) -> Result<BTreeMap<String, BTreeSet<cargoscope_core::DependencyKind>>, ScanError> {
+    let ProjectPackages {
+        packages,
+        workspace_dependencies,
+        ..
+    } = project_packages(project_root)?;
+    let mut kinds: BTreeMap<String, BTreeSet<cargoscope_core::DependencyKind>> = BTreeMap::new();
+    for (_, _, manifest) in &packages {
+        for declared in unused::declared_dependencies(manifest, workspace_dependencies.as_ref()) {
+            kinds
+                .entry(declared.package)
+                .or_default()
+                .insert(declared.kind);
+        }
+    }
+    Ok(kinds)
 }
 
 /// Looks for likely-unused dependencies in the root package and explicit
