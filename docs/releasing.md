@@ -64,6 +64,10 @@ Released on 2026-11-15: crates resolved in several versions, in the text and JSO
 
 Released on 2026-11-15: `cargoscope fix` (dry run, `--apply`, `--only`, `[workspace.dependencies]` cleanup), the heaviest direct dependencies with `(dev)`/`(build)` labels, the `multiple-versions` policy rule, and sharper unused-dependency rules. ✅ GitHub Release, crates.io (5 crates), npm, Homebrew and the installer report 0.4.0; the Action passes on the 3 operating systems with 0.4.0.
 
+## v0.4.1
+
+Released on 2026-11-15: `--help` for each command, and the CLI split into modules (same output as 0.4.0 on 35 commands). ✅ GitHub Release, crates.io (5 crates), npm, Homebrew and the installer report 0.4.1; the Action passes on the 3 operating systems with 0.4.1.
+
 ## One-time setup (maintainer)
 
 1. **crates.io**: create an API token with the `publish-new` and `publish-update` scopes, then add it as the repository secret `CARGO_REGISTRY_TOKEN`.
