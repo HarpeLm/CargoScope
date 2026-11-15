@@ -16,6 +16,16 @@ allow = ["MIT", "Apache-2.0", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib"]
 deny = ["GPL-3.0-only"]
 # Packages whose license is unknown: "deny" (default) or "allow".
 unknown = "deny"
+# Licenses allowed for one crate only (optional version requirement), even
+# when `deny` lists them. A reason is required.
+exceptions = [
+  { name = "ring", version = "^0.17", allow = ["ISC", "OpenSSL"], reason = "reviewed by legal" },
+]
+# The license of a crate whose metadata is wrong or missing: the expression
+# replaces the crate's own in the report and in the rules.
+clarify = [
+  { name = "webpki", expression = "ISC", reason = "LICENSE file checked on 2026-11-15" },
+]
 
 [sources]
 # Allowed registries: "crates.io" or a registry index URL.
@@ -75,7 +85,8 @@ A file with only `[advisories]` defines no policy.
 - Licenses are compared without case. `WITH` exceptions never make a license unacceptable. The legacy form `MIT/Apache-2.0` is read as `MIT OR Apache-2.0`.
 - The file is strict: an unknown key, a wrong type, an invalid license expression or version requirement, or a ban without a reason is an error (exit code 2), so that a typo never silently disables a rule.
 - `--checks` without `policy` skips the policy.
+- A license `exceptions` entry adds its licenses to `allow` (when `allow` is not empty) and removes them from `deny`, for the matching crate only. A `clarify` entry replaces the crate's license everywhere in the report (the licenses list, JSON, SARIF) and is checked even without crates.io data; a violation on it says "clarified in cargoscope.toml". Entries that match no package of the lockfile give a warning, so they do not linger after a crate is gone.
 
 ## Compared with cargo-deny
 
-This covers the license, source and ban checks most projects use, limited to the platforms you build for with `[graph] targets`. cargo-deny has more: license clarifications, per-crate exceptions, duplicate rules per version or with wrappers, feature bans, and advisory configuration. Use it when you need those.
+This covers the license, source and ban checks most projects use, limited to the platforms you build for with `[graph] targets`. cargo-deny has more: license clarifications pinned to the hash of the license files, duplicate rules per version or with wrappers, feature bans, the feature graph, and advisory configuration. Use it when you need those.
