@@ -252,7 +252,11 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
             let entry = entry.as_table().ok_or(
                 "[bans] deny entries must be tables such as { name = \"...\", reason = \"...\" }",
             )?;
-            check_keys(entry, "bans.deny", &["name", "version", "reason"])?;
+            check_keys(
+                entry,
+                "bans.deny",
+                &["name", "version", "reason", "wrappers"],
+            )?;
             let field = |key: &str| {
                 entry
                     .get(key)
@@ -268,10 +272,12 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
                 semver::VersionReq::parse(requirement)
                     .map_err(|error| format!("[bans] `{name}` version `{requirement}`: {error}"))?;
             }
+            let wrappers = strings(entry, "wrappers", "bans.deny")?;
             policy.bans.push(Ban {
                 name,
                 version,
                 reason,
+                wrappers,
             });
         }
     }

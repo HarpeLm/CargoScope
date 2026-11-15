@@ -182,8 +182,16 @@ impl Expression {
 /// Returns the parse error of an invalid expression.
 pub fn is_allowed(expression: &str, allow: &[String], deny: &[String]) -> Result<bool, String> {
     let parsed = parse(expression)?;
-    let listed =
-        |list: &[String], id: &str| list.iter().any(|entry| entry.eq_ignore_ascii_case(id));
+    // `MPL-2.0+` ("this version or any later one") is allowed when its
+    // version is: the `+` only widens the choice, as cargo-deny reads it.
+    let listed = |list: &[String], id: &str| {
+        list.iter().any(|entry| {
+            entry.eq_ignore_ascii_case(id)
+                || id
+                    .strip_suffix('+')
+                    .is_some_and(|base| entry.eq_ignore_ascii_case(base))
+        })
+    };
     Ok(parsed
         .is_satisfied_by(&|id: &str| !listed(deny, id) && (allow.is_empty() || listed(allow, id))))
 }
@@ -254,5 +262,16 @@ mod tests {
         assert_eq!(is_allowed("GPL-3.0", &[], &deny), Ok(false));
         assert_eq!(is_allowed("GPL-3.0 OR MIT", &[], &deny), Ok(true));
         assert_eq!(is_allowed("BSD-3-Clause", &[], &deny), Ok(true));
+    }
+
+    #[test]
+    fn an_or_later_license_is_allowed_with_its_version() {
+        let allow = vec!["MPL-2.0".to_owned()];
+        assert_eq!(is_allowed("MPL-2.0+", &allow, &[]), Ok(true));
+        assert_eq!(is_allowed("GPL-2.0+", &allow, &[]), Ok(false));
+        assert_eq!(
+            is_allowed("MPL-2.0+", &[], &["MPL-2.0".to_owned()]),
+            Ok(false)
+        );
     }
 }

@@ -1449,15 +1449,45 @@ allow-git = ["https://github.com/myorg/"]
 "#,
     )
     .expect("write");
-    let output = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
-        .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
-        .env("CARGO_HOME", fixture("empty-cargo-home"))
-        .args(["scan", "--fail-on", "none"])
-        .arg(&dir)
+    // cargo-deny checks the default-feature graph, so CargoScope asks
+    // `cargo tree`: a fake one lists every package of the fixture.
+    let fake_src = dir.join("fake_cargo.rs");
+    let fake_bin = dir.join(format!("fake-cargo{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(
+        &fake_src,
+        r##"fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    assert!(args.iter().any(|a| a == "tree"), "{args:?}");
+    println!("policy-demo v0.1.0 (/work)\nserde_json v1.0.128\nserde v1.0.210\nitoa v1.0.11\nforked v0.1.0 (https://github.com/someone/forked?rev=abc#abc)");
+}
+"##,
+    )
+    .expect("write fake cargo");
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let compiled = Command::new(rustc)
+        .arg(&fake_src)
+        .arg("-o")
+        .arg(&fake_bin)
         .output()
-        .expect("cargoscope binary runs");
-    let text = stdout(&output);
-    assert!(text.contains("- [ban] serde 1.0.210:"), "{text}");
+        .expect("rustc runs");
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+            .env("CARGO_HOME", fixture("empty-cargo-home"))
+            .env("CARGO", &fake_bin)
+            .args(["scan", "--fail-on", "none"])
+            .arg(&dir)
+            .output()
+            .expect("cargoscope binary runs")
+    };
+    let text = stdout(&run());
+    // serde is only used by serde_json, its allowed wrapper: no ban.
+    assert!(!text.contains("- [ban] serde"), "{text}");
     assert!(text.contains("- [source] forked 0.1.0:"), "{text}");
     assert!(text.contains("- [license] serde_json 1.0.128:"), "{text}");
     assert!(
@@ -1468,22 +1498,19 @@ allow-git = ["https://github.com/myorg/"]
         text.contains("[licenses] confidence-threshold not supported"),
         "{text}"
     );
-    assert!(
-        text.contains("the wrappers of the ban on `serde` are not supported"),
-        "{text}"
-    );
+
+    // Without the wrapper, the ban applies.
+    let deny = std::fs::read_to_string(dir.join("deny.toml")).expect("read");
+    std::fs::write(
+        dir.join("deny.toml"),
+        deny.replace(", wrappers = [\"serde_json\"]", ""),
+    )
+    .expect("write");
+    assert!(stdout(&run()).contains("- [ban] serde 1.0.210:"));
 
     // A cargoscope.toml takes over, with no note about deny.toml.
     std::fs::write(dir.join("cargoscope.toml"), "[bans]\n").expect("write");
-    let text = stdout(
-        &Command::new(env!("CARGO_BIN_EXE_cargoscope"))
-            .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
-            .env("CARGO_HOME", fixture("empty-cargo-home"))
-            .args(["scan", "--fail-on", "none"])
-            .arg(&dir)
-            .output()
-            .expect("cargoscope binary runs"),
-    );
+    let text = stdout(&run());
     assert!(!text.contains("deny.toml"), "{text}");
     assert!(!text.contains("- [ban] serde"), "{text}");
     let _ = std::fs::remove_dir_all(dir);

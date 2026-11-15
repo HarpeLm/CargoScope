@@ -206,6 +206,12 @@ pub fn translate(text: &str) -> Result<Translated, String> {
         );
     }
 
+    // cargo-deny always checks the graph of the default features (on every
+    // platform, dev-dependencies included) unless told otherwise.
+    if policy.features.is_none() {
+        policy.features = Some(Features::default());
+    }
+
     if let Some(licenses) = table("licenses") {
         has_rules = true;
         policy.check_licenses = true;
@@ -313,13 +319,29 @@ pub fn translate(text: &str) -> Result<Translated, String> {
             let Some((name, version)) = crate_spec(entry) else {
                 continue;
             };
-            if entry.get("wrappers").is_some() {
-                notes.push(format!("deny.toml: the wrappers of the ban on `{name}` are not supported: the ban applies everywhere"));
+            // `{ crate = "x", deny-multiple-versions = true }` denies the
+            // duplicates of x, not x itself.
+            if entry
+                .get("deny-multiple-versions")
+                .and_then(toml::Value::as_bool)
+                == Some(true)
+            {
+                policy.deny_multiple_versions_of.push(name);
+                continue;
             }
+            let wrappers = entry
+                .as_table()
+                .map(|table| strings(table, "wrappers"))
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|wrapper| crate_spec(&toml::Value::String(wrapper.clone())))
+                .map(|(wrapper, _)| wrapper)
+                .collect();
             policy.bans.push(Ban {
                 name,
                 version,
                 reason: reason(entry),
+                wrappers,
             });
         }
         match bans.get("multiple-versions").and_then(toml::Value::as_str) {
@@ -335,6 +357,19 @@ pub fn translate(text: &str) -> Result<Translated, String> {
             .filter_map(crate_spec)
             .map(|(name, _)| name)
             .collect();
+        policy.skip_multiple_versions_trees = bans
+            .get("skip-tree")
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                let depth = entry
+                    .get("depth")
+                    .and_then(toml::Value::as_integer)
+                    .and_then(|depth| usize::try_from(depth).ok());
+                crate_spec(entry).map(|(name, _)| (name, depth))
+            })
+            .collect();
         unsupported(
             &mut notes,
             "bans",
@@ -343,8 +378,10 @@ pub fn translate(text: &str) -> Result<Translated, String> {
                 "deny",
                 "multiple-versions",
                 "skip",
+                "skip-tree",
                 "wildcards",
                 "highlight",
+                "allow-wildcard-paths",
             ],
         );
     }
@@ -488,7 +525,7 @@ license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 
 [bans]
 multiple-versions = "deny"
-deny = ["openssl", { crate = "git2@0.18", reason = "use gix", wrappers = ["tool"] }]
+deny = ["openssl", { crate = "git2@0.18", reason = "use gix", wrappers = ["tool"] }, { name = "ahash", deny-multiple-versions = true }]
 skip = [{ crate = "windows-sys@0.45", reason = "old" }]
 skip-tree = ["criterion"]
 
@@ -524,6 +561,7 @@ github = ["myorg"]
         assert_eq!(policy.bans.len(), 2);
         assert_eq!(policy.bans[1].version.as_deref(), Some("0.18"));
         assert_eq!(policy.skip_multiple_versions, vec!["windows-sys"]);
+        assert_eq!(policy.deny_multiple_versions_of, vec!["ahash"]);
         assert_eq!(
             policy.allow_registries,
             Some(vec!["crates.io".to_owned(), "crates.io".to_owned()])
@@ -541,8 +579,12 @@ github = ["myorg"]
             "{notes}"
         );
         assert!(notes.contains("license-files hashes"), "{notes}");
-        assert!(notes.contains("wrappers of the ban on `git2`"), "{notes}");
-        assert!(notes.contains("[bans] skip-tree not supported"), "{notes}");
+        assert_eq!(policy.bans[1].wrappers, vec!["tool"]);
+        assert_eq!(
+            policy.skip_multiple_versions_trees,
+            vec![("criterion".to_owned(), None)]
+        );
+        assert!(policy.features.is_some(), "default features, as cargo-deny");
         assert!(
             notes.contains("[advisories] unmaintained not supported"),
             "{notes}"

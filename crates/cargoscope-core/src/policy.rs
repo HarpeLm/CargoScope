@@ -30,6 +30,9 @@ pub struct Ban {
     pub version: Option<String>,
     /// Why it is banned.
     pub reason: String,
+    /// Crates allowed to depend on it (cargo-deny's `wrappers`): the ban
+    /// does not apply when every crate that depends on it is listed.
+    pub wrappers: Vec<String>,
 }
 
 /// Licenses allowed for one crate only (`[licenses] exceptions`).
@@ -100,6 +103,12 @@ pub struct Policy {
     pub deny_multiple_versions: bool,
     /// Crates allowed in several versions even when they are denied.
     pub skip_multiple_versions: Vec<String>,
+    /// Crates whose duplicates are denied even when `deny_multiple_versions`
+    /// is off (cargo-deny's `deny-multiple-versions` on a crate).
+    pub deny_multiple_versions_of: Vec<String>,
+    /// Crates whose whole dependency tree is allowed in several versions,
+    /// with an optional depth (cargo-deny's `skip-tree`).
+    pub skip_multiple_versions_trees: Vec<(String, Option<usize>)>,
     /// Target triples (`[graph] targets`) the rules are limited to: a package
     /// that no listed target builds is not checked. Empty checks every
     /// package of the lockfile.
@@ -231,6 +240,38 @@ impl Policy {
         }
     }
 
+    /// Names of the crates in the `skip_multiple_versions_trees`: the roots and
+    /// their dependencies, down to the given depth.
+    fn skipped_trees<'a>(&self, inventory: &'a Inventory) -> BTreeSet<&'a str> {
+        let mut names = BTreeSet::new();
+        for (root, depth) in &self.skip_multiple_versions_trees {
+            let mut frontier: Vec<usize> = inventory
+                .packages
+                .iter()
+                .enumerate()
+                .filter(|(_, package)| &package.name == root)
+                .map(|(index, _)| index)
+                .collect();
+            let mut seen: BTreeSet<usize> = frontier.iter().copied().collect();
+            let mut level = 0;
+            while !frontier.is_empty() {
+                for &index in &frontier {
+                    names.insert(inventory.packages[index].name.as_str());
+                }
+                if depth.is_some_and(|depth| level >= depth) {
+                    break;
+                }
+                frontier = frontier
+                    .iter()
+                    .flat_map(|&index| inventory.packages[index].dependencies.iter().copied())
+                    .filter(|next| seen.insert(*next))
+                    .collect();
+                level += 1;
+            }
+        }
+        names
+    }
+
     /// Warnings for license exceptions and clarifications that match no
     /// package of the inventory: they may be left over.
     #[must_use]
@@ -300,6 +341,18 @@ impl Policy {
             for ban in &self.bans {
                 if ban.name != package.name {
                     continue;
+                }
+                if !ban.wrappers.is_empty() {
+                    let mut dependents = inventory
+                        .packages
+                        .iter()
+                        .filter(|parent| parent.dependencies.contains(&index))
+                        .peekable();
+                    if dependents.peek().is_some()
+                        && dependents.all(|parent| ban.wrappers.contains(&parent.name))
+                    {
+                        continue;
+                    }
                 }
                 let matches = match &ban.version {
                     None => true,
@@ -406,9 +459,13 @@ impl Policy {
                 }
             }
         }
-        if self.deny_multiple_versions {
+        if self.deny_multiple_versions || !self.deny_multiple_versions_of.is_empty() {
+            let skipped_trees = self.skipped_trees(inventory);
             for (name, indices) in inventory.duplicates() {
-                if self.skip_multiple_versions.contains(&name) {
+                if (!self.deny_multiple_versions && !self.deny_multiple_versions_of.contains(&name))
+                    || self.skip_multiple_versions.contains(&name)
+                    || skipped_trees.contains(name.as_str())
+                {
                     continue;
                 }
                 // Only the versions a target builds count as duplicates.
@@ -558,6 +615,7 @@ mod tests {
                 name: "openssl".to_owned(),
                 version: Some("<0.10".to_owned()),
                 reason: "use rustls".to_owned(),
+                wrappers: Vec::new(),
             }],
             ..Policy::default()
         }
