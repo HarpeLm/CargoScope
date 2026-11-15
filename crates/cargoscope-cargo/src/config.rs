@@ -32,6 +32,31 @@ fn check_keys(table: &toml::Table, context: &str, known: &[&str]) -> Result<(), 
     }
 }
 
+/// Reads `[graph] targets`: target triples the policy is limited to.
+fn parse_targets(value: &toml::Table) -> Result<Vec<String>, String> {
+    let Some(graph) = value.get("graph") else {
+        return Ok(Vec::new());
+    };
+    let graph = graph
+        .as_table()
+        .ok_or_else(|| "[graph] must be a table".to_owned())?;
+    check_keys(graph, "graph", &["targets"])?;
+    let targets = strings(graph, "targets", "graph")?;
+    for target in &targets {
+        let valid = !target.is_empty()
+            && !target.starts_with('-')
+            && target
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+        if !valid {
+            return Err(format!(
+                "[graph] targets: `{target}` is not a target triple such as x86_64-unknown-linux-gnu"
+            ));
+        }
+    }
+    Ok(targets)
+}
+
 /// Parses the text of a `cargoscope.toml`. Returns `None` when it defines
 /// no policy section.
 ///
@@ -44,8 +69,9 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
     check_keys(
         &value,
         "top level",
-        &["licenses", "sources", "bans", "advisories"],
+        &["licenses", "sources", "bans", "advisories", "graph"],
     )?;
+    let targets = parse_targets(&value)?;
     if !["licenses", "sources", "bans"]
         .iter()
         .any(|key| value.contains_key(*key))
@@ -59,7 +85,10 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
             Some(_) => Err(format!("[{key}] must be a table")),
         }
     };
-    let mut policy = Policy::default();
+    let mut policy = Policy {
+        targets,
+        ..Policy::default()
+    };
 
     if let Some(licenses) = table("licenses")? {
         check_keys(licenses, "licenses", &["allow", "deny", "unknown"])?;
@@ -293,6 +322,43 @@ mod tests {
             parse_policy("[bans]\nmultiple-versions = \"warn\"\n")
                 .unwrap_err()
                 .contains("must be \"deny\" or \"allow\"")
+        );
+    }
+
+    #[test]
+    fn parses_graph_targets_and_rejects_anything_else() {
+        let policy = parse_policy(
+            "[graph]\ntargets = [\"x86_64-unknown-linux-gnu\", \"aarch64-apple-darwin\"]\n[licenses]\nallow = [\"MIT\"]\n",
+        )
+        .expect("valid")
+        .expect("has a policy");
+        assert_eq!(
+            policy.targets,
+            vec!["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]
+        );
+        // [graph] alone sets no rule, hence no policy.
+        assert!(
+            parse_policy("[graph]\ntargets = [\"x86_64-unknown-linux-gnu\"]\n")
+                .expect("valid")
+                .is_none()
+        );
+        for bad in [
+            "[graph]\ntargets = [\"--manifest-path\"]\n",
+            "[graph]\ntargets = [\"\"]\n",
+            "[graph]\ntargets = [\"linux gnu\"]\n",
+        ] {
+            let text = format!("{bad}[bans]\nmultiple-versions = \"deny\"\n");
+            assert!(
+                parse_policy(&text)
+                    .unwrap_err()
+                    .contains("not a target triple"),
+                "{bad}"
+            );
+        }
+        assert!(
+            parse_policy("[graph]\ntarget = []\n[bans]\n")
+                .unwrap_err()
+                .contains("unknown key")
         );
     }
 

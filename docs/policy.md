@@ -3,6 +3,11 @@
 Put a `cargoscope.toml` next to the root `Cargo.toml` to enforce rules on every resolved package that is not part of the project itself. Without the file, no policy is checked.
 
 ```toml
+[graph]
+# Optional: limit every rule below to the packages these targets build.
+# Without it, the whole lockfile (every platform) is checked.
+targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]
+
 [licenses]
 # Allowed licenses. An SPDX expression passes when some choice of its
 # alternatives uses only allowed licenses: "MIT OR GPL-3.0" passes with MIT.
@@ -31,6 +36,15 @@ multiple-versions = "deny"
 # Crates accepted in several versions anyway.
 skip-multiple-versions = ["windows-sys"]
 ```
+
+## Limiting the policy to some targets
+
+`Cargo.lock` lists the dependencies of every platform, so by default a Windows-only crate with an unwanted license fails a Linux-only project. `[graph] targets` limits the license, source, ban and `multiple-versions` rules to the packages that at least one of the listed target triples builds (a duplicate counts only when two of its versions are built by the targets).
+
+- The packages come from `cargo metadata --locked --filter-platform <target>`, which evaluates the `cfg(...)` of every dependency. The sources of the dependencies must be on disk: run `cargo fetch` first (this is also what cargo-deny needs). Nothing is compiled or run.
+- If Cargo cannot answer (sources missing, unknown target, outdated lockfile), the scan stops with exit code 2 and Cargo's reason, rather than silently checking too much or too little.
+- Targets are plain triples such as `x86_64-pc-windows-msvc`; anything else is an error.
+- Advisories, unused dependencies, the package list and the "crates in several versions" listing still cover the whole lockfile. `[graph]` alone sets no rule.
 
 ## Ignoring an advisory
 
@@ -64,4 +78,4 @@ A file with only `[advisories]` defines no policy.
 
 ## Compared with cargo-deny
 
-This covers the license, source and ban checks most projects use. cargo-deny has more: license clarifications, per-crate exceptions, duplicate rules per version or with wrappers, feature bans, and advisory configuration. Use it when you need those.
+This covers the license, source and ban checks most projects use, limited to the platforms you build for with `[graph] targets`. cargo-deny has more: license clarifications, per-crate exceptions, duplicate rules per version or with wrappers, feature bans, and advisory configuration. Use it when you need those.

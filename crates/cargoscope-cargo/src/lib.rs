@@ -14,6 +14,7 @@ pub mod config;
 pub mod fix;
 pub mod locations;
 pub mod precise;
+pub mod targets;
 pub mod unused;
 pub mod workspace;
 

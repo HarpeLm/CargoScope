@@ -705,6 +705,96 @@ fn policy_violations_are_reported_and_fail_the_scan() {
 }
 
 #[test]
+fn policy_graph_targets_limit_the_rules_to_packages_the_target_builds() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-graph-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    copy_dir(&fixture("policy"), &dir);
+    let policy = std::fs::read_to_string(dir.join("cargoscope.toml")).expect("policy");
+    std::fs::write(
+        dir.join("cargoscope.toml"),
+        format!("[graph]\ntargets = [\"x86_64-unknown-linux-gnu\"]\n\n{policy}"),
+    )
+    .expect("write policy");
+
+    // A fake cargo answers `cargo metadata --filter-platform`: the target
+    // builds policy-demo, serde_json and serde, but not itoa nor forked.
+    let fake_src = dir.join("fake_cargo.rs");
+    let fake_bin = dir.join(format!("fake-cargo{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(
+        &fake_src,
+        r##"fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if std::env::var_os("FAKE_CARGO_FAIL").is_some() {
+        eprintln!("error: failed to download `serde v1.0.210`");
+        std::process::exit(101);
+    }
+    let target = args.windows(2).find(|w| w[0] == "--filter-platform").map(|w| w[1].clone());
+    assert!(args.iter().any(|a| a == "metadata") && args.iter().any(|a| a == "--locked"), "{args:?}");
+    assert_eq!(target.as_deref(), Some("x86_64-unknown-linux-gnu"));
+    let ids = ["policy-demo@0.1.0", "serde_json@1.0.128", "serde@1.0.210"];
+    let packages: Vec<String> = ids
+        .iter()
+        .chain(["itoa@1.0.11", "forked@0.1.0"].iter())
+        .map(|id| {
+            let (name, version) = id.split_once('@').unwrap();
+            format!(r#"{{"id":"{id}","name":"{name}","version":"{version}"}}"#)
+        })
+        .collect();
+    let nodes: Vec<String> = ids.iter().map(|id| format!(r#"{{"id":"{id}"}}"#)).collect();
+    println!(r#"{{"packages":[{}],"resolve":{{"nodes":[{}],"root":null}}}}"#, packages.join(","), nodes.join(","));
+}
+"##,
+    )
+    .expect("write fake cargo");
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let compiled = Command::new(rustc)
+        .arg(&fake_src)
+        .arg("-o")
+        .arg(&fake_bin)
+        .output()
+        .expect("rustc runs");
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+
+    let run = |fail: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_cargoscope"));
+        command
+            .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+            .env("CARGO_HOME", fixture("empty-cargo-home"))
+            .env("CARGO", &fake_bin)
+            .args(["scan", "--verbose", "--fail-on", "none"])
+            .arg(&dir);
+        if fail {
+            command.env("FAKE_CARGO_FAIL", "1");
+        }
+        command.output().expect("cargoscope binary runs")
+    };
+
+    let scoped = run(false);
+    assert_eq!(scoped.status.code(), Some(0));
+    let text = stdout(&scoped);
+    assert!(text.contains("Policy violations: 3\n"), "{text}");
+    assert!(text.contains("- [ban] serde 1.0.210:"), "{text}");
+    assert!(text.contains("- [license] serde_json 1.0.128:"), "{text}");
+    assert!(!text.contains("- [source] forked"), "{text}");
+    assert!(!text.contains("- [license] itoa"), "{text}");
+
+    // When Cargo cannot say which packages a target builds, the scan stops
+    // instead of silently checking everything (or nothing).
+    let failed = run(true);
+    assert_eq!(failed.status.code(), Some(2));
+    let message = String::from_utf8_lossy(&failed.stderr);
+    assert!(message.contains("[graph] targets"), "{message}");
+    assert!(
+        message.contains("failed to download `serde v1.0.210`"),
+        "{message}"
+    );
+}
+
+#[test]
 fn policy_check_can_be_skipped_and_appears_in_json_and_sarif() {
     let output = scan(
         "policy",

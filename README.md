@@ -193,7 +193,7 @@ cargoscope compare baseline.json current.json                  # what changed be
 
 ```sh
 cargoscope fix --advisories .            # dry run: what can be updated, and what blocks the rest
-cargoscope fix --advisories . --apply    # updates Cargo.lock
+cargoscope fix --advisories . --apply    # updates Cargo.lock, and Cargo.toml when a requirement blocks the fix
 ```
 
 ```
@@ -203,7 +203,18 @@ time 0.1.45 (RUSTSEC-2020-0071)
   = cannot update: error: failed to select a version for the requirement `time = "^0.1.43"` / required by package `chrono v0.4.19`
 ```
 
-For each vulnerability with a fix, CargoScope tries the smallest fixed version first with `cargo update --precise ... --dry-run`, so Cargo, which knows every version requirement, decides whether `Cargo.lock` can move without changing a manifest. When it cannot, Cargo's explanation shows which dependency to upgrade or which requirement to relax. Only `Cargo.lock` changes, and only with `--apply`. This runs `cargo update`, which may read the registry index; it compiles and runs nothing.
+For each vulnerability with a fix, CargoScope tries the smallest fixed version first with `cargo update --precise ... --dry-run`, so Cargo, which knows every version requirement, decides whether `Cargo.lock` can move without changing a manifest.
+
+When the vulnerable package is a direct dependency and its own requirement is what blocks the fix (`chrono = "=0.4.19"`, or `time = "0.1"` while the fix is in 0.2.23), CargoScope retries with the requirement raised to the fixed version, in every manifest that declares it (`[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`, `[target.'...']` tables and `[workspace.dependencies]`; inline and table forms, comments and formatting kept). The report then says which manifests change:
+
+```
+chrono 0.4.19 (RUSTSEC-2020-0159)
+  - update to 0.4.20 (in Cargo.toml)
+```
+
+The edit is refused when another dependency would still keep the vulnerable version in `Cargo.lock`. Entries inherited with `workspace = true` and path or git dependencies are left alone. When nothing works, Cargo's explanation shows which dependency to upgrade or which requirement to relax.
+
+Nothing is written without `--apply`: the dry run only tries the manifest edits and restores them. With `--apply`, `Cargo.lock` gets the exact smallest fixed version and the manifests the requirement `"<version>"`. This runs `cargo update`, which may read the registry index; it compiles and runs nothing.
 
 ### Security update pull requests
 
@@ -233,7 +244,7 @@ jobs:
           ci-workflow: ci.yml   # optional: starts your CI on the pull request
 ```
 
-It runs `cargoscope fix --advisories --apply`; when `Cargo.lock` changes, it pushes the branch `cargoscope/security-updates` and opens a pull request listing the fixed advisories, the versions before and after, and what stays vulnerable with Cargo's reason. A later run updates the same pull request. Two GitHub rules apply:
+It runs `cargoscope fix --advisories --apply`; when `Cargo.lock` or a `Cargo.toml` changes, it commits both, pushes the branch `cargoscope/security-updates` and opens a pull request listing the fixed advisories, the versions before and after, and what stays vulnerable with Cargo's reason. A later run updates the same pull request. Two GitHub rules apply:
 
 - With the default token, the repository must allow GitHub Actions to create pull requests (Settings, Actions, General, Workflow permissions). A personal access token or a GitHub App token passed as `token` does not need it.
 - A pull request opened with the default token starts no workflow. `ci-workflow` works around it: a `workflow_dispatch` started by the default token does run, and its checks show on the pull request commit (your CI needs a `workflow_dispatch` trigger). A personal access token or a GitHub App token starts the usual pull request workflows.
@@ -259,7 +270,7 @@ Ignored advisories stay visible with their reason, but never fail the scan; in S
 
 ## Dependency Policy
 
-A `cargoscope.toml` next to `Cargo.toml` enforces allowed licenses, allowed sources, banned crates and, optionally, a single version per crate, in the spirit of cargo-deny. Violations fail the scan. See [docs/policy.md](docs/policy.md).
+A `cargoscope.toml` next to `Cargo.toml` enforces allowed licenses, allowed sources, banned crates and, optionally, a single version per crate, in the spirit of cargo-deny. With `[graph] targets`, the rules only apply to the packages those platforms build. Violations fail the scan. See [docs/policy.md](docs/policy.md).
 
 ## Compiler-Accurate Mode
 

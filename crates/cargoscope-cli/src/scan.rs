@@ -180,15 +180,17 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
     } else {
         (vec![PackageInfo::default(); inventory.packages.len()], None)
     };
-    let violations = policy.map(|policy| {
-        check_policy(
+    let violations = match policy {
+        Some(policy) => Some(check_policy(
+            root,
             &policy,
             &inventory,
             &package_info,
             registry_date.as_deref(),
             &mut warnings,
-        )
-    });
+        )?),
+        None => None,
+    };
     keep_checked_info(&mut package_info, checks);
 
     // Only labels in the report: a failure leaves the dependencies unlabelled.
@@ -289,16 +291,35 @@ fn registry_data(
 }
 
 fn check_policy(
+    root: &Path,
     policy: &Policy,
     inventory: &Inventory,
     package_info: &[PackageInfo],
     registry_date: Option<&str>,
     warnings: &mut Vec<String>,
-) -> Vec<Violation> {
+) -> Result<Vec<Violation>, ExitCode> {
     if policy.check_licenses && registry_date.is_none() {
         warnings.push("license rules of the policy were skipped: no crates.io data".to_owned());
     }
-    policy.check(inventory, package_info, registry_date.is_some())
+    // `[graph] targets`: only the packages those targets build are checked.
+    let active = if policy.targets.is_empty() {
+        None
+    } else {
+        Some(
+            cargoscope_cargo::targets::active_packages(root, &policy.targets).map_err(|error| {
+                eprintln!(
+                    "CargoScope could not limit the policy to its [graph] targets: {error}. Check the target names and run `cargo fetch` first, or remove [graph] targets."
+                );
+                ExitCode::from(2)
+            })?,
+        )
+    };
+    Ok(policy.check_scoped(
+        inventory,
+        package_info,
+        registry_date.is_some(),
+        active.as_ref(),
+    ))
 }
 
 /// Clears the registry data of checks that did not run, so the report only

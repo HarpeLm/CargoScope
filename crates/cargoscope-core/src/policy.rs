@@ -1,6 +1,8 @@
 //! Dependency policies (licenses, sources, banned crates), checked against
 //! an inventory. Configured in `cargoscope.toml` (see docs/policy.md).
 
+use std::collections::BTreeSet;
+
 use crate::{Inventory, PackageInfo, license};
 
 /// crates.io sources, accepted under the alias `crates.io`.
@@ -52,7 +54,15 @@ pub struct Policy {
     pub deny_multiple_versions: bool,
     /// Crates allowed in several versions even when they are denied.
     pub skip_multiple_versions: Vec<String>,
+    /// Target triples (`[graph] targets`) the rules are limited to: a package
+    /// that no listed target builds is not checked. Empty checks every
+    /// package of the lockfile.
+    pub targets: Vec<String>,
 }
+
+/// Packages (name and version) that at least one of the policy's targets
+/// builds, as computed by `cargo metadata --filter-platform`.
+pub type ActivePackages = BTreeSet<(String, String)>;
 
 /// Rule a violation breaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -116,11 +126,33 @@ impl Policy {
         info: &[PackageInfo],
         licenses_known: bool,
     ) -> Vec<Violation> {
+        self.check_scoped(inventory, info, licenses_known, None)
+    }
+
+    /// Like [`Policy::check`], limited to the packages in `active` (the ones
+    /// the policy's `targets` build); `None` checks every package.
+    #[must_use]
+    pub fn check_scoped(
+        &self,
+        inventory: &Inventory,
+        info: &[PackageInfo],
+        licenses_known: bool,
+        active: Option<&ActivePackages>,
+    ) -> Vec<Violation> {
+        let is_active = |index: usize| {
+            active.is_none_or(|active| {
+                let package = &inventory.packages[index];
+                active.contains(&(package.name.clone(), package.version.clone()))
+            })
+        };
         let mut violations = Vec::new();
         for (index, package) in inventory.packages.iter().enumerate() {
             let Some(source) = package.source.as_deref() else {
                 continue;
             };
+            if !is_active(index) {
+                continue;
+            }
             let mut push = |rule, message: String| {
                 violations.push(Violation {
                     package: index,
@@ -211,6 +243,15 @@ impl Policy {
                 if self.skip_multiple_versions.contains(&name) {
                     continue;
                 }
+                // Only the versions a target builds count as duplicates.
+                let indices: Vec<usize> = indices.into_iter().filter(|&i| is_active(i)).collect();
+                let distinct: BTreeSet<&str> = indices
+                    .iter()
+                    .map(|&index| inventory.packages[index].version.as_str())
+                    .collect();
+                if distinct.len() < 2 {
+                    continue;
+                }
                 let versions: Vec<&str> = indices
                     .iter()
                     .map(|&index| inventory.packages[index].version.as_str())
@@ -268,6 +309,17 @@ mod multiple_versions_tests {
             violations[0]
                 .message
                 .starts_with("`syn` is resolved in 2 versions (1.0.109, 2.0.87)")
+        );
+
+        // A version no target builds is not a duplicate.
+        let active: super::ActivePackages = [("syn", "2.0.87"), ("windows-sys", "0.59.0")]
+            .into_iter()
+            .map(|(name, version)| (name.to_owned(), version.to_owned()))
+            .collect();
+        assert!(
+            policy
+                .check_scoped(&inventory, &[], false, Some(&active))
+                .is_empty()
         );
     }
 }
@@ -389,5 +441,26 @@ mod tests {
                 .iter()
                 .all(|violation| violation.rule != Rule::Ban)
         );
+    }
+
+    #[test]
+    fn rules_only_apply_to_packages_a_target_builds() {
+        let (inventory, info) = sample();
+        let everything = policy().check(&inventory, &info, true);
+        assert_eq!(everything.len(), 5);
+
+        // Only `good` and `openssl` are built for the target: the copyleft
+        // and unknown licenses and both foreign sources are out of scope.
+        let active: super::ActivePackages = [("good", "1.0.0"), ("openssl", "0.9.0")]
+            .into_iter()
+            .map(|(name, version)| (name.to_owned(), version.to_owned()))
+            .collect();
+        let scoped = policy().check_scoped(&inventory, &info, true, Some(&active));
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].rule, Rule::Ban);
+        assert_eq!(inventory.packages[scoped[0].package].name, "openssl");
+
+        let nothing = policy().check_scoped(&inventory, &info, true, Some(&Default::default()));
+        assert!(nothing.is_empty());
     }
 }
