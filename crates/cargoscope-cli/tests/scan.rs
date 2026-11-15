@@ -837,3 +837,78 @@ fn expired_ignores_count_again_and_invalid_ones_are_errors() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("needs a non-empty `reason`"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).expect("create");
+    for entry in std::fs::read_dir(from).expect("read fixture") {
+        let entry = entry.expect("entry");
+        let target = to.join(entry.file_name());
+        if entry.file_type().expect("type").is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).expect("copy");
+        }
+    }
+}
+
+fn fix(dir: &std::path::Path, extra: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .arg("fix")
+        .arg(dir)
+        .args(extra)
+        .output()
+        .expect("cargoscope binary runs")
+}
+
+#[test]
+fn fix_shows_then_removes_only_likely_unused_dependencies() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-fix-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    copy_dir(&fixture("unused"), &dir);
+    let original = std::fs::read_to_string(dir.join("Cargo.toml")).expect("manifest");
+
+    // Dry run by default: the plan is shown, nothing is written.
+    let dry = fix(&dir, &[]);
+    assert_eq!(dry.status.code(), Some(0));
+    let plan = stdout(&dry);
+    assert!(
+        plan.contains("  - remove `log` from [dependencies]\n"),
+        "{plan}"
+    );
+    assert!(plan.contains("  - remove `pretty_assertions` from [dev-dependencies]\n"));
+    assert!(plan.contains("  - remove `pkg-config` from [build-dependencies]\n"));
+    assert!(plan.contains("Dry run: nothing was written."));
+    assert_eq!(
+        std::fs::read_to_string(dir.join("Cargo.toml")).expect("manifest"),
+        original
+    );
+    assert_eq!(fix(&dir, &["--dry-run"]).stdout, dry.stdout);
+
+    let applied = fix(&dir, &["--apply"]);
+    assert_eq!(applied.status.code(), Some(0));
+    assert!(stdout(&applied).contains("Removed 5 dependencies from 1 manifest(s)."));
+    let edited = std::fs::read_to_string(dir.join("Cargo.toml")).expect("manifest");
+    for removed in [
+        "log = ",
+        "regex = ",
+        "rand = ",
+        "pretty_assertions = ",
+        "pkg-config = ",
+    ] {
+        assert!(!edited.contains(removed), "{removed} still in:\n{edited}");
+    }
+    // Possibly-unused, ignored and used dependencies stay, with their comments.
+    for kept in [
+        "openssl-sys = \"0.9\"                               # unused, but a -sys crate",
+        "chrono = { version = \"0.4\", optional = true }",
+        "once_cell = \"1\"",
+        "serde_json = \"1\"                                  # used: plain path",
+        "[package.metadata.cargoscope]",
+    ] {
+        assert!(edited.contains(kept), "{kept} missing from:\n{edited}");
+    }
+    assert!(stdout(&fix(&dir, &[])).contains("No likely-unused dependency to remove."));
+
+    assert_eq!(fix(&dir, &["--apply", "--dry-run"]).status.code(), Some(2));
+    let _ = std::fs::remove_dir_all(dir);
+}

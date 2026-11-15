@@ -18,6 +18,11 @@ const USAGE: &str = "Usage:
       licenses) of the project at PATH. The only command that uses the network.
   cargoscope compare BASELINE CURRENT [--format text|json|markdown] [--fail-on THRESHOLD]
       Compare two JSON reports (markdown: for a pull request comment). Exit code 1 when new advisories reach the threshold.
+  cargoscope fix [PATH] [--dry-run | --apply] [--precise]
+      Remove likely-unused dependencies from the Cargo.toml files. Without
+      --apply, only shows what would be removed (dry run). Possibly-unused
+      and ignored dependencies are never removed. Formatting and comments of
+      the manifests are kept; run cargo check afterwards.
   cargoscope scan [PATH] [--format text|json|sarif] [--output FILE] [--fail-on THRESHOLD] [--show-uncertain] [--verbose] [--precise]
       Report on a Cargo project, read-only and offline.
 
@@ -59,6 +64,7 @@ fn main() -> ExitCode {
             }
         },
         Some("compare") => compare_command(arguments),
+        Some("fix") => fix_command(arguments),
         Some("update") => {
             let path = arguments.next().unwrap_or_else(|| ".".to_owned());
             if let Some(extra) = arguments.next() {
@@ -705,6 +711,132 @@ fn sarif_locations(root: &Path, report: &Report) -> SarifLocations {
         package_lines,
         unused_locations,
     }
+}
+
+/// `cargoscope fix [PATH] [--dry-run | --apply] [--precise]`.
+fn fix_command(arguments: impl Iterator<Item = String>) -> ExitCode {
+    let mut path = None;
+    let (mut apply, mut dry_run, mut precise) = (false, false, false);
+    for argument in arguments {
+        match argument.as_str() {
+            "--apply" => apply = true,
+            "--dry-run" => dry_run = true,
+            "--precise" => precise = true,
+            other if other.starts_with('-') => {
+                eprintln!("Unknown option for fix: {other}\nRun cargoscope --help for usage.");
+                return ExitCode::from(2);
+            }
+            _ if path.is_some() => {
+                eprintln!("fix takes a single PATH\nRun cargoscope --help for usage.");
+                return ExitCode::from(2);
+            }
+            _ => path = Some(PathBuf::from(argument)),
+        }
+    }
+    if apply && dry_run {
+        eprintln!("--apply and --dry-run cannot be combined");
+        return ExitCode::from(2);
+    }
+    let root = path.unwrap_or_else(|| PathBuf::from("."));
+    let root = root.as_path();
+
+    let inventory = match cargoscope_cargo::scan_cargo_project(root) {
+        Ok(inventory) => inventory,
+        Err(error) => return execution_error(root, &error),
+    };
+    let unused = match cargoscope_cargo::find_unused(root, &inventory) {
+        Ok((unused, _)) => unused,
+        Err(error) => return execution_error(root, &error),
+    };
+    let unused = if precise {
+        eprintln!(
+            "--precise: running cargo check with all targets and features. This compiles the project, so build scripts and proc macros of the project and its dependencies are executed."
+        );
+        let packages = match cargoscope_cargo::project_packages(root) {
+            Ok(packages) => packages,
+            Err(error) => return execution_error(root, &error),
+        };
+        match cargoscope_cargo::precise::run(root) {
+            Ok(compiler) => cargoscope_cargo::precise::refine(
+                unused,
+                &packages.packages,
+                packages.workspace_dependencies.as_ref(),
+                &compiler,
+            ),
+            Err(error) => return execution_error(root, &error),
+        }
+    } else {
+        unused
+    };
+
+    // Only likely-unused findings that are not ignored, grouped by manifest.
+    let mut by_manifest: std::collections::BTreeMap<&str, Vec<(&str, &str)>> =
+        std::collections::BTreeMap::new();
+    for finding in &unused {
+        if finding.confidence == cargoscope_core::UnusedConfidence::Likely
+            && finding.ignored.is_none()
+        {
+            by_manifest
+                .entry(finding.manifest.as_str())
+                .or_default()
+                .push((finding.kind.section(), finding.dependency.as_str()));
+        }
+    }
+    if by_manifest.is_empty() {
+        println!("No likely-unused dependency to remove.");
+        return ExitCode::SUCCESS;
+    }
+
+    let (mut removed, mut edited) = (0, 0);
+    for (manifest, removals) in &by_manifest {
+        let file = root.join(manifest);
+        let contents = match std::fs::read_to_string(&file) {
+            Ok(contents) => contents,
+            Err(error) => {
+                eprintln!("CargoScope could not read {}: {error}", file.display());
+                return ExitCode::from(2);
+            }
+        };
+        let (new_contents, outcomes) =
+            match cargoscope_cargo::fix::remove_dependencies(&contents, removals) {
+                Ok(result) => result,
+                Err(error) => {
+                    eprintln!("CargoScope could not edit {}: {error}", file.display());
+                    return ExitCode::from(2);
+                }
+            };
+        println!("{manifest}");
+        for ((section, key), outcome) in removals.iter().zip(&outcomes) {
+            match outcome {
+                cargoscope_cargo::fix::Outcome::Removed(tables) => {
+                    removed += 1;
+                    println!("  - remove `{key}` from [{}]", tables.join("], ["));
+                }
+                cargoscope_cargo::fix::Outcome::Skipped(reason) => {
+                    println!("  = keep `{key}` [{section}]: {reason}");
+                }
+            }
+        }
+        if apply && new_contents != contents {
+            if let Err(error) = std::fs::write(&file, new_contents) {
+                eprintln!("CargoScope could not write {}: {error}", file.display());
+                return ExitCode::from(2);
+            }
+            edited += 1;
+        }
+    }
+    if apply {
+        println!(
+            "\nRemoved {removed} dependenc{} from {edited} manifest(s). Run `cargo check` to update Cargo.lock and confirm the build.",
+            if removed == 1 { "y" } else { "ies" }
+        );
+    } else {
+        println!(
+            "\nDry run: nothing was written. Run `cargoscope fix --apply` to remove {removed} dependenc{}.",
+            if removed == 1 { "y" } else { "ies" }
+        );
+    }
+    ExitCode::SUCCESS
 }
 
 fn execution_error(root: &Path, error: &dyn std::fmt::Display) -> ExitCode {
