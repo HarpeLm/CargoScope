@@ -56,26 +56,26 @@ CargoScope's `scan` is offline; its download step (`cargoscope update`) is not t
 
 ## Where competitors are better, or we have nothing yet
 
-Updated on 2026-11-15. Since then, [cargo-shear was measured](compiler-benchmark.md#re-run-with-cargo-shear-2026-11-15): it finds more unused dependencies than CargoScope's default output on library crates, and Cargo 1.100 now warns about unused normal and build dependencies by itself.
+Updated on 2026-11-15 for `0.5.0`. Since the original benchmark, [cargo-shear was measured](compiler-benchmark.md#re-run-with-cargo-shear-2026-11-15) (it finds more unused dependencies than CargoScope's default output on library crates), a [second blind benchmark judged by rustc](blind-judge/README.md) ran on 56 new repositories (`0` mistakes in CargoScope's default output), and Cargo 1.100 now warns about unused normal and build dependencies by itself.
 
 Feature list from the tools' documented behaviour, not re-checked against their latest documentation.
 
-| Capability | Who has it | CargoScope |
+| Capability | Who has it | CargoScope (`0.5.0`) |
 |---|---|---|
-| Ignore one advisory, with a reason | cargo-audit (`audit.toml`), cargo-deny | Yes since this benchmark (`[advisories] ignore`, with an optional expiry date) |
-| Audit compiled binaries | cargo-audit (`cargo audit bin`) | No |
-| Suggest or apply advisory fixes | cargo-audit (`fix`, experimental), Dependabot, Renovate | No |
-| Automatic update pull requests, continuous monitoring | Dependabot, Renovate | No, by design |
+| Ignore one advisory, with a reason | cargo-audit (`audit.toml`), cargo-deny | Yes (`[advisories] ignore`, with an optional expiry date) |
+| Audit compiled binaries | cargo-audit (`cargo audit bin`) | Yes (`cargoscope audit-bin`, cargo-auditable + panic-path fallback) |
+| Suggest or apply advisory fixes | cargo-audit (`fix`, experimental), Dependabot, Renovate | Yes (`cargoscope fix --advisories`, updating `Cargo.lock` and pinned `Cargo.toml` requirements) |
+| Scheduled security update pull requests | Dependabot, Renovate | Yes in the GitHub Action (`open-pr: true`); no hosted continuous monitoring service |
 | License clarifications and per-crate exceptions | cargo-deny | No |
-| Ban duplicate versions, or features | cargo-deny | Duplicate versions since 0.4 (`[bans] multiple-versions`); features: no |
-| Check only the graph of chosen features and targets | cargo-deny, cargo-tree | No: always the whole `Cargo.lock` |
-| Remove unused dependencies automatically | cargo-machete and cargo-shear (`--fix`) | Since 0.4 (`cargoscope fix --apply`) |
-| Compiler-accurate unused detection, proven at scale | cargo-udeps | `--precise` exists, not measured at scale |
+| Ban duplicate versions, or features | cargo-deny | Duplicate versions (`[bans] multiple-versions`); feature bans: no |
+| Check only the graph of chosen targets | cargo-deny, cargo-tree | Targets: yes (`[graph] targets` via `cargo metadata --filter-platform`); chosen feature sets: no |
+| Remove unused dependencies automatically | cargo-machete and cargo-shear (`--fix`) | Yes (`cargoscope fix --apply`, preserving comments and `[workspace.dependencies]`) |
+| Compiler-accurate unused detection, proven at scale | cargo-udeps | `--precise` (including Cargo 1.100 `unused_dependencies`) exists, not measured at scale |
 | Compatible versus latest update | cargo-outdated | Latest only |
-| Inverted tree, duplicates, feature edges | cargo-tree (`-i`, `-d`, `-e features`) | Shortest path only |
+| Inverted tree, duplicates, feature edges | cargo-tree (`-i`, `-d`, `-e features`) | Shortest path and exclusive pruning weight (`direct_weights`) |
 | Other ecosystems | OSV-Scanner, Dependabot, Renovate, Snyk, Trivy | Rust only, by design |
-| Stable release on crates.io, Homebrew, npm, PyPI | all of them | Pre-release on GitHub only |
-| Users, maintainers, track record | all of them | None yet |
+| Stable release on crates.io, Homebrew, npm, PyPI | all of them | Published on GitHub Releases, crates.io, Homebrew and npm (PyPI pending) |
+| Users, maintainers, track record | all of them | Very young |
 
 ## Where CargoScope is ahead on this test
 

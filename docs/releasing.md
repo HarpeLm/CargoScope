@@ -9,7 +9,7 @@ A release is started by pushing a version tag. Everything else runs in GitHub Ac
 | Homebrew (`brew install HarpeLm/tap/cargoscope`) | `release.yml` | `HarpeLm/homebrew-tap` repository and `HOMEBREW_TAP_TOKEN` secret |
 | npm (`npx cargoscope`) | `release.yml` | `NPM_TOKEN` secret |
 | PyPI (`pip install cargoscope`, `uvx cargoscope`) | `pypi.yml`, **not enabled yet** | PyPI trusted publisher (no token), then restore the tag trigger in `pypi.yml` |
-| GitHub Action (`uses: HarpeLm/CargoScope@v0.4.1`) | `action.yml` at the repository root | The GitHub Release |
+| GitHub Action (`uses: HarpeLm/CargoScope@v0.5.0`) | `action.yml` at the repository root | The GitHub Release |
 
 ## v0.1.0 checklist
 
@@ -67,6 +67,15 @@ Released on 2026-11-15: `cargoscope fix` (dry run, `--apply`, `--only`, `[worksp
 ## v0.4.1
 
 Released on 2026-11-15: `--help` for each command, and the CLI split into modules (same output as 0.4.0 on 35 commands). ✅ GitHub Release, crates.io (5 crates), npm, Homebrew and the installer report 0.4.1; the Action passes on the 3 operating systems with 0.4.1.
+
+## v0.5.0
+
+Prepared on 2026-11-15: `cargoscope fix --advisories` (dry run, `--apply`, `--format markdown`, updating `Cargo.lock` and pinned direct requirements in `Cargo.toml` / `[workspace.dependencies]`), security update pull requests in the GitHub Action (`open-pr: true`, `token`, `ci-workflow`), `cargoscope audit-bin` (cargo-auditable data and panic-path fallback), `[graph] targets` policy filtering in `cargoscope.toml`, `--precise` support for Cargo 1.100's `unused_dependencies` lint, `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/`NO_PROXY` support in `cargoscope update`, and the 56-repo blind compiler benchmark.
+
+- ✅ Versions bumped from `0.5.0-dev` to `0.5.0` across workspace manifests and `Cargo.lock`.
+- ✅ `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` pass.
+- ✅ `dist plan` and `cargo package --workspace --exclude cargoscope-corpus` verified.
+- ⬜ Tag `v0.5.0` pushed (`git tag v0.5.0 && git push origin v0.5.0`) and GitHub Release / crates.io / npm / Homebrew published.
 
 ## One-time setup (maintainer)
 
