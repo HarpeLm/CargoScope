@@ -179,15 +179,6 @@ fn table_mut<'a>(
     item.as_table_like_mut()
 }
 
-/// The item at `path` in `document`, if every step exists.
-fn item_at<'a>(document: &'a mut DocumentMut, path: &[String]) -> Option<&'a mut Item> {
-    let mut item = document.as_item_mut();
-    for step in path {
-        item = item.get_mut(step.as_str())?;
-    }
-    Some(item)
-}
-
 /// Sets the version requirement of every declaration of the crate `package`
 /// (by key, or by `package = "..."` for a renamed dependency) to
 /// `requirement`, in the dependency tables of a manifest, its
@@ -231,7 +222,7 @@ pub fn set_requirement(
 
     let mut changed = false;
     for path in paths {
-        let Some(table) = item_at(&mut document, &path).and_then(Item::as_table_like_mut) else {
+        let Some(table) = table_mut(&mut document, &path) else {
             continue;
         };
         for (key, value) in table.iter_mut() {
