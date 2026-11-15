@@ -514,17 +514,24 @@ mod tests {
 
         // With Cargo's lint, compiled targets answer for normal and build
         // dependencies; dev-dependencies are not checked.
-        let mut report = parse_messages(&format!(
-            "{}\n{}\n{}",
-            artifact(manifest.to_str().expect("utf-8"), "lib", "app", false),
-            artifact(manifest.to_str().expect("utf-8"), "lib", "app", true),
-            artifact(
-                manifest.to_str().expect("utf-8"),
-                "custom-build",
-                "build-script-build",
-                false
-            ),
-        ));
+        // Messages built with serde_json, so Windows paths are escaped as Cargo does.
+        let artifact = |kind: &str, name: &str, test: bool| {
+            serde_json::json!({
+                "reason": "compiler-artifact",
+                "manifest_path": manifest,
+                "target": { "kind": [kind], "name": name },
+                "profile": { "test": test },
+            })
+            .to_string()
+        };
+        let mut report = parse_messages(
+            &[
+                artifact("lib", "app", false),
+                artifact("lib", "app", true),
+                artifact("custom-build", "build-script-build", false),
+            ]
+            .join("\n"),
+        );
         report.cargo_lint = Some(lint);
         assert_eq!(
             report.is_unused(&manifest, DependencyKind::Normal, "cfg_if"),
