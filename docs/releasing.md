@@ -70,7 +70,7 @@ Released on 2026-11-15: `--help` for each command, and the CLI split into module
 
 ## v0.5.0
 
-Prepared on 2026-11-15: `cargoscope fix --advisories` (dry run, `--apply`, `--format markdown`, updating `Cargo.lock` and pinned direct requirements in `Cargo.toml` / `[workspace.dependencies]`), security update pull requests in the GitHub Action (`open-pr: true`, `token`, `ci-workflow`), `cargoscope audit-bin` (cargo-auditable data and panic-path fallback), `[graph] targets` policy filtering in `cargoscope.toml`, `--precise` support for Cargo 1.100's `unused_dependencies` lint, `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/`NO_PROXY` support in `cargoscope update`, and the 56-repo blind compiler benchmark.
+Prepared on 2026-11-15: `cargoscope fix --advisories` (dry run, `--apply`, `--format markdown`, updating `Cargo.lock` and pinned direct requirements in `Cargo.toml` / `[workspace.dependencies]`), security update pull requests in the GitHub Action (`open-pr: true`, `token`, `ci-workflow`), `cargoscope audit-bin` (cargo-auditable data and panic-path fallback), `[graph]` policy filtering in `cargoscope.toml` (targets, features, `exclude-dev`, from `cargo tree`), `[licenses] exceptions` and `clarify`, one security pull request per package and closing of obsolete ones, `--precise` support for Cargo 1.100's `unused_dependencies` lint, `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/`NO_PROXY` support in `cargoscope update`, and the 56-repo blind compiler benchmark.
 
 - ✅ Versions bumped from `0.5.0-dev` to `0.5.0` across workspace manifests and `Cargo.lock`.
 - ✅ `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` pass.
