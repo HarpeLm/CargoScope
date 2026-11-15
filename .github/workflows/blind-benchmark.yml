@@ -1,0 +1,115 @@
+# Second blind benchmark of unused-dependency detection, judged by rustc.
+# Each repository of tests/corpus/blind-judge/repositories.txt is judged on its
+# own disposable runner; the tools are built once and frozen for the whole run.
+# Run by hand from the Actions tab; the result is the `evaluation` artifact.
+name: Blind benchmark
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tools:
+    runs-on: ubuntu-latest
+    outputs:
+      repositories: ${{ steps.list.outputs.repositories }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the frozen tools
+        run: |
+          cargo build --release --locked -p cargoscope
+          cargo install --locked --root tools cargo-machete@0.9.2 cargo-shear@1.14.1
+          cp target/release/cargoscope tools/bin/
+          git rev-parse HEAD > tools/bin/cargoscope-commit.txt
+          tools/bin/cargoscope --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tools
+          path: tools/bin
+      - id: list
+        name: List the repositories
+        run: |
+          echo "repositories=$(grep -v '^#' tests/corpus/blind-judge/repositories.txt | awk 'NF{printf "%s%s|%s", (n++?",":""), $1, $2}' | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().split(",")))')" >> "$GITHUB_OUTPUT"
+
+  judge:
+    needs: tools
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        repository: ${{ fromJson(needs.tools.outputs.repositories) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: tools
+          path: tools
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - name: Judge
+        env:
+          ENTRY: ${{ matrix.repository }}
+          # Overrides rust-toolchain files of the repositories.
+          RUSTUP_TOOLCHAIN: "1.99.1"
+        run: |
+          chmod +x tools/*
+          export PATH="$PWD/tools:$PATH"
+          repo="${ENTRY%%|*}"; commit="${ENTRY##*|}"
+          echo "SLUG=$(echo "$repo" | tr / _)" >> "$GITHUB_ENV"
+          sh tests/corpus/blind-judge/judge-one.sh "$repo" "$commit" "$PWD/out"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-${{ env.SLUG }}
+          path: out
+
+  evaluate:
+    needs: judge
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: result-*
+          merge-multiple: true
+          path: oracle
+      - uses: actions/download-artifact@v4
+        with:
+          name: tools
+          path: oracle/tools-bin
+      - name: Fetch the sources the evaluation reads
+        run: |
+          grep -v '^#' tests/corpus/blind-judge/repositories.txt | while read -r repo commit; do
+            [ -n "$repo" ] || continue
+            d="oracle/repos/$(echo "$repo" | tr / _)"
+            git init -q "$d" < /dev/null
+            git -C "$d" fetch -q --depth 1 "https://github.com/$repo" "$commit" < /dev/null && git -C "$d" checkout -q FETCH_HEAD < /dev/null
+          done
+      - name: Evaluate
+        run: |
+          cat oracle/judge/*.status > oracle/judge/status.txt
+          cp tests/corpus/compiler-judge/evaluate.py oracle/
+          python3 oracle/evaluate.py | tee oracle/evaluation.txt
+          awk '{print $2, $3}' oracle/judge/status.txt | sort | uniq -c | tee -a oracle/evaluation.txt
+          echo "CargoScope commit: $(cat oracle/tools-bin/cargoscope-commit.txt)" | tee -a oracle/evaluation.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: evaluation
+          path: |
+            oracle/evaluation.txt
+            oracle/evaluation.json
+            oracle/judge/*.status
+            oracle/judge/*.verdicts.json
+            oracle/judge/*.stderr.tail
+            oracle/tools
