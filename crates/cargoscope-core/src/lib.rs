@@ -79,6 +79,85 @@ impl Inventory {
         None
     }
 
+    /// Indices of packages in [`Inventory::packages`] that depend directly on `target`,
+    /// sorted by package order.
+    #[must_use]
+    pub fn dependents_of(&self, target: usize) -> Vec<usize> {
+        if target >= self.packages.len() {
+            return Vec::new();
+        }
+        self.packages
+            .iter()
+            .enumerate()
+            .filter_map(|(index, package)| package.dependencies.contains(&target).then_some(index))
+            .collect()
+    }
+
+    /// Returns up to `limit` simple dependency chains from root packages to
+    /// `target`, shortest first, ties broken by package order.
+    #[must_use]
+    pub fn paths_to(&self, target: usize, limit: usize) -> Vec<Vec<usize>> {
+        let count = self.packages.len();
+        if target >= count || limit == 0 {
+            return Vec::new();
+        }
+
+        let mut reverse = vec![Vec::new(); count];
+        for (index, package) in self.packages.iter().enumerate() {
+            for &dep in &package.dependencies {
+                if dep < count {
+                    reverse[dep].push(index);
+                }
+            }
+        }
+        let mut can_reach = vec![false; count];
+        can_reach[target] = true;
+        let mut rev_queue = VecDeque::from([target]);
+        while let Some(node) = rev_queue.pop_front() {
+            for &parent in &reverse[node] {
+                if !can_reach[parent] {
+                    can_reach[parent] = true;
+                    rev_queue.push_back(parent);
+                }
+            }
+        }
+
+        let mut queue = VecDeque::new();
+        for (index, package) in self.packages.iter().enumerate() {
+            if package.root && can_reach[index] {
+                queue.push_back(vec![index]);
+            }
+        }
+        if queue.is_empty() {
+            return Vec::new();
+        }
+
+        let mut results = Vec::new();
+        let mut visits = vec![0usize; count];
+        while let Some(path) = queue.pop_front() {
+            let last = *path.last().expect("path is non-empty");
+            if last == target {
+                results.push(path);
+                if results.len() == limit {
+                    break;
+                }
+                continue;
+            }
+            for &next in &self.packages[last].dependencies {
+                if next < count && can_reach[next] && !path.contains(&next) && visits[next] < limit
+                {
+                    if next != target {
+                        visits[next] += 1;
+                    }
+                    let mut extended = path.clone();
+                    extended.push(next);
+                    queue.push_back(extended);
+                }
+            }
+        }
+        results
+    }
+
     /// Marks the packages reachable from the root packages. With `cut`,
     /// edges from a root package to `cut` are ignored, as if every member
     /// stopped depending on it directly.
@@ -99,6 +178,68 @@ impl Inventory {
             }
         }
         seen
+    }
+
+    fn reachable_without(&self, removed: Option<usize>) -> Vec<bool> {
+        let count = self.packages.len();
+        let mut seen = vec![false; count];
+        let mut stack: Vec<usize> = (0..count)
+            .filter(|&i| self.packages[i].root && Some(i) != removed)
+            .collect();
+        for &root in &stack {
+            seen[root] = true;
+        }
+        while let Some(current) = stack.pop() {
+            for &next in &self.packages[current].dependencies {
+                if next < count && !seen[next] && Some(next) != removed {
+                    seen[next] = true;
+                    stack.push(next);
+                }
+            }
+        }
+        seen
+    }
+
+    fn subtree_non_root_count(&self, start: usize) -> usize {
+        let count = self.packages.len();
+        if start >= count {
+            return 0;
+        }
+        let mut seen = vec![false; count];
+        seen[start] = true;
+        let mut stack = vec![start];
+        while let Some(current) = stack.pop() {
+            for &next in &self.packages[current].dependencies {
+                if next < count && !seen[next] && !self.packages[next].root {
+                    seen[next] = true;
+                    stack.push(next);
+                }
+            }
+        }
+        seen.iter()
+            .enumerate()
+            .filter(|&(index, &in_tree)| in_tree && !self.packages[index].root)
+            .count()
+    }
+
+    /// Returns `(exclusive, tree)` for `target`: how many non-root packages
+    /// would leave the dependency tree if `target` were removed (`exclusive`),
+    /// and how many non-root packages `target` transitively pulls in (`tree`).
+    #[must_use]
+    pub fn package_weight(&self, target: usize) -> (usize, usize) {
+        if target >= self.packages.len() {
+            return (0, 0);
+        }
+        let all = self.reachable_without(None);
+        let without = self.reachable_without(Some(target));
+        let exclusive = all
+            .iter()
+            .zip(&without)
+            .enumerate()
+            .filter(|&(index, (before, after))| !self.packages[index].root && *before && !*after)
+            .count();
+        let tree = self.subtree_non_root_count(target);
+        (exclusive, tree)
     }
 
     /// Weight of each direct dependency: `(index, exclusive, tree)`, where
@@ -561,5 +702,30 @@ mod tests {
             ],
         };
         assert_eq!(inventory.path_to(2), Some(vec![0, 1, 2]));
+    }
+
+    #[test]
+    fn finds_dependents_all_paths_and_package_weight() {
+        // 0 app -> {1 a, 2 b, 5 d}; 1 a -> {3 target, 4 c}; 2 b -> {3 target}; 3 target -> {4 c}
+        let inventory = Inventory {
+            packages: vec![
+                package("app", true, vec![1, 2, 5]),
+                package("a", false, vec![3, 4]),
+                package("b", false, vec![3]),
+                package("target", false, vec![4]),
+                package("c", false, vec![]),
+                package("d", false, vec![1]),
+            ],
+        };
+        assert_eq!(inventory.dependents_of(3), vec![1, 2]);
+        assert_eq!(
+            inventory.paths_to(3, 10),
+            vec![vec![0, 1, 3], vec![0, 2, 3], vec![0, 5, 1, 3]]
+        );
+        assert_eq!(inventory.paths_to(3, 2), vec![vec![0, 1, 3], vec![0, 2, 3]]);
+        // Removing `target` only drops `target` itself (since `a` also depends on `c`): exclusive = 1, tree = 2.
+        assert_eq!(inventory.package_weight(3), (1, 2));
+        // Removing `d` drops `d` only (since `app` also depends on `a`): exclusive = 1, tree = 4 ({d, a, target, c}).
+        assert_eq!(inventory.package_weight(5), (1, 4));
     }
 }

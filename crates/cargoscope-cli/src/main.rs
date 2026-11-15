@@ -9,6 +9,7 @@ mod compare;
 mod fix;
 mod fix_advisories;
 mod scan;
+mod why;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -29,6 +30,11 @@ const AUDIT_BIN_USAGE: &str =
       Report the advisories of the crates compiled into Rust binaries. Exact
       with binaries built by `cargo auditable build`; otherwise the crates
       named by panic message paths only (incomplete). The files are only read.";
+
+const WHY_USAGE: &str = "  cargoscope why CRATE[@VERSION] [PATH] [--format text|json]
+      Show every dependency chain from the project's root packages to CRATE,
+      its direct dependents, and how many packages would leave the tree
+      without it. Offline and read-only.";
 
 const FIX_USAGE: &str = "  cargoscope fix [PATH] [--dry-run | --apply] [--only NAMES] [--precise]
       Remove likely-unused dependencies from the Cargo.toml files, and the
@@ -88,6 +94,7 @@ fn main() -> ExitCode {
     let rest: Vec<String> = arguments.collect();
     let section = match command.as_deref() {
         Some("scan") => Some(SCAN_USAGE),
+        Some("why") => Some(WHY_USAGE),
         Some("compare") => Some(COMPARE_USAGE),
         Some("fix") => Some(FIX_USAGE),
         Some("update") => Some(UPDATE_USAGE),
@@ -112,6 +119,7 @@ fn main() -> ExitCode {
             }
         },
         Some("compare") => compare::compare_command(rest.into_iter()),
+        Some("why") => why::why_command(rest.into_iter()),
         Some("fix") => fix::fix_command(rest.into_iter()),
         Some("audit-bin") => audit_bin::audit_bin_command(rest.into_iter()),
         Some("update") => match rest.as_slice() {
@@ -134,6 +142,7 @@ fn main() -> ExitCode {
                     COMPARE_USAGE,
                     FIX_USAGE,
                     AUDIT_BIN_USAGE,
+                    WHY_USAGE,
                     SCAN_USAGE
                 ])
             );

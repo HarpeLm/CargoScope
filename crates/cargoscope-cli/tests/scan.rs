@@ -1181,6 +1181,7 @@ fn every_subcommand_has_its_own_help() {
     };
     for (command, expected, absent) in [
         ("scan", "--show-uncertain", "cargoscope fix"),
+        ("why", "CRATE[@VERSION]", "cargoscope scan"),
         ("fix", "--only NAMES", "--show-uncertain"),
         ("compare", "--format text|json|markdown", "cargoscope scan"),
         (
@@ -1575,4 +1576,69 @@ allow-git = ["https://github.com/myorg/"]
     assert!(!text.contains("deny.toml"), "{text}");
     assert!(!text.contains("- [ban] serde"), "{text}");
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn why_shows_reverse_paths_dependents_and_pruning_weight() {
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .arg("why")
+            .args(args)
+            .output()
+            .expect("cargoscope binary runs")
+    };
+
+    let text_output = run(&[
+        "bitflags",
+        fixture("multi-version").to_str().expect("utf-8"),
+    ]);
+    assert_eq!(text_output.status.code(), Some(0));
+    let text = stdout(&text_output);
+    assert!(text.contains("bitflags 1.3.2 [transitive]"), "{text}");
+    assert!(
+        text.contains("weight: 1 exclusive of 1 package in its subtree"),
+        "{text}"
+    );
+    assert!(text.contains("dependents (1): old-wrapper 1.0.0"), "{text}");
+    assert!(
+        text.contains("    multi-version 0.1.0 -> old-wrapper 1.0.0 -> bitflags 1.3.2"),
+        "{text}"
+    );
+    assert!(text.contains("bitflags 2.6.0 [direct]"), "{text}");
+    assert!(
+        text.contains("dependents (1): multi-version 0.1.0"),
+        "{text}"
+    );
+    assert!(
+        text.contains("    multi-version 0.1.0 -> bitflags 2.6.0"),
+        "{text}"
+    );
+
+    let json_output = run(&[
+        "bitflags@1.3.2",
+        fixture("multi-version").to_str().expect("utf-8"),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(json_output.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&json_output.stdout).expect("valid JSON");
+    let matches = json["matches"].as_array().expect("matches");
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0]["version"], "1.3.2");
+    assert_eq!(matches[0]["exclusive"], 1);
+    assert_eq!(matches[0]["tree"], 1);
+    assert_eq!(matches[0]["dependents"][0]["name"], "old-wrapper");
+    assert_eq!(
+        matches[0]["paths"][0]
+            .as_array()
+            .expect("path steps")
+            .iter()
+            .map(|step| step["name"].as_str().expect("name"))
+            .collect::<Vec<_>>(),
+        vec!["multi-version", "old-wrapper", "bitflags"]
+    );
+
+    let missing = run(&["nonexistent", fixture("simple").to_str().expect("utf-8")]);
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("is not in Cargo.lock"));
 }
