@@ -97,6 +97,7 @@ dependencies = [
  "cargoscope-core",
  "cargoscope-report",
  "jsonschema",
+ "semver",
  "serde_json",
 ]
 

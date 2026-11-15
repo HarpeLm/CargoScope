@@ -7,6 +7,7 @@
 mod audit_bin;
 mod compare;
 mod fix;
+mod fix_advisories;
 mod scan;
 
 use std::path::{Path, PathBuf};
@@ -35,7 +36,12 @@ const FIX_USAGE: &str = "  cargoscope fix [PATH] [--dry-run | --apply] [--only N
       --apply, only shows what would be removed (dry run). --only limits it
       to a comma-separated list of dependencies. Possibly-unused and ignored
       dependencies are never removed. Formatting and comments of the
-      manifests are kept; run cargo check afterwards.";
+      manifests are kept; run cargo check afterwards.
+  cargoscope fix --advisories [PATH] [--dry-run | --apply]
+      Update vulnerable packages in Cargo.lock to the smallest fixed version
+      Cargo accepts without manifest changes (cargo update --precise), and say
+      which dependency blocks the others. Runs cargo update, which may read
+      the registry index; it compiles nothing.";
 
 const SCAN_USAGE: &str = "  cargoscope scan [PATH] [--format text|json|sarif] [--output FILE] [--fail-on THRESHOLD] [--show-uncertain] [--verbose] [--precise]
       Report on a Cargo project, read-only and offline.

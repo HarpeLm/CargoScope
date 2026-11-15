@@ -20,6 +20,8 @@ struct FixOptions {
     apply: bool,
     precise: bool,
     only: Option<Vec<String>>,
+    /// Update vulnerable packages instead of removing unused dependencies.
+    advisories: bool,
 }
 
 fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptions, String> {
@@ -43,6 +45,7 @@ fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptio
             "--apply" => options.apply = true,
             "--dry-run" => dry_run = true,
             "--precise" => options.precise = true,
+            "--advisories" => options.advisories = true,
             other if other.starts_with('-') => {
                 return Err(format!("Unknown option for fix: {other}"));
             }
@@ -52,6 +55,9 @@ fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptio
     }
     if options.apply && dry_run {
         return Err("--apply and --dry-run cannot be combined".to_owned());
+    }
+    if options.advisories && (options.precise || options.only.is_some()) {
+        return Err("--advisories cannot be combined with --precise or --only".to_owned());
     }
     Ok(options)
 }
@@ -78,6 +84,9 @@ pub fn fix_command(arguments: impl Iterator<Item = String>) -> ExitCode {
 
 fn run_fix(options: &FixOptions) -> Result<ExitCode, ExitCode> {
     let root = options.path.as_deref().unwrap_or(Path::new("."));
+    if options.advisories {
+        return crate::fix_advisories::run(root, options.apply);
+    }
     let inventory = cargoscope_cargo::scan_cargo_project(root)
         .map_err(|error| execution_error(root, &error))?;
     let (unused, _) = find_unused_dependencies(root, &inventory, options.precise)?;
@@ -275,5 +284,11 @@ mod tests {
         assert!(parse(&["--only"]).is_err());
         assert!(parse(&["a", "b"]).is_err());
         assert!(parse(&["--force"]).is_err());
+        assert!(
+            parse(&["--advisories", "--apply"])
+                .expect("valid")
+                .advisories
+        );
+        assert!(parse(&["--advisories", "--only", "log"]).is_err());
     }
 }

@@ -22,6 +22,7 @@ cargoscope-advisory = { path = "../cargoscope-advisory", version = "0.5.0-dev" }
 cargoscope-cargo = { path = "../cargoscope-cargo", version = "0.5.0-dev" }
 cargoscope-core = { path = "../cargoscope-core", version = "0.5.0-dev" }
 cargoscope-report = { path = "../cargoscope-report", version = "0.5.0-dev" }
+semver = "1"
 serde_json = "1"
 
 [lints]

@@ -212,7 +212,7 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
 
 /// Matching advisories, with the `[advisories] ignore` entries applied, and
 /// the date of the database.
-fn check_advisories(
+pub(crate) fn check_advisories(
     root: &Path,
     inventory: &Inventory,
     warnings: &mut Vec<String>,
