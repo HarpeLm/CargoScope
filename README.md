@@ -172,11 +172,12 @@ The list comes from `Cargo.lock`, which covers every platform and also optional 
 
 ```
 Heaviest direct dependencies: packages that would leave the tree without each one
-- jsonschema 0.61.2: 57 of the 79 packages it pulls in
 - ureq 2.12.1: 54 of the 72 packages it pulls in
+- tar 0.4.46: 7 of the 11 packages it pulls in
+- jsonschema 0.61.2 (dev): 57 of the 79 packages it pulls in
 ```
 
-For each direct dependency, the report counts the packages that would leave the dependency tree if no member depended on it directly (itself included), and the size of its own tree: the first number is what removing or replacing it saves. The ten heaviest are shown (all with `--verbose`), and the JSON report has every direct dependency in `direct_weights`. Like the rest of the report, it comes from `Cargo.lock`, so dev- and build-dependencies count too.
+Dependencies declared only under `[dev-dependencies]` or `[build-dependencies]` are labelled `(dev)` or `(build)` and listed after the others, since they do not ship with the project; the same label marks a duplicate pulled in through them. For each direct dependency, the report counts the packages that would leave the dependency tree if no member depended on it directly (itself included), and the size of its own tree: the first number is what removing or replacing it saves. The ten heaviest are shown (all with `--verbose`), and the JSON report has every direct dependency in `direct_weights`. Like the rest of the report, it comes from `Cargo.lock`.
 
 ## Comparing Reports and Baselines
 
@@ -219,13 +220,14 @@ cargo check                 # updates Cargo.lock and confirms the build
 ```
 
 ```
-Cargo.toml
-  - remove `regex` from [dependencies]
+crates/app/Cargo.toml
+  - remove `rand` from [dependencies]
   - remove `pretty_assertions` from [dev-dependencies]
-  = keep `chrono` [dependencies]: `chrono` is named in [features]
+Cargo.toml
+  - remove `rand` from [workspace.dependencies]: no member uses it anymore
 ```
 
-Only likely-unused dependencies are removed: possibly-unused and ignored ones are never touched. A dependency is removed from its section and from the same section of `[target.'...']` tables, and kept when `[features]` names it. The manifests are edited with `toml_edit`, so formatting, order and the other comments stay as they were (a comment on the removed line goes with it). `fix` never runs `cargo`: run `cargo check` yourself afterwards. Add `--precise` to confirm the candidates with rustc first.
+Only likely-unused dependencies are removed: possibly-unused and ignored ones are never touched. A dependency is removed from its section and from the same section of `[target.'...']` tables, and kept when `[features]` names it. An entry of `[workspace.dependencies]` that no member uses anymore after the removal goes too. `--only rand,log` limits the removal to those dependencies. The manifests are edited with `toml_edit`, so formatting, order and the other comments stay as they were (a comment on the removed line goes with it). `fix` never runs `cargo`: run `cargo check` yourself afterwards. Add `--precise` to confirm the candidates with rustc first.
 
 ## Ignoring an Unused-Dependency Finding
 
