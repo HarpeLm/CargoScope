@@ -1026,3 +1026,50 @@ fn multiple_versions_rule_fails_the_scan_unless_the_crate_is_skipped() {
     assert!(stdout(&skipped).contains("Policy violations: 0"));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn every_subcommand_has_its_own_help() {
+    let help = |arguments: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .args(arguments)
+            .output()
+            .expect("cargoscope binary runs")
+    };
+    for (command, expected, absent) in [
+        ("scan", "--show-uncertain", "cargoscope fix"),
+        ("fix", "--only NAMES", "--show-uncertain"),
+        ("compare", "--format text|json|markdown", "cargoscope scan"),
+        (
+            "update",
+            "The only command that uses the network",
+            "cargoscope compare",
+        ),
+    ] {
+        for flag in ["--help", "-h"] {
+            let output = help(&[command, flag]);
+            assert_eq!(output.status.code(), Some(0), "{command} {flag}");
+            let text = stdout(&output);
+            assert!(text.contains(&format!("cargoscope {command}")), "{text}");
+            assert!(text.contains(expected), "{command}: {text}");
+            assert!(
+                !text.contains(absent),
+                "{command} help shows another command: {text}"
+            );
+            assert!(text.contains("Exit codes:"));
+        }
+    }
+    // The flag counts anywhere after the subcommand.
+    assert_eq!(
+        help(&["fix", ".", "--apply", "--help"]).status.code(),
+        Some(0)
+    );
+    let all = stdout(&help(&["--help"]));
+    for command in ["scan", "fix", "compare", "update"] {
+        assert!(all.contains(&format!("cargoscope {command}")), "{all}");
+    }
+    let wrong = help(&["fix", "--force"]);
+    assert_eq!(wrong.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&wrong.stderr).contains("Run cargoscope fix --help for usage.")
+    );
+}
