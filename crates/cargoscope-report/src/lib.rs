@@ -1,7 +1,8 @@
-//! Report rendering: text, JSON, SARIF and CycloneDX.
+//! Report rendering: text, JSON, SARIF, CycloneDX and HTML.
 
 pub mod compare;
 pub mod cyclonedx;
+pub mod html;
 pub mod sarif;
 
 use std::fmt::Write;
@@ -24,7 +25,7 @@ pub struct TextOptions {
     pub verbose: bool,
 }
 
-fn scope(package: &Package) -> &'static str {
+pub(crate) fn scope(package: &Package) -> &'static str {
     if package.root {
         "root"
     } else if package.direct {
@@ -34,7 +35,7 @@ fn scope(package: &Package) -> &'static str {
     }
 }
 
-fn label(finding: &AdvisoryFinding) -> &str {
+pub(crate) fn label(finding: &AdvisoryFinding) -> &str {
     match (&finding.kind, finding.severity) {
         (AdvisoryKind::Informational(kind), _) => kind,
         (AdvisoryKind::Vulnerability, Some(severity)) => severity.as_str(),
@@ -42,7 +43,7 @@ fn label(finding: &AdvisoryFinding) -> &str {
     }
 }
 
-fn chain(inventory: &Inventory, index: usize) -> Option<String> {
+pub(crate) fn chain(inventory: &Inventory, index: usize) -> Option<String> {
     let path = inventory.path_to(index)?;
     let names: Vec<&str> = path
         .iter()
@@ -374,7 +375,7 @@ fn render_unused_text(
 
 /// `" (dev)"`, `" (build)"` or `" (dev, build)"` when the project declares
 /// the direct dependency `name` only in those sections; empty otherwise.
-fn kind_note(report: &Report, name: &str) -> &'static str {
+pub(crate) fn kind_note(report: &Report, name: &str) -> &'static str {
     let Some(kinds) = report.direct_kinds.get(name) else {
         return "";
     };
@@ -389,7 +390,7 @@ fn kind_note(report: &Report, name: &str) -> &'static str {
 }
 
 /// Section names under which the project declares `name` directly.
-fn kind_names(report: &Report, name: &str) -> Vec<String> {
+pub(crate) fn kind_names(report: &Report, name: &str) -> Vec<String> {
     report
         .direct_kinds
         .get(name)
@@ -444,10 +445,8 @@ fn render_duplicates_text(out: &mut String, report: &Report) {
     }
 }
 
-/// Direct dependencies that pull in packages nothing else needs, heaviest
-/// first, the ones that ship with the project (normal dependencies) before
-/// dev- and build-only ones: the ten first, or all of them with `verbose`.
-fn render_weights_text(out: &mut String, report: &Report, verbose: bool) {
+/// Direct dependencies with `exclusive > 1`, normal dependencies first.
+pub(crate) fn sorted_heavy_weights(report: &Report) -> Vec<(usize, usize, usize)> {
     let inventory = &report.inventory;
     let mut heavy: Vec<(usize, usize, usize)> = inventory
         .direct_weights()
@@ -457,6 +456,15 @@ fn render_weights_text(out: &mut String, report: &Report, verbose: bool) {
     heavy.sort_by_key(|&(index, _, _)| {
         !kind_note(report, &inventory.packages[index].name).is_empty()
     });
+    heavy
+}
+
+/// Direct dependencies that pull in packages nothing else needs, heaviest
+/// first, the ones that ship with the project (normal dependencies) before
+/// dev- and build-only ones: the ten first, or all of them with `verbose`.
+fn render_weights_text(out: &mut String, report: &Report, verbose: bool) {
+    let inventory = &report.inventory;
+    let heavy = sorted_heavy_weights(report);
     if heavy.is_empty() {
         return;
     }
@@ -484,9 +492,8 @@ fn render_weights_text(out: &mut String, report: &Report, verbose: bool) {
     }
 }
 
-fn render_registry_text(out: &mut String, report: &Report) {
-    let date = report.registry_date.as_deref().unwrap_or("never");
-    let registry_packages: Vec<(usize, &cargoscope_core::PackageInfo)> = report
+pub(crate) fn registry_packages(report: &Report) -> Vec<(usize, &cargoscope_core::PackageInfo)> {
+    report
         .package_info
         .iter()
         .enumerate()
@@ -498,7 +505,12 @@ fn render_registry_text(out: &mut String, report: &Report) {
                     source.starts_with("registry+") || source.starts_with("sparse+")
                 })
         })
-        .collect();
+        .collect()
+}
+
+fn render_registry_text(out: &mut String, report: &Report) {
+    let date = report.registry_date.as_deref().unwrap_or("never");
+    let registry_packages = registry_packages(report);
 
     if report.checks.licenses {
         render_licenses_text(out, &registry_packages, date);
@@ -512,17 +524,25 @@ fn render_registry_text(out: &mut String, report: &Report) {
     }
 }
 
-type RegistryPackages<'a> = [(usize, &'a cargoscope_core::PackageInfo)];
+pub(crate) type RegistryPackages<'a> = [(usize, &'a cargoscope_core::PackageInfo)];
 
-fn render_licenses_text(out: &mut String, registry_packages: &RegistryPackages<'_>, date: &str) {
-    let mut licenses: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+pub(crate) fn sorted_license_counts<'a>(
+    registry_packages: &'a RegistryPackages<'a>,
+) -> Vec<(&'a str, usize)> {
+    let mut licenses: std::collections::BTreeMap<&'a str, usize> =
+        std::collections::BTreeMap::new();
     for (_, info) in registry_packages {
         *licenses
             .entry(info.license.as_deref().unwrap_or("unknown"))
             .or_default() += 1;
     }
-    let mut by_count: Vec<(&str, usize)> = licenses.into_iter().collect();
+    let mut by_count: Vec<(&'a str, usize)> = licenses.into_iter().collect();
     by_count.sort_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(right.0)));
+    by_count
+}
+
+fn render_licenses_text(out: &mut String, registry_packages: &RegistryPackages<'_>, date: &str) {
+    let by_count = sorted_license_counts(registry_packages);
     let _ = writeln!(
         out,
         "\nLicenses of {} registry packages (crates.io data downloaded {date}):",

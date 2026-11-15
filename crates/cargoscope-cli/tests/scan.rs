@@ -494,6 +494,56 @@ fn cyclonedx_exports_components_licenses_dependencies_and_vulnerabilities() {
 }
 
 #[test]
+fn html_exports_self_contained_report_with_findings_and_output_file() {
+    let report_path =
+        std::env::temp_dir().join(format!("cargoscope-html-{}.html", std::process::id()));
+    let output = scan(
+        "simple",
+        &[
+            "--format",
+            "html",
+            "--fail-on",
+            "none",
+            "--output",
+            report_path.to_str().expect("utf8 path"),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert!(stdout(&output).is_empty());
+
+    let html = std::fs::read_to_string(&report_path).expect("written html file");
+    let _ = std::fs::remove_file(&report_path);
+    assert!(html.starts_with("<!DOCTYPE html>\n"));
+    assert!(html.contains("<style>"));
+    assert!(html.contains("<svg "));
+    assert!(html.contains("CARGOSCOPE-TEST-0001"));
+    assert!(html.contains("serde_json"));
+    assert!(html.contains("MIT OR Apache-2.0"));
+
+    fn unused_section(doc: &str) -> &str {
+        let start = doc.find("<section id=\"unused\"").expect("unused section");
+        let rest = &doc[start..];
+        let end = rest.find("</section>").expect("closing unused section");
+        &rest[..end]
+    }
+
+    let unused_default = stdout(&scan("unused", &["--format", "html", "--fail-on", "none"]));
+    assert!(unused_section(&unused_default).contains("possibly-unused"));
+    assert!(unused_section(&unused_default).contains("log"));
+    assert!(unused_section(&unused_default).contains("kept for an upcoming feature"));
+    assert!(!unused_section(&unused_default).contains("chrono"));
+
+    let unused_uncertain = stdout(&scan(
+        "unused",
+        &["--format", "html", "--show-uncertain", "--fail-on", "none"],
+    ));
+    assert!(unused_section(&unused_uncertain).contains("chrono"));
+
+    let policy_html = stdout(&scan("policy", &["--format", "html", "--fail-on", "none"]));
+    assert!(policy_html.contains("Policy Violations"));
+}
+
+#[test]
 fn inventory_only_scan_needs_no_advisory_database() {
     let empty =
         std::env::temp_dir().join(format!("cargoscope-inventory-only-{}", std::process::id()));
