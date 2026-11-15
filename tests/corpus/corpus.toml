@@ -235,6 +235,7 @@ set = "development"
 labels = [
   { manifest = "axum/Cargo.toml", section = "dev-dependencies", dependency = "axum-extra", truth = "unused", note = "no reference" },
   { manifest = "axum/Cargo.toml", section = "dev-dependencies", dependency = "anyhow", truth = "used", note = "doctest in docs/error_handling.md" },
+  { manifest = "axum-core/Cargo.toml", section = "dev-dependencies", dependency = "hyper", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
 ]
 
 [[repository]]
@@ -300,6 +301,10 @@ name = "lsd-rs/lsd"
 url = "https://github.com/lsd-rs/lsd"
 commit = "4b6c14a110fe0fd544ec0204501b5fd3a5d6218f"
 set = "held-out"
+labels = [
+  { manifest = "Cargo.toml", section = "dependencies", dependency = "human-sort", truth = "unused", note = "never referenced in the package's code, library name checked (2026-11-15)" },
+  { manifest = "Cargo.toml", section = "build-dependencies", dependency = "version_check", truth = "unused", note = "never referenced in the package's code, library name checked (2026-11-15)" },
+]
 
 [[repository]]
 name = "ogham/dog"
@@ -394,6 +399,8 @@ labels = [
   { manifest = "crates/bevy_ui_widgets/Cargo.toml", section = "dependencies", dependency = "smol_str", truth = "unused", note = "no occurrence in the package" },
   { manifest = "tools/build-easefunction-graphs/Cargo.toml", section = "dependencies", dependency = "bevy_math", truth = "unused", note = "no occurrence in the package" },
   { manifest = "tools/build-tailwind-palette/Cargo.toml", section = "dependencies", dependency = "bevy_color", truth = "unused", note = "only unrelated words or other packages mention it" },
+  { manifest = "crates/bevy_transform/Cargo.toml", section = "dev-dependencies", dependency = "ron", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
+  { manifest = "crates/bevy_ui/Cargo.toml", section = "dev-dependencies", dependency = "bevy_core_pipeline", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
 ]
 
 [[repository]]
@@ -421,6 +428,9 @@ labels = [
   { manifest = "diesel_cli/Cargo.toml", section = "dependencies", dependency = "lazy_static", truth = "unused", note = "no occurrence in the package" },
   { manifest = "diesel_tests/Cargo.toml", section = "dependencies", dependency = "rand", truth = "unused", note = "no occurrence in the package" },
   { manifest = "diesel_migrations/migrations_macros/Cargo.toml", section = "dev-dependencies", dependency = "dotenvy", truth = "unused", note = "no occurrence in the package" },
+  { manifest = "diesel_migrations/Cargo.toml", section = "dev-dependencies", dependency = "cfg-if", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
+  { manifest = "diesel_migrations/Cargo.toml", section = "dev-dependencies", dependency = "dotenvy", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
+  { manifest = "diesel_migrations/migrations_macros/Cargo.toml", section = "dev-dependencies", dependency = "cfg-if", truth = "unused", note = "never referenced in the package's code, library name checked (2026-11-15)" },
 ]
 
 [[repository]]
@@ -446,6 +456,7 @@ set = "held-out-2"
 labels = [
   { manifest = "examples/postgres/axum-social-with-tests/Cargo.toml", section = "dependencies", dependency = "tracing", truth = "unused", note = "no occurrence in the package" },
   { manifest = "examples/postgres/todos/Cargo.toml", section = "dependencies", dependency = "dotenvy", truth = "unused", note = "no occurrence in the package" },
+  { manifest = "Cargo.toml", section = "dev-dependencies", dependency = "env_logger", truth = "unused", note = "never referenced in the package's code, library name checked (2026-11-15)" },
 ]
 
 [[repository]]
@@ -482,6 +493,15 @@ labels = [
   { manifest = "crates/nu-protocol/Cargo.toml", section = "dependencies", dependency = "web-time", truth = "unused", note = "no occurrence in the package; was hidden by counting inner path segments as crates (labelled after the first-segment fix)" },
   { manifest = "crates/nu-std/Cargo.toml", section = "dependencies", dependency = "nu-engine", truth = "unused", note = "no occurrence in the package; was hidden by counting inner path segments as crates (labelled after the first-segment fix)" },
   { manifest = "crates/nu-system/Cargo.toml", section = "dependencies", dependency = "web-time", truth = "unused", note = "no occurrence in the package; was hidden by counting inner path segments as crates (labelled after the first-segment fix)" },
+  { manifest = "Cargo.toml", section = "dependencies", dependency = "nu-cmd-base", truth = "unused", note = "never referenced in the package's code, library name checked (2026-11-15)" },
+  { manifest = "crates/nu_plugin_polars/Cargo.toml", section = "dev-dependencies", dependency = "nu-cmd-lang", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
+  { manifest = "crates/nu_plugin_polars/Cargo.toml", section = "dev-dependencies", dependency = "nu-engine", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
+  { manifest = "crates/nu_plugin_polars/Cargo.toml", section = "dev-dependencies", dependency = "nu-parser", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
+  { manifest = "crates/nu-config/Cargo.toml", section = "dev-dependencies", dependency = "tempfile", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
+  { manifest = "crates/nu-command/Cargo.toml", section = "dependencies", dependency = "ansi-str", truth = "unused", note = "never referenced in the package's code, library name checked (2026-11-15)" },
+  { manifest = "crates/nu-command/Cargo.toml", section = "dependencies", dependency = "web-time", truth = "unused", note = "never referenced in the package's code, library name checked (2026-11-15)" },
+  { manifest = "crates/nu-explore/Cargo.toml", section = "dependencies", dependency = "nu-json", truth = "unused", note = "never referenced in the package's code, library name checked (2026-11-15)" },
+  { manifest = "crates/nu-test-support-macros/Cargo.toml", section = "dependencies", dependency = "proc-macro-error3", truth = "unused", note = "never referenced in the package's code, library name checked (2026-11-15)" },
 ]
 
 [[repository]]
@@ -516,6 +536,8 @@ labels = [
   { manifest = "pyo3-polars/example/extend_polars_python_dispatch/extend_polars/Cargo.toml", section = "dependencies", dependency = "polars-python", truth = "unused", note = "no occurrence in the package" },
   { manifest = "pyo3-polars/pyo3-polars-derive/Cargo.toml", section = "dev-dependencies", dependency = "polars-python", truth = "unused", note = "no occurrence in the package" },
   { manifest = "crates/polars-python/Cargo.toml", section = "dependencies", dependency = "polars-row", truth = "unused", note = "no occurrence in the package; was hidden by counting inner path segments as crates (labelled after the first-segment fix)" },
+  { manifest = "crates/polars-core/Cargo.toml", section = "dev-dependencies", dependency = "bincode", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
+  { manifest = "crates/polars-lazy/Cargo.toml", section = "dev-dependencies", dependency = "serde_json", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
 ]
 
 [[repository]]
@@ -543,6 +565,7 @@ labels = [
   { manifest = "yazi-parser/Cargo.toml", section = "dependencies", dependency = "yazi-binding", truth = "unused", note = "no occurrence in the package" },
   { manifest = "yazi-plugin/Cargo.toml", section = "dependencies", dependency = "reqwest", truth = "unused", note = "no occurrence in the package" },
   { manifest = "yazi-plugin/Cargo.toml", section = "dependencies", dependency = "scopeguard", truth = "unused", note = "no occurrence in the package" },
+  { manifest = "yazi-fm/Cargo.toml", section = "dependencies", dependency = "yazi-watcher", truth = "unused", note = "never referenced; the workspace crate whose macro mentions it is not used here (2026-11-15)" },
 ]
 
 [[repository]]
@@ -572,6 +595,8 @@ labels = [
   { manifest = "zellij-server/Cargo.toml", section = "dependencies", dependency = "byteorder", truth = "unused", note = "no occurrence in the package" },
   { manifest = "zellij-tile/Cargo.toml", section = "dependencies", dependency = "strum", truth = "unused", note = "no occurrence in the package" },
   { manifest = "zellij-tile/Cargo.toml", section = "dependencies", dependency = "strum_macros", truth = "unused", note = "no occurrence in the package" },
+  { manifest = "default-plugins/bars/Cargo.toml", section = "dev-dependencies", dependency = "insta", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
+  { manifest = "zellij-client/Cargo.toml", section = "dev-dependencies", dependency = "insta", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
 ]
 
 # Third held-out set (2026-11-12), labelled before any rule change.
@@ -594,6 +619,8 @@ labels = [
   { manifest = "pingora/Cargo.toml", section = "dev-dependencies", dependency = "http-body-util", truth = "unused", note = "no occurrence in the package" },
   { manifest = "pingora-timeout/Cargo.toml", section = "dev-dependencies", dependency = "bencher", truth = "unused", note = "no occurrence in the package" },
   { manifest = "tinyufo/Cargo.toml", section = "dev-dependencies", dependency = "triomphe", truth = "unused", note = "no occurrence in the package" },
+  { manifest = "pingora-openssl/Cargo.toml", section = "dev-dependencies", dependency = "tokio-test", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
+  { manifest = "pingora-boringssl/Cargo.toml", section = "dev-dependencies", dependency = "tokio-test", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
 ]
 
 [[repository]]
@@ -668,6 +695,10 @@ labels = [
   { manifest = "leptos_server/Cargo.toml", section = "dependencies", dependency = "send_wrapper", truth = "unused", note = "no occurrence in the package; was hidden by counting inner path segments as crates (labelled after the first-segment fix)" },
   { manifest = "reactive_stores/Cargo.toml", section = "dependencies", dependency = "send_wrapper", truth = "unused", note = "no occurrence in the package; was hidden by counting inner path segments as crates (labelled after the first-segment fix)" },
   { manifest = "integrations/utils/Cargo.toml", section = "dependencies", dependency = "reactive_graph", truth = "unused", note = "no occurrence in the package; was hidden by counting inner path segments as crates (labelled after the first-segment fix)" },
+  { manifest = "leptos/Cargo.toml", section = "dev-dependencies", dependency = "tokio-test", truth = "unused", note = "never referenced in the package's code, library name checked (2026-11-15)" },
+  { manifest = "leptos_macro/Cargo.toml", section = "dev-dependencies", dependency = "typed-builder", truth = "unused", note = "never referenced in the package's code, library name checked (2026-11-15)" },
+  { manifest = "reactive_stores/Cargo.toml", section = "dev-dependencies", dependency = "tokio-test", truth = "unused", note = "never referenced in the package's code, library name checked (2026-11-15)" },
+  { manifest = "tachys/Cargo.toml", section = "dev-dependencies", dependency = "tokio-test", truth = "unused", note = "never referenced in the package's code, library name checked (2026-11-15)" },
 ]
 
 [[repository]]
@@ -685,6 +716,7 @@ labels = [
   { manifest = "connect-tests/Cargo.toml", section = "dev-dependencies", dependency = "ring", truth = "unused", note = "no occurrence in the package" },
   { manifest = "rustls/Cargo.toml", section = "dev-dependencies", dependency = "bencher", truth = "unused", note = "no occurrence in the package" },
   { manifest = "rustls-aws-lc-rs/Cargo.toml", section = "dev-dependencies", dependency = "bencher", truth = "unused", note = "no occurrence in the package" },
+  { manifest = "rustls/Cargo.toml", section = "dev-dependencies", dependency = "rustls-test", truth = "unused", note = "never referenced in the package's code, library name checked (2026-11-15)" },
 ]
 
 [[repository]]
@@ -701,6 +733,9 @@ name = "tokio-rs/tokio"
 url = "https://github.com/tokio-rs/tokio"
 commit = "ab0814fc8c62b3d8be40aad068e2fed6562cfeb0"
 set = "held-out-3"
+labels = [
+  { manifest = "examples/Cargo.toml", section = "dev-dependencies", dependency = "serde", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
+]
 
 [[repository]]
 name = "typst/typst"
@@ -717,6 +752,7 @@ labels = [
   { manifest = "crates/typst-layout/Cargo.toml", section = "dependencies", dependency = "memchr", truth = "unused", note = "no occurrence in the package" },
   { manifest = "crates/typst-pdf/Cargo.toml", section = "dependencies", dependency = "typst-assets", truth = "unused", note = "no occurrence in the package" },
   { manifest = "tests/Cargo.toml", section = "dependencies", dependency = "serde_yaml", truth = "unused", note = "no occurrence in the package" },
+  { manifest = "crates/typst-ide/Cargo.toml", section = "dev-dependencies", dependency = "once_cell", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
 ]
 
 [[repository]]
@@ -742,4 +778,7 @@ labels = [
   { manifest = "examples/wasi_ssr_module/Cargo.toml", section = "dependencies", dependency = "bytes", truth = "unused", note = "no occurrence in the package" },
   { manifest = "examples/wasi_ssr_module/Cargo.toml", section = "dependencies", dependency = "lazy_static", truth = "unused", note = "no occurrence in the package" },
   { manifest = "examples/wasi_ssr_module/Cargo.toml", section = "dependencies", dependency = "serde_json", truth = "unused", note = "no occurrence in the package" },
+  { manifest = "packages/yew-agent-macro/Cargo.toml", section = "dev-dependencies", dependency = "rustversion", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
+  { manifest = "packages/yew-agent-macro/Cargo.toml", section = "dev-dependencies", dependency = "trybuild", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
+  { manifest = "packages/yew-agent-macro/Cargo.toml", section = "dev-dependencies", dependency = "yew-agent", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
 ]
