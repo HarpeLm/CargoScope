@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use cargoscope_core::policy::{Ban, Policy, UnknownLicense};
+use cargoscope_core::policy::{Ban, FeatureBan, Policy, UnknownLicense};
 
 /// File name, looked up in the scanned directory.
 pub const FILE_NAME: &str = "cargoscope.toml";
@@ -232,7 +232,12 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
         check_keys(
             bans,
             "bans",
-            &["deny", "multiple-versions", "skip-multiple-versions"],
+            &[
+                "deny",
+                "features",
+                "multiple-versions",
+                "skip-multiple-versions",
+            ],
         )?;
         policy.deny_multiple_versions =
             match bans.get("multiple-versions").map(|value| value.as_str()) {
@@ -280,9 +285,70 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
                 wrappers,
             });
         }
+        policy.feature_bans = parse_feature_bans(bans)?;
     }
 
     Ok(Some(policy))
+}
+
+fn parse_feature_bans(bans: &toml::Table) -> Result<Vec<FeatureBan>, String> {
+    let entries = match bans.get("features") {
+        None => return Ok(Vec::new()),
+        Some(toml::Value::Array(entries)) => entries,
+        Some(_) => return Err("[bans] features must be an array of tables".to_owned()),
+    };
+    let mut parsed = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let entry = entry.as_table().ok_or(
+            "[bans] features entries must be tables such as { name = \"...\", deny = [\"...\"], reason = \"...\" }",
+        )?;
+        check_keys(
+            entry,
+            "bans.features",
+            &["name", "version", "allow", "deny", "exact", "reason"],
+        )?;
+        let field = |key: &str| {
+            entry
+                .get(key)
+                .and_then(toml::Value::as_str)
+                .map(str::to_owned)
+        };
+        let name = field("name").ok_or("[bans] features entries need a `name`")?;
+        let reason = field("reason")
+            .filter(|reason| !reason.trim().is_empty())
+            .ok_or_else(|| format!("[bans] features for `{name}` needs a non-empty `reason`"))?;
+        let version = field("version");
+        if let Some(requirement) = &version {
+            semver::VersionReq::parse(requirement).map_err(|error| {
+                format!("[bans] features for `{name}` version `{requirement}`: {error}")
+            })?;
+        }
+        let allow = strings(entry, "allow", "bans.features")?;
+        let deny = strings(entry, "deny", "bans.features")?;
+        let exact = match entry.get("exact") {
+            None => false,
+            Some(toml::Value::Boolean(value)) => *value,
+            Some(_) => {
+                return Err(format!(
+                    "[bans] features for `{name}`: `exact` must be true or false"
+                ));
+            }
+        };
+        if allow.is_empty() && deny.is_empty() && !exact {
+            return Err(format!(
+                "[bans] features for `{name}` must set `deny`, `allow`, or `exact = true`"
+            ));
+        }
+        parsed.push(FeatureBan {
+            name,
+            version,
+            allow,
+            deny,
+            exact,
+            reason,
+        });
+    }
+    Ok(parsed)
 }
 
 /// One `{ name, version, reason, ... }` table of a crate list.
@@ -680,5 +746,47 @@ mod tests {
         );
         assert!(parse_policy("[licenses]\nallow = [\"MIT OR\"]\n").is_err());
         assert_eq!(parse_policy(""), Ok(None));
+    }
+
+    #[test]
+    fn parses_feature_bans_and_rejects_invalid_entries() {
+        let policy = parse_policy(
+            r#"
+            [bans]
+            features = [
+              { name = "derive_more", deny = ["error"], reason = "small errors" },
+              { name = "getrandom", version = "^0.2", allow = ["std"], exact = true, reason = "exact std" },
+            ]
+            "#,
+        )
+        .expect("valid")
+        .expect("policy");
+        assert_eq!(policy.feature_bans.len(), 2);
+        assert_eq!(policy.feature_bans[0].name, "derive_more");
+        assert_eq!(policy.feature_bans[0].deny, vec!["error"]);
+        assert!(!policy.feature_bans[0].exact);
+        assert_eq!(policy.feature_bans[1].version.as_deref(), Some("^0.2"));
+        assert_eq!(policy.feature_bans[1].allow, vec!["std"]);
+        assert!(policy.feature_bans[1].exact);
+
+        let error = |text: &str| parse_policy(text).expect_err("invalid");
+        assert!(
+            error("[bans]\nfeatures = [{ name = \"a\", deny = [\"x\"] }]\n")
+                .contains("needs a non-empty `reason`")
+        );
+        assert!(
+            error("[bans]\nfeatures = [{ name = \"a\", reason = \"r\" }]\n")
+                .contains("must set `deny`, `allow`, or `exact = true`")
+        );
+        assert!(
+            error("[bans]\nfeatures = [{ name = \"a\", exact = \"yes\", reason = \"r\" }]\n")
+                .contains("must be true or false")
+        );
+        assert!(
+            error(
+                "[bans]\nfeatures = [{ name = \"a\", deny = [\"x\"], extra = 1, reason = \"r\" }]\n"
+            )
+            .contains("unknown key `extra`")
+        );
     }
 }

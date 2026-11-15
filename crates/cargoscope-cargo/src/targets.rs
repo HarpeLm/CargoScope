@@ -11,53 +11,89 @@
 //! (`--no-default-features` gives the same graph) and keeps optional
 //! dependencies that no build uses.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use cargoscope_core::policy::{ActivePackages, Features};
+use cargoscope_core::policy::{ActivePackages, EnabledFeatures, Features};
+
+/// Names, versions and enabled features of `cargo tree --prefix none
+/// --format "{p} [{f}]"` output (one `name vVERSION (source) [features]` per
+/// line, with `(*)` on repeated ones and section headers such as
+/// `[dev-dependencies]` skipped; lines without `[features]` are still read).
+#[must_use]
+pub fn parse_tree_features(output: &str) -> (ActivePackages, EnabledFeatures) {
+    let mut packages = BTreeSet::new();
+    let mut features: EnabledFeatures = BTreeMap::new();
+    for line in output.lines() {
+        let mut words = line.split_whitespace();
+        let Some(name) = words.next() else {
+            continue;
+        };
+        let Some(version) = words.next().and_then(|word| word.strip_prefix('v')) else {
+            continue;
+        };
+        if name.starts_with('[') || semver::Version::parse(version).is_err() {
+            continue;
+        }
+        let key = (name.to_owned(), version.to_owned());
+        packages.insert(key.clone());
+        let entry = features.entry(key).or_default();
+        let trimmed = line.trim_end();
+        let without_repeat = trimmed.strip_suffix("(*)").map_or(trimmed, str::trim_end);
+        if let Some(body) = without_repeat.strip_suffix(']')
+            && let Some(open) = body.rfind('[')
+        {
+            for feature in body[open + 1..]
+                .split(',')
+                .map(str::trim)
+                .filter(|feature| !feature.is_empty())
+            {
+                entry.insert(feature.to_owned());
+            }
+        }
+    }
+    (packages, features)
+}
 
 /// Names and versions of the packages of `cargo tree --prefix none --format
 /// {p}` output: one `name vVERSION (source)` per line, with `(*)` on repeated
 /// ones and headers such as `[dev-dependencies]` skipped.
 #[must_use]
-pub fn parse_tree(output: &str) -> BTreeSet<(String, String)> {
-    output
-        .lines()
-        .filter_map(|line| {
-            let mut words = line.split_whitespace();
-            let name = words.next()?;
-            let version = words.next()?.strip_prefix('v')?;
-            (!name.starts_with('[') && semver::Version::parse(version).is_ok())
-                .then(|| (name.to_owned(), version.to_owned()))
-        })
-        .collect()
+pub fn parse_tree(output: &str) -> ActivePackages {
+    parse_tree_features(output).0
 }
 
 /// The `cargo tree` arguments for `targets` (every platform when empty),
-/// `features` (Cargo's defaults when `None`) and `exclude_dev`.
+/// `features` (Cargo's defaults when `None`), `exclude_dev`,
+/// `excluded_members`, and whether to root only at the root `[package]`
+/// (`root_package_only`, unless `--exclude` requires `--workspace`).
 #[must_use]
 pub fn tree_args(
     targets: &[String],
     features: Option<&Features>,
     exclude_dev: bool,
     excluded_members: &[String],
+    root_package_only: bool,
 ) -> Vec<String> {
-    let mut args: Vec<String> = [
-        "tree",
-        "--workspace",
-        "--locked",
-        "--color",
-        "never",
-        "--prefix",
-        "none",
-        "--format",
-        "{p}",
-        "--edges",
-    ]
-    .iter()
-    .map(|arg| (*arg).to_owned())
-    .collect();
+    let mut args = vec!["tree".to_owned()];
+    if !root_package_only || !excluded_members.is_empty() {
+        args.push("--workspace".to_owned());
+    }
+    args.extend(
+        [
+            "--locked",
+            "--color",
+            "never",
+            "--prefix",
+            "none",
+            "--format",
+            "{p} [{f}]",
+            "--edges",
+        ]
+        .iter()
+        .map(|arg| (*arg).to_owned()),
+    );
     args.push(
         if exclude_dev {
             "normal,build"
@@ -141,11 +177,18 @@ pub fn active_packages(
     features: Option<&Features>,
     exclude_dev: bool,
     excluded_members: &[String],
-) -> Result<ActivePackages, String> {
+    root_package_only: bool,
+) -> Result<(ActivePackages, EnabledFeatures), String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let output = Command::new(&cargo)
         .current_dir(root)
-        .args(tree_args(targets, features, exclude_dev, excluded_members))
+        .args(tree_args(
+            targets,
+            features,
+            exclude_dev,
+            excluded_members,
+            root_package_only,
+        ))
         .stdin(Stdio::null())
         .output()
         .map_err(|error| format!("could not run cargo: {error}"))?;
@@ -159,22 +202,24 @@ pub fn active_packages(
             .unwrap_or("cargo tree failed");
         return Err(format!("`cargo tree`: {why}"));
     }
-    let packages = parse_tree(&String::from_utf8_lossy(&output.stdout));
+    let (packages, enabled_features) =
+        parse_tree_features(&String::from_utf8_lossy(&output.stdout));
     if packages.is_empty() {
         return Err("`cargo tree` listed no package".to_owned());
     }
-    Ok(packages)
+    Ok((packages, enabled_features))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_tree, tree_args};
+    use super::{parse_tree, parse_tree_features, tree_args};
     use cargoscope_core::policy::Features;
 
     #[test]
     fn reads_the_packages_of_cargo_tree_output() {
-        let output = "app v0.1.0 (/work/app)\nserde v1.0.210\nserde_derive v1.0.210 (proc-macro)\nserde v1.0.210 (*)\n\n[dev-dependencies]\nwasi v0.11.0+wasi-snapshot-preview1\nforked v0.1.0 (https://github.com/x/forked?rev=abc#abc)\n";
-        let found: Vec<(String, String)> = parse_tree(output).into_iter().collect();
+        let output = "app v0.1.0 (/work/app) []\nserde v1.0.210 [alloc,default,derive,std]\nserde_derive v1.0.210 (proc-macro) [default]\nserde v1.0.210 [alloc,default,derive,std] (*)\n\n[dev-dependencies]\nwasi v0.11.0+wasi-snapshot-preview1\nforked v0.1.0 (https://github.com/x/forked?rev=abc#abc) [extra]\n";
+        let (packages, features) = parse_tree_features(output);
+        let found: Vec<(String, String)> = packages.into_iter().collect();
         let names: Vec<&str> = found.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(
             names,
@@ -184,6 +229,21 @@ mod tests {
             "wasi".to_owned(),
             "0.11.0+wasi-snapshot-preview1".to_owned()
         )));
+        assert_eq!(
+            features[&("serde".to_owned(), "1.0.210".to_owned())]
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["alloc", "default", "derive", "std"]
+        );
+        assert!(features[&("app".to_owned(), "0.1.0".to_owned())].is_empty());
+        assert_eq!(
+            features[&("forked".to_owned(), "0.1.0".to_owned())]
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["extra"]
+        );
         assert!(parse_tree("error: something\n").is_empty());
     }
 
@@ -191,12 +251,17 @@ mod tests {
     fn builds_the_cargo_tree_arguments() {
         let joined = |args: Vec<String>| args.join(" ");
         assert!(
-            joined(tree_args(&[], None, false, &[]))
-                .ends_with("--edges normal,build,dev --target all")
+            joined(tree_args(&[], None, false, &[], false))
+                .ends_with("--format {p} [{f}] --edges normal,build,dev --target all")
         );
         assert!(
-            joined(tree_args(&[], None, false, &["xtask".to_owned()]))
+            joined(tree_args(&[], None, false, &["xtask".to_owned()], false))
                 .ends_with("--target all --exclude xtask")
+        );
+        let root_only = joined(tree_args(&[], None, false, &[], true));
+        assert!(
+            root_only.starts_with("tree --locked") && !root_only.contains("--workspace"),
+            "{root_only}"
         );
         let metadata = serde_json::json!({"packages": [
             {"name": "app", "publish": null},
@@ -217,6 +282,7 @@ mod tests {
             Some(&features),
             true,
             &[],
+            false,
         ));
         assert!(args.starts_with("tree --workspace --locked"), "{args}");
         assert!(args.ends_with("--edges normal,build --target x86_64-unknown-linux-gnu --target aarch64-apple-darwin --no-default-features --features tls"), "{args}");

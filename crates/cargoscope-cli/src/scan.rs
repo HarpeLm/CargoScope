@@ -311,11 +311,18 @@ fn check_policy(
         warnings.push("license rules of the policy were skipped: no crates.io data".to_owned());
     }
     warnings.extend(policy.unused_license_entries(inventory));
-    // `[graph]`: only the packages that build uses are checked.
+    // `[graph]` and `[bans] features`: limit rules or collect enabled features.
     let graph_set = !policy.targets.is_empty()
         || policy.features.is_some()
         || policy.exclude_dev
-        || policy.exclude_unpublished;
+        || policy.exclude_unpublished
+        || policy.root_package_only;
+    let checks_duplicates =
+        policy.deny_multiple_versions || !policy.deny_multiple_versions_of.is_empty();
+    let needs_non_dev = ((policy.duplicates_exclude_dev && checks_duplicates)
+        || (policy.licenses_exclude_dev && policy.check_licenses))
+        && !policy.exclude_dev;
+    let needs_features = !policy.feature_bans.is_empty();
     let failed = |error: String| {
         eprintln!(
             "CargoScope could not limit the policy to its [graph]: {error}. Check the target and feature names and run `cargo fetch` first, or remove them from [graph]."
@@ -334,16 +341,21 @@ fn check_policy(
             policy.features.as_ref(),
             exclude_dev,
             &excluded,
+            policy.root_package_only,
         )
     };
-    let active = if graph_set {
-        Some(graph(policy.exclude_dev).map_err(failed)?)
+    let (active, enabled_features) = if graph_set || needs_features {
+        let (packages, features) = graph(policy.exclude_dev).map_err(failed)?;
+        (
+            graph_set.then_some(packages),
+            needs_features.then_some(features),
+        )
     } else {
-        None
+        (None, None)
     };
-    // Duplicates may leave out the dev-dependencies (as cargo-deny does).
-    let duplicates_active = if policy.duplicates_exclude_dev && !policy.exclude_dev {
-        Some(graph(true).map_err(failed)?)
+    // Duplicates and licenses may leave out dev-dependencies (as cargo-deny does).
+    let non_dev_active = if needs_non_dev {
+        Some(graph(true).map_err(failed)?.0)
     } else {
         active.clone()
     };
@@ -352,7 +364,8 @@ fn check_policy(
         package_info,
         registry_date.is_some(),
         active.as_ref(),
-        duplicates_active.as_ref(),
+        non_dev_active.as_ref(),
+        enabled_features.as_ref(),
     ))
 }
 

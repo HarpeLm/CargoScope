@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use cargoscope_core::policy::{
-    Ban, Features, LicenseClarification, LicenseException, Policy, UnknownLicense,
+    Ban, FeatureBan, Features, LicenseClarification, LicenseException, Policy, UnknownLicense,
 };
 
 use crate::config::AdvisoryIgnore;
@@ -57,14 +57,24 @@ pub fn load(project_root: &Path) -> Result<Option<Translation>, String> {
     };
     let text =
         std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let (policy, ignores, notes) =
+    let (mut policy, ignores, notes) =
         translate(&text).map_err(|error| format!("{}: {error}", path.display()))?;
+    if let Some(policy) = &mut policy {
+        policy.root_package_only = has_root_package(project_root);
+    }
     Ok(Some(Translation {
         path,
         policy,
         ignores,
         notes,
     }))
+}
+
+fn has_root_package(project_root: &Path) -> bool {
+    std::fs::read_to_string(project_root.join("Cargo.toml"))
+        .ok()
+        .and_then(|text| toml::from_str::<toml::Table>(&text).ok())
+        .is_some_and(|table| table.contains_key("package"))
 }
 
 /// A crate named by cargo-deny: `"name"`, `"name@version"`, `"name:req"`,
@@ -218,6 +228,9 @@ pub fn translate(text: &str) -> Result<Translated, String> {
         has_rules = true;
         policy.check_licenses = true;
         policy.unknown_license = UnknownLicense::Deny;
+        // cargo-deny leaves licenses of dev-dependencies out by default.
+        policy.licenses_exclude_dev =
+            licenses.get("include-dev").and_then(toml::Value::as_bool) != Some(true);
         let valid = |license: &String, notes: &mut Vec<String>| {
             let ok = cargoscope_core::license::parse(license).is_ok();
             if !ok {
@@ -305,6 +318,7 @@ pub fn translate(text: &str) -> Result<Translated, String> {
                 "exceptions",
                 "clarify",
                 "version",
+                "include-dev",
                 "unused-allowed-license",
             ],
         );
@@ -377,12 +391,37 @@ pub fn translate(text: &str) -> Result<Translated, String> {
                 crate_spec(entry).map(|(name, _)| (name, depth))
             })
             .collect();
+        for entry in bans
+            .get("features")
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some((name, version)) = crate_spec(entry) else {
+                continue;
+            };
+            let Some(entry_table) = entry.as_table() else {
+                continue;
+            };
+            policy.feature_bans.push(FeatureBan {
+                name,
+                version,
+                allow: strings(entry_table, "allow"),
+                deny: strings(entry_table, "deny"),
+                exact: entry_table
+                    .get("exact")
+                    .and_then(toml::Value::as_bool)
+                    .unwrap_or(false),
+                reason: reason(entry),
+            });
+        }
         unsupported(
             &mut notes,
             "bans",
             bans,
             &[
                 "deny",
+                "features",
                 "multiple-versions",
                 "skip",
                 "skip-tree",
@@ -536,6 +575,8 @@ multiple-versions = "deny"
 deny = ["openssl", { crate = "git2@0.18", reason = "use gix", wrappers = ["tool"] }, { name = "ahash", deny-multiple-versions = true }]
 skip = [{ crate = "windows-sys@0.45", reason = "old" }]
 skip-tree = ["criterion"]
+features = [{ crate = "derive_more", deny = ["error"], allow = ["default"], exact = true }]
+workspace-default-features = "deny"
 
 [sources]
 unknown-registry = "deny"
@@ -594,9 +635,62 @@ github = ["myorg"]
         );
         assert!(policy.features.is_some(), "default features, as cargo-deny");
         assert!(
+            policy.licenses_exclude_dev,
+            "include-dev defaults to false in cargo-deny"
+        );
+        assert_eq!(policy.feature_bans.len(), 1);
+        assert_eq!(policy.feature_bans[0].name, "derive_more");
+        assert_eq!(policy.feature_bans[0].deny, vec!["error"]);
+        assert_eq!(policy.feature_bans[0].allow, vec!["default"]);
+        assert!(policy.feature_bans[0].exact);
+        assert_eq!(policy.feature_bans[0].reason, "from deny.toml");
+        assert!(
+            notes.contains("[bans] workspace-default-features not supported"),
+            "{notes}"
+        );
+        assert!(
             notes.contains("[advisories] unmaintained not supported"),
             "{notes}"
         );
+    }
+
+    #[test]
+    fn licenses_include_dev_and_root_package_only() {
+        let (policy, _, _) =
+            translate("[licenses]\nallow = [\"MIT\"]\ninclude-dev = true\n").expect("valid");
+        let policy = policy.expect("policy");
+        assert!(!policy.licenses_exclude_dev);
+
+        let dir = std::env::temp_dir().join(format!("cargoscope-deny-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(
+            dir.join("deny.toml"),
+            "[bans]\nmultiple-versions = \"deny\"\n",
+        )
+        .expect("deny.toml");
+
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[workspace]\nmembers = [\"other\"]\n",
+        )
+        .expect("Cargo.toml");
+        let loaded = super::load(&dir)
+            .expect("load")
+            .expect("translation")
+            .policy
+            .expect("policy");
+        assert!(loaded.root_package_only);
+
+        std::fs::write(dir.join("Cargo.toml"), "[workspace]\nmembers = [\"a\"]\n")
+            .expect("virtual Cargo.toml");
+        let loaded = super::load(&dir)
+            .expect("load")
+            .expect("translation")
+            .policy
+            .expect("policy");
+        assert!(!loaded.root_package_only);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

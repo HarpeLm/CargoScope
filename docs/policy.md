@@ -44,6 +44,11 @@ deny = [
   { name = "openssl", reason = "use rustls" },
   { name = "time", version = "<0.2.23", reason = "RUSTSEC-2020-0071" },
 ]
+# Feature constraints for a crate (`allow`, `deny`, `exact`, optional `version` and `reason`).
+features = [
+  { name = "getrandom", version = "^0.2", allow = ["std", "js"], exact = true, reason = "wasm needs js" },
+  { name = "derive_more", deny = ["error"], reason = "keep errors minimal" },
+]
 # "deny" makes every crate resolved in several versions a violation
 # (default "allow": they are only listed in the report).
 multiple-versions = "deny"
@@ -74,14 +79,14 @@ A project that already uses cargo-deny needs no `cargoscope.toml`: when there is
 | deny.toml | CargoScope |
 |---|---|
 | `[graph] targets` (strings or `{ triple }`), `features`, `all-features`, `no-default-features`, `exclude-dev`, `exclude-unpublished` (default: default features, as cargo-deny) | the same `[graph]` keys |
-| `[licenses] allow`, `exceptions`, `clarify` | the same, with `crate = "name"`, `"name@version"` or `name`/`version`; a missing reason becomes "from deny.toml" |
-| `[bans] deny` (with `wrappers`; `deny-multiple-versions` on a crate), `multiple-versions = "deny"`, `skip`, `skip-tree`, `multiple-versions-include-dev` | bans with wrappers, duplicate rules per crate, `skip-multiple-versions`, skipped trees; duplicates of dev-dependencies left out unless `multiple-versions-include-dev = true` |
+| `[licenses] allow`, `exceptions`, `clarify`, `include-dev` | the same (`include-dev` defaults to `false`, leaving dev-only dependencies out of license checks unless `true`), with `crate = "name"`, `"name@version"` or `name`/`version`; a missing reason becomes "from deny.toml" |
+| `[bans] deny` (with `wrappers`; `deny-multiple-versions` on a crate), `features`, `multiple-versions = "deny"`, `skip`, `skip-tree`, `multiple-versions-include-dev` | bans with wrappers, feature rules (`allow`, `deny`, `exact`), duplicate rules per crate (ignoring `semver-trick` self-dependencies), `skip-multiple-versions`, skipped trees; duplicates of dev-dependencies left out unless `multiple-versions-include-dev = true` |
 | `[sources] unknown-registry`/`unknown-git = "deny"`, `allow-registry`, `allow-git`, `allow-org` | `allow-registries`, `allow-git` (an organisation becomes its URL prefix) |
 | `[advisories] ignore` (IDs or `{ id, reason }`) | `[advisories] ignore` |
 
-What has no equivalent is listed in the report's warnings, never dropped in silence: for example `confidence-threshold`, the hashes of `license-files` (a clarification is not tied to the license files), feature bans, build-script rules (`[bans] build`), `"warn"` levels (a duplicate or a source at `"warn"` is shown but does not fail), and advisory settings such as `unmaintained`. The reading is tolerant: an unknown key is a note, not an error, unlike in `cargoscope.toml`.
+When reading `deny.toml` on a manifest with a root `[package]`, CargoScope also follows cargo-deny's default of rooting the dependency graph at that root package instead of adding `--workspace` (unless exclusions are configured). What has no equivalent is listed in the report's warnings, never dropped in silence: for example `confidence-threshold`, the hashes of `license-files` (a clarification is not tied to the license files), build-script rules (`[bans] build`), `"warn"` levels (a duplicate or a source at `"warn"` is shown but does not fail), and advisory settings such as `unmaintained`. The reading is tolerant: an unknown key is a note, not an error, unlike in `cargoscope.toml`.
 
-On 28 repositories with their own `deny.toml`, CargoScope gives exactly cargo-deny's result in 22; in 5 others it is slightly stricter, and in one cargo-deny applies a build-script rule CargoScope lacks: see [tests/corpus/deny-toml.md](../tests/corpus/deny-toml.md).
+On the original 28-repository comparison against cargo-deny 0.20.2, CargoScope now matches on 27 of 28 repositories with 0 CargoScope-only violations (eliminating all 6 extra crates from commit `834f525`), and on 30 of 34 valid repositories across the expanded corpora (the remaining gap being `[bans] build` on 3 `taiki-e` repositories and 1 workspace feature-unification quirk in `tower-http`): see [tests/corpus/deny-toml.md](../tests/corpus/deny-toml.md).
 
 ## Ignoring an advisory
 
@@ -116,4 +121,4 @@ A file with only `[advisories]` defines no policy.
 
 ## Compared with cargo-deny
 
-This covers the license, source and ban checks most projects use, limited to the build you care about with `[graph]` (targets, features, dev-dependencies). cargo-deny has more: license clarifications pinned to the hash of the license files, duplicate rules per version or with wrappers, feature bans, and advisory configuration. Use it when you need those; CargoScope reads your `deny.toml` meanwhile.
+This covers the license, source and ban checks most projects use, limited to the build you care about with `[graph]` (targets, features, dev-dependencies). cargo-deny has more: license clarifications pinned to the hash of the license files, duplicate rules per version or with wrappers, build-script rules, and advisory configuration. Use it when you need those; CargoScope reads your `deny.toml` meanwhile.

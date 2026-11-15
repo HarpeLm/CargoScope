@@ -1579,6 +1579,95 @@ allow-git = ["https://github.com/myorg/"]
 }
 
 #[test]
+fn bans_features_report_banned_unallowed_and_missing_features() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-feat-bans-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    copy_dir(&fixture("policy"), &dir);
+    std::fs::remove_file(dir.join("cargoscope.toml")).expect("remove");
+    std::fs::write(
+        dir.join("deny.toml"),
+        "[[bans.features]]\ncrate = \"serde\"\ndeny = [\"std\"]\nallow = [\"default\"]\nexact = true\n",
+    )
+    .expect("write deny.toml");
+
+    let fake_src = dir.join("fake_cargo.rs");
+    let fake_bin = dir.join(format!("fake-cargo{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(
+        &fake_src,
+        r##"fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    assert!(args.windows(2).any(|w| w[0] == "--format" && w[1] == "{p} [{f}]"), "{args:?}");
+    let feats = std::env::var("FAKE_SERDE_FEATURES").unwrap_or_else(|_| "std".to_owned());
+    println!("policy-demo v0.1.0 (/work) []\nserde_json v1.0.128 [default]\nserde v1.0.210 [{feats}]\nitoa v1.0.11 []\nforked v0.1.0 (https://github.com/someone/forked?rev=abc#abc) []");
+}
+"##,
+    )
+    .expect("write fake cargo");
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let compiled = Command::new(rustc)
+        .arg(&fake_src)
+        .arg("-o")
+        .arg(&fake_bin)
+        .output()
+        .expect("rustc runs");
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+
+    let run = |feats: &str| {
+        Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+            .env("CARGO_HOME", fixture("empty-cargo-home"))
+            .env("CARGO", &fake_bin)
+            .env("FAKE_SERDE_FEATURES", feats)
+            .args(["scan", "--checks", "inventory,policy", "--fail-on", "none"])
+            .arg(&dir)
+            .output()
+            .expect("cargoscope binary runs")
+    };
+
+    // With `std` enabled and `default` missing: banned `std` + exact missing `default`.
+    let bad = stdout(&run("std"));
+    assert!(
+        bad.contains("- [ban] serde 1.0.210: feature `std` is banned: from deny.toml"),
+        "{bad}"
+    );
+    assert!(
+        bad.contains("- [ban] serde 1.0.210: exact feature set required, missing feature `default`: from deny.toml"),
+        "{bad}"
+    );
+
+    // With an unexpected feature `alloc` and `default` enabled: unallowed `alloc`.
+    let extra = stdout(&run("alloc,default"));
+    assert!(
+        extra.contains(
+            "- [ban] serde 1.0.210: feature `alloc` is not in the allow list: from deny.toml"
+        ),
+        "{extra}"
+    );
+
+    // With exactly `default`: passes with 0 violations, even via cargoscope.toml.
+    let ok = stdout(&run("default"));
+    assert!(ok.contains("Policy violations: 0"), "{ok}");
+
+    std::fs::write(
+        dir.join("cargoscope.toml"),
+        "[bans]\nfeatures = [{ name = \"serde\", deny = [\"std\"], reason = \"no_std only\" }]\n",
+    )
+    .expect("write cargoscope.toml");
+    let blocked = stdout(&run("default,std"));
+    assert!(
+        blocked.contains("- [ban] serde 1.0.210: feature `std` is banned: no_std only"),
+        "{blocked}"
+    );
+    assert!(stdout(&run("default")).contains("Policy violations: 0"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn why_shows_reverse_paths_dependents_and_pruning_weight() {
     let run = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_cargoscope"))

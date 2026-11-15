@@ -1,7 +1,7 @@
 //! Dependency policies (licenses, sources, banned crates), checked against
 //! an inventory. Configured in `cargoscope.toml` (see docs/policy.md).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{Inventory, PackageInfo, license};
 
@@ -33,6 +33,28 @@ pub struct Ban {
     /// Crates allowed to depend on it (cargo-deny's `wrappers`): the ban
     /// does not apply when every crate that depends on it is listed.
     pub wrappers: Vec<String>,
+}
+
+/// Enabled features of each `(name, version)` package in the active build graph.
+pub type EnabledFeatures = BTreeMap<(String, String), BTreeSet<String>>;
+
+/// Per-crate feature ban or allowlist (`[bans] features`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeatureBan {
+    /// Crate name.
+    pub name: String,
+    /// Optional version requirement; without one, every version.
+    pub version: Option<String>,
+    /// Allowed features; when non-empty (or when `exact` is true), any other
+    /// enabled feature is a violation.
+    pub allow: Vec<String>,
+    /// Banned features.
+    pub deny: Vec<String>,
+    /// Require the enabled features to match `allow` with nothing missing or
+    /// extra.
+    pub exact: bool,
+    /// Why these features are restricted.
+    pub reason: String,
 }
 
 /// Licenses allowed for one crate only (`[licenses] exceptions`).
@@ -123,6 +145,15 @@ pub struct Policy {
     /// `multiple-versions` (cargo-deny's `multiple-versions-include-dev`,
     /// off by default there). `cargoscope.toml` counts them.
     pub duplicates_exclude_dev: bool,
+    /// Whether licenses of packages pulled in only by dev-dependencies are
+    /// left out (cargo-deny's `[licenses] include-dev`, off by default there).
+    /// `cargoscope.toml` checks them.
+    pub licenses_exclude_dev: bool,
+    /// When the root `Cargo.toml` defines `[package]` alongside `[workspace]`,
+    /// cargo-deny checks only the root package's graph (not `--workspace`).
+    pub root_package_only: bool,
+    /// Per-crate feature bans and allowlists (`[bans] features`).
+    pub feature_bans: Vec<FeatureBan>,
     /// Features of the project (`[graph] features`, `all-features`,
     /// `no-default-features`) the rules are limited to; `None` checks the
     /// packages of every feature.
@@ -323,12 +354,61 @@ impl Policy {
         licenses_known: bool,
         active: Option<&ActivePackages>,
     ) -> Vec<Violation> {
-        self.check_graphs(inventory, info, licenses_known, active, active)
+        self.check_graphs(inventory, info, licenses_known, active, active, None)
     }
 
-    /// Like [`Policy::check_scoped`], with a separate set of packages for the
-    /// `multiple-versions` rule (`duplicates_active`, without the
-    /// dev-dependencies when `duplicates_exclude_dev`).
+    fn check_feature_bans(
+        &self,
+        package: &crate::Package,
+        pkg_features: &BTreeSet<String>,
+        push: &mut impl FnMut(Rule, String),
+    ) {
+        for ban in &self.feature_bans {
+            if ban.name != package.name
+                || !version_matches(ban.version.as_deref(), &package.version)
+            {
+                continue;
+            }
+            for denied in &ban.deny {
+                if pkg_features.contains(denied) {
+                    push(
+                        Rule::Ban,
+                        format!("feature `{denied}` is banned: {}", ban.reason),
+                    );
+                }
+            }
+            if !ban.allow.is_empty() || ban.exact {
+                for enabled in pkg_features {
+                    if !ban.deny.contains(enabled) && !ban.allow.contains(enabled) {
+                        push(
+                            Rule::Ban,
+                            format!(
+                                "feature `{enabled}` is not in the allow list: {}",
+                                ban.reason
+                            ),
+                        );
+                    }
+                }
+            }
+            if ban.exact {
+                for allowed in &ban.allow {
+                    if !pkg_features.contains(allowed) && !ban.deny.contains(allowed) {
+                        push(
+                            Rule::Ban,
+                            format!(
+                                "exact feature set required, missing feature `{allowed}`: {}",
+                                ban.reason
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Like [`Policy::check_scoped`], with a separate non-dev package set
+    /// (for `duplicates_exclude_dev` and `licenses_exclude_dev`) and enabled
+    /// package features (for `[bans] features`).
     #[must_use]
     pub fn check_graphs(
         &self,
@@ -336,7 +416,8 @@ impl Policy {
         info: &[PackageInfo],
         licenses_known: bool,
         active: Option<&ActivePackages>,
-        duplicates_active: Option<&ActivePackages>,
+        non_dev_active: Option<&ActivePackages>,
+        enabled_features: Option<&EnabledFeatures>,
     ) -> Vec<Violation> {
         let in_set = |set: Option<&ActivePackages>, index: usize| {
             set.is_none_or(|set| {
@@ -345,6 +426,17 @@ impl Policy {
             })
         };
         let is_active = |index: usize| in_set(active, index);
+        let licenses_set = if self.licenses_exclude_dev {
+            non_dev_active
+        } else {
+            active
+        };
+        let duplicates_set = if self.duplicates_exclude_dev {
+            non_dev_active
+        } else {
+            active
+        };
+        let empty_features = BTreeSet::new();
         let mut violations = Vec::new();
         for (index, package) in inventory.packages.iter().enumerate() {
             let Some(source) = package.source.as_deref() else {
@@ -377,17 +469,7 @@ impl Policy {
                         continue;
                     }
                 }
-                let matches = match &ban.version {
-                    None => true,
-                    Some(requirement) => match (
-                        semver::VersionReq::parse(requirement),
-                        semver::Version::parse(&package.version),
-                    ) {
-                        (Ok(requirement), Ok(version)) => requirement.matches(&version),
-                        _ => true,
-                    },
-                };
-                if matches {
+                if version_matches(ban.version.as_deref(), &package.version) {
                     let versions = ban
                         .version
                         .as_deref()
@@ -398,6 +480,13 @@ impl Policy {
                         format!("`{}`{versions} is banned: {}", ban.name, ban.reason),
                     );
                 }
+            }
+
+            if let Some(features_map) = enabled_features {
+                let pkg_features = features_map
+                    .get(&(package.name.clone(), package.version.clone()))
+                    .unwrap_or(&empty_features);
+                self.check_feature_bans(package, pkg_features, &mut push);
             }
 
             if let Some(allowed) = &self.allow_registries {
@@ -423,6 +512,7 @@ impl Policy {
 
             let clarified = self.clarification(&package.name, &package.version);
             if self.check_licenses
+                && in_set(licenses_set, index)
                 && (clarified.is_some() || (licenses_known && CRATES_IO.contains(&source)))
             {
                 // A clarification replaces the crate's license; exceptions
@@ -492,10 +582,30 @@ impl Policy {
                     continue;
                 }
                 // Only the versions a target builds count as duplicates.
-                let indices: Vec<usize> = indices
+                let mut indices: Vec<usize> = indices
                     .into_iter()
-                    .filter(|&i| in_set(duplicates_active, i))
+                    .filter(|&i| in_set(duplicates_set, i))
                     .collect();
+                if indices.len() > 1 {
+                    // Ignore a version whose only active dependents are other
+                    // versions of the same crate (semver trick), as cargo-deny does.
+                    indices.retain(|&i| {
+                        let mut has_dependent = false;
+                        let mut all_same_crate = true;
+                        for (parent_index, parent) in inventory.packages.iter().enumerate() {
+                            if in_set(duplicates_set, parent_index)
+                                && parent.dependencies.contains(&i)
+                            {
+                                has_dependent = true;
+                                if parent.name != *name {
+                                    all_same_crate = false;
+                                    break;
+                                }
+                            }
+                        }
+                        !(has_dependent && all_same_crate)
+                    });
+                }
                 let distinct: BTreeSet<&str> = indices
                     .iter()
                     .map(|&index| inventory.packages[index].version.as_str())
@@ -570,6 +680,55 @@ mod multiple_versions_tests {
         assert!(
             policy
                 .check_scoped(&inventory, &[], false, Some(&active))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn multiple_versions_ignores_semver_trick_reexport() {
+        let package = |name: &str, version: &str, root: bool, dependencies: Vec<usize>| Package {
+            name: name.to_owned(),
+            version: version.to_owned(),
+            source: (!root)
+                .then(|| "registry+https://github.com/rust-lang/crates.io-index".to_owned()),
+            root,
+            direct: false,
+            dependencies,
+        };
+        // app (0) -> ndk-sys (1) -> jni-sys 0.3.1 (2) -> jni-sys 0.4.1 (3),
+        // plus dev-only jni (4) -> jni-sys 0.4.1 (3).
+        let inventory = Inventory {
+            packages: vec![
+                package("app", "0.1.0", true, vec![1, 4]),
+                package("ndk-sys", "0.6.0", false, vec![2]),
+                package("jni-sys", "0.3.1", false, vec![3]),
+                package("jni-sys", "0.4.1", false, vec![]),
+                package("jni", "0.22.4", false, vec![3]),
+            ],
+        };
+        let mut policy = Policy {
+            deny_multiple_versions: true,
+            ..Default::default()
+        };
+
+        // With `jni` active, `jni-sys 0.4.1` has an external dependent -> duplicate reported.
+        assert_eq!(policy.check(&inventory, &[], false).len(), 1);
+
+        // When `jni` is excluded (`duplicates_exclude_dev = true`), `jni-sys 0.4.1` is
+        // only depended on by `jni-sys 0.3.1` -> ignored as a semver-trick reexport.
+        policy.duplicates_exclude_dev = true;
+        let non_dev: super::ActivePackages = [
+            ("app", "0.1.0"),
+            ("ndk-sys", "0.6.0"),
+            ("jni-sys", "0.3.1"),
+            ("jni-sys", "0.4.1"),
+        ]
+        .into_iter()
+        .map(|(n, v)| (n.to_owned(), v.to_owned()))
+        .collect();
+        assert!(
+            policy
+                .check_graphs(&inventory, &[], false, None, Some(&non_dev), None)
                 .is_empty()
         );
     }
@@ -778,5 +937,92 @@ mod tests {
 
         let nothing = policy().check_scoped(&inventory, &info, true, Some(&Default::default()));
         assert!(nothing.is_empty());
+    }
+
+    #[test]
+    fn feature_bans_enforce_deny_allow_and_exact() {
+        let inventory = Inventory {
+            packages: vec![
+                package("app", "0.1.0", None),
+                package("derive_more", "1.0.0", Some(CRATES_IO)),
+                package("getrandom", "0.2.15", Some(CRATES_IO)),
+            ],
+        };
+        let mut features = super::EnabledFeatures::new();
+        features.insert(
+            ("derive_more".to_owned(), "1.0.0".to_owned()),
+            ["default", "error", "from"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        );
+        features.insert(
+            ("getrandom".to_owned(), "0.2.15".to_owned()),
+            ["std"].into_iter().map(str::to_owned).collect(),
+        );
+
+        let policy = Policy {
+            feature_bans: vec![
+                super::FeatureBan {
+                    name: "derive_more".to_owned(),
+                    version: None,
+                    allow: vec!["default".to_owned()],
+                    deny: vec!["error".to_owned()],
+                    exact: false,
+                    reason: "keep errors minimal".to_owned(),
+                },
+                super::FeatureBan {
+                    name: "getrandom".to_owned(),
+                    version: Some("^0.2".to_owned()),
+                    allow: vec!["std".to_owned(), "js".to_owned()],
+                    deny: Vec::new(),
+                    exact: true,
+                    reason: "wasm needs js".to_owned(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let violations = policy.check_graphs(&inventory, &[], false, None, None, Some(&features));
+        assert_eq!(violations.len(), 3, "{violations:?}");
+        assert!(
+            violations
+                .iter()
+                .all(|violation| violation.rule == Rule::Ban)
+        );
+        assert!(violations[0].message.contains("feature `error` is banned"));
+        assert!(
+            violations[1]
+                .message
+                .contains("feature `from` is not in the allow list")
+        );
+        assert!(
+            violations[2]
+                .message
+                .contains("exact feature set required, missing feature `js`")
+        );
+    }
+
+    #[test]
+    fn licenses_exclude_dev_skips_dev_only_packages() {
+        let (inventory, info) = sample();
+        let non_dev: super::ActivePackages = [("good", "1.0.0")]
+            .into_iter()
+            .map(|(name, version)| (name.to_owned(), version.to_owned()))
+            .collect();
+        let policy = Policy {
+            check_licenses: true,
+            allow_licenses: vec!["MIT".to_owned()],
+            licenses_exclude_dev: true,
+            ..Default::default()
+        };
+
+        // `copyleft` and `mystery` are not in `non_dev`, so licenses_exclude_dev skips them;
+        // `good` (MIT) passes.
+        assert!(
+            policy
+                .check_graphs(&inventory, &info, true, None, Some(&non_dev), None)
+                .is_empty()
+        );
     }
 }
