@@ -275,7 +275,7 @@ Ignored advisories stay visible with their reason, but never fail the scan; in S
 
 ## Dependency Policy
 
-A `cargoscope.toml` next to `Cargo.toml` enforces allowed licenses (with per-crate exceptions and clarifications), allowed sources, banned crates and, optionally, a single version per crate, in the spirit of cargo-deny. With `[graph]` (`targets`, `features`, `all-features`, `no-default-features`, `exclude-dev`), the rules only apply to the packages that build uses. Violations fail the scan. See [docs/policy.md](docs/policy.md).
+Already using cargo-deny? Without a `cargoscope.toml`, CargoScope reads your `deny.toml` and lists what it cannot translate. A `cargoscope.toml` next to `Cargo.toml` enforces allowed licenses (with per-crate exceptions and clarifications), allowed sources, banned crates and, optionally, a single version per crate, in the spirit of cargo-deny. With `[graph]` (`targets`, `features`, `all-features`, `no-default-features`, `exclude-dev`), the rules only apply to the packages that build uses. Violations fail the scan. See [docs/policy.md](docs/policy.md).
 
 ## Compiler-Accurate Mode
 

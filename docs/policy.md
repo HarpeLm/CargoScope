@@ -67,6 +67,20 @@ How it works:
 - Advisories, unused dependencies, the package list and the "crates in several versions" listing still cover the whole lockfile. `[graph]` alone sets no rule.
 - On the 15 repositories of the [first blind benchmark](../tests/corpus/blind-benchmark.md), `[graph] exclude-dev = true` gives exactly the 4 license findings cargo-deny gives, against 8 for the whole lockfile.
 
+## Using an existing deny.toml
+
+A project that already uses cargo-deny needs no `cargoscope.toml`: when there is none, CargoScope reads the rules of `deny.toml` (or `.deny.toml`, `.cargo/deny.toml`) and says so in a warning. As soon as a `cargoscope.toml` exists, it is the only file read.
+
+| deny.toml | CargoScope |
+|---|---|
+| `[graph] targets` (strings or `{ triple }`), `features`, `all-features`, `no-default-features`, `exclude-dev` | the same `[graph]` keys |
+| `[licenses] allow`, `exceptions`, `clarify` | the same, with `crate = "name"`, `"name@version"` or `name`/`version`; a missing reason becomes "from deny.toml" |
+| `[bans] deny`, `multiple-versions = "deny"`, `skip` | `[bans] deny`, `multiple-versions = "deny"`, `skip-multiple-versions` |
+| `[sources] unknown-registry`/`unknown-git = "deny"`, `allow-registry`, `allow-git`, `allow-org` | `allow-registries`, `allow-git` (an organisation becomes its URL prefix) |
+| `[advisories] ignore` (IDs or `{ id, reason }`) | `[advisories] ignore` |
+
+What has no equivalent is listed in the report's warnings, never dropped in silence: for example `confidence-threshold`, the hashes of `license-files` (a clarification is not tied to the license files), `wrappers` (the ban then applies everywhere), `skip-tree`, feature bans, `"warn"` levels (a duplicate or a source at `"warn"` is shown but does not fail), and advisory settings such as `unmaintained`. The reading is tolerant: an unknown key is a note, not an error, unlike in `cargoscope.toml`.
+
 ## Ignoring an advisory
 
 ```toml
@@ -100,4 +114,4 @@ A file with only `[advisories]` defines no policy.
 
 ## Compared with cargo-deny
 
-This covers the license, source and ban checks most projects use, limited to the build you care about with `[graph]` (targets, features, dev-dependencies). cargo-deny has more: license clarifications pinned to the hash of the license files, duplicate rules per version or with wrappers, feature bans, and advisory configuration. Use it when you need those.
+This covers the license, source and ban checks most projects use, limited to the build you care about with `[graph]` (targets, features, dev-dependencies). cargo-deny has more: license clarifications pinned to the hash of the license files, duplicate rules per version or with wrappers, feature bans, and advisory configuration. Use it when you need those; CargoScope reads your `deny.toml` meanwhile.
