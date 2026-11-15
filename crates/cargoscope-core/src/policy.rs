@@ -104,10 +104,45 @@ pub struct Policy {
     /// that no listed target builds is not checked. Empty checks every
     /// package of the lockfile.
     pub targets: Vec<String>,
+    /// Features of the project (`[graph] features`, `all-features`,
+    /// `no-default-features`) the rules are limited to; `None` checks the
+    /// packages of every feature.
+    pub features: Option<Features>,
 }
 
-/// Packages (name and version) that at least one of the policy's targets
-/// builds, as computed by `cargo metadata --filter-platform`.
+/// The features the dependency graph is computed with, as Cargo's
+/// `--features`, `--all-features` and `--no-default-features` flags.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Features {
+    /// Features to enable (`member/feature` in a virtual workspace).
+    pub list: Vec<String>,
+    /// Enable every feature.
+    pub all: bool,
+    /// Disable the default features.
+    pub no_default: bool,
+}
+
+impl Features {
+    /// The matching `cargo` arguments.
+    #[must_use]
+    pub fn cargo_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if self.all {
+            args.push("--all-features".to_owned());
+        }
+        if self.no_default {
+            args.push("--no-default-features".to_owned());
+        }
+        if !self.list.is_empty() {
+            args.push("--features".to_owned());
+            args.push(self.list.join(","));
+        }
+        args
+    }
+}
+
+/// Packages (name and version) in the dependency graph the policy's
+/// `[graph]` selects (targets and features), as computed by `cargo metadata`.
 pub type ActivePackages = BTreeSet<(String, String)>;
 
 /// Rule a violation breaks.

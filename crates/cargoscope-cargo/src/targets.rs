@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use cargoscope_core::policy::ActivePackages;
+use cargoscope_core::policy::{ActivePackages, Features};
 
 /// Names and versions of the packages in the dependency graph of `json`
 /// (the output of `cargo metadata --filter-platform <target>`).
@@ -54,29 +54,47 @@ pub fn parse_metadata(json: &str) -> Result<BTreeSet<(String, String)>, String> 
         .collect())
 }
 
-/// Packages built for at least one of `targets`, with
-/// `cargo metadata --locked --filter-platform` run in `root`.
+/// Packages in the graph of at least one of `targets` (every platform when
+/// empty), with the given features (Cargo's defaults when `None`), from
+/// `cargo metadata --locked` run in `root`.
 ///
 /// # Errors
 ///
-/// Returns Cargo's explanation when it cannot produce the metadata of a
-/// target (sources not downloaded, outdated lockfile, unknown target).
-pub fn active_packages(root: &Path, targets: &[String]) -> Result<ActivePackages, String> {
+/// Returns Cargo's explanation when it cannot produce the metadata (sources
+/// not downloaded, outdated lockfile, unknown target or feature).
+pub fn active_packages(
+    root: &Path,
+    targets: &[String],
+    features: Option<&Features>,
+) -> Result<ActivePackages, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut active = ActivePackages::new();
-    for target in targets {
+    let platforms: Vec<Option<&String>> = if targets.is_empty() {
+        vec![None]
+    } else {
+        targets.iter().map(Some).collect()
+    };
+    for target in platforms {
+        let mut args: Vec<String> = [
+            "metadata",
+            "--format-version",
+            "1",
+            "--locked",
+            "--color",
+            "never",
+        ]
+        .iter()
+        .map(|arg| (*arg).to_owned())
+        .collect();
+        if let Some(target) = target {
+            args.push("--filter-platform".to_owned());
+            args.push(target.clone());
+        }
+        args.extend(features.map(Features::cargo_args).unwrap_or_default());
+        let target = target.map_or("every platform", String::as_str);
         let output = Command::new(&cargo)
             .current_dir(root)
-            .args([
-                "metadata",
-                "--format-version",
-                "1",
-                "--locked",
-                "--color",
-                "never",
-                "--filter-platform",
-                target,
-            ])
+            .args(&args)
             .stdin(Stdio::null())
             .output()
             .map_err(|error| format!("could not run cargo: {error}"))?;

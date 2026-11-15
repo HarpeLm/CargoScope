@@ -306,14 +306,19 @@ fn check_policy(
         warnings.push("license rules of the policy were skipped: no crates.io data".to_owned());
     }
     warnings.extend(policy.unused_license_entries(inventory));
-    // `[graph] targets`: only the packages those targets build are checked.
-    let active = if policy.targets.is_empty() {
+    // `[graph]`: only the packages its targets and features build are checked.
+    let active = if policy.targets.is_empty() && policy.features.is_none() {
         None
     } else {
         Some(
-            cargoscope_cargo::targets::active_packages(root, &policy.targets).map_err(|error| {
+            cargoscope_cargo::targets::active_packages(
+                root,
+                &policy.targets,
+                policy.features.as_ref(),
+            )
+            .map_err(|error| {
                 eprintln!(
-                    "CargoScope could not limit the policy to its [graph] targets: {error}. Check the target names and run `cargo fetch` first, or remove [graph] targets."
+                    "CargoScope could not limit the policy to its [graph]: {error}. Check the target and feature names and run `cargo fetch` first, or remove them from [graph]."
                 );
                 ExitCode::from(2)
             })?,

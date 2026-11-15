@@ -33,14 +33,51 @@ fn check_keys(table: &toml::Table, context: &str, known: &[&str]) -> Result<(), 
 }
 
 /// Reads `[graph] targets`: target triples the policy is limited to.
-fn parse_targets(value: &toml::Table) -> Result<Vec<String>, String> {
+/// `[graph] targets` and the feature keys (`features`, `all-features`,
+/// `no-default-features`); features are `None` when no feature key is set.
+fn parse_graph(
+    value: &toml::Table,
+) -> Result<(Vec<String>, Option<cargoscope_core::policy::Features>), String> {
     let Some(graph) = value.get("graph") else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), None));
     };
     let graph = graph
         .as_table()
         .ok_or_else(|| "[graph] must be a table".to_owned())?;
-    check_keys(graph, "graph", &["targets"])?;
+    check_keys(
+        graph,
+        "graph",
+        &["targets", "features", "all-features", "no-default-features"],
+    )?;
+    let flag = |key: &str| match graph.get(key) {
+        None => Ok(false),
+        Some(toml::Value::Boolean(value)) => Ok(*value),
+        Some(_) => Err(format!("[graph] {key} must be true or false")),
+    };
+    let list = strings(graph, "features", "graph")?;
+    for feature in &list {
+        let valid = !feature.is_empty()
+            && !feature.starts_with('-')
+            && feature
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/' | '+' | '.'));
+        if !valid {
+            return Err(format!(
+                "[graph] features: `{feature}` is not a feature name (use `member/feature` in a workspace)"
+            ));
+        }
+    }
+    let features = ["features", "all-features", "no-default-features"]
+        .iter()
+        .any(|key| graph.contains_key(*key))
+        .then(|| -> Result<_, String> {
+            Ok(cargoscope_core::policy::Features {
+                list,
+                all: flag("all-features")?,
+                no_default: flag("no-default-features")?,
+            })
+        })
+        .transpose()?;
     let targets = strings(graph, "targets", "graph")?;
     for target in &targets {
         let valid = !target.is_empty()
@@ -54,7 +91,7 @@ fn parse_targets(value: &toml::Table) -> Result<Vec<String>, String> {
             ));
         }
     }
-    Ok(targets)
+    Ok((targets, features))
 }
 
 /// Parses the text of a `cargoscope.toml`. Returns `None` when it defines
@@ -71,7 +108,7 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
         "top level",
         &["licenses", "sources", "bans", "advisories", "graph"],
     )?;
-    let targets = parse_targets(&value)?;
+    let (targets, features) = parse_graph(&value)?;
     if !["licenses", "sources", "bans"]
         .iter()
         .any(|key| value.contains_key(*key))
@@ -87,6 +124,7 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
     };
     let mut policy = Policy {
         targets,
+        features,
         ..Policy::default()
     };
 
@@ -468,6 +506,33 @@ mod tests {
                 .unwrap_err()
                 .contains("unknown key")
         );
+    }
+
+    #[test]
+    fn parses_graph_features() {
+        let policy = |text: &str| parse_policy(text).expect("valid").expect("policy");
+        let none = policy("[graph]\ntargets = [\"x86_64-unknown-linux-gnu\"]\n[bans]\n");
+        assert_eq!(none.features, None);
+        let some = policy(
+            "[graph]\nfeatures = [\"app/extra\", \"tls\"]\nno-default-features = true\n[bans]\n",
+        );
+        let features = some.features.expect("features");
+        assert_eq!(features.list, vec!["app/extra", "tls"]);
+        assert!(features.no_default && !features.all);
+        assert_eq!(
+            features.cargo_args(),
+            vec!["--no-default-features", "--features", "app/extra,tls"]
+        );
+        let all = policy("[graph]\nall-features = true\n[licenses]\n")
+            .features
+            .expect("features");
+        assert_eq!(all.cargo_args(), vec!["--all-features"]);
+
+        let error = |text: &str| parse_policy(text).expect_err("invalid");
+        assert!(
+            error("[graph]\nall-features = \"yes\"\n[bans]\n").contains("must be true or false")
+        );
+        assert!(error("[graph]\nfeatures = [\"a b\"]\n[bans]\n").contains("is not a feature name"));
     }
 
     #[test]

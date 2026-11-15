@@ -787,7 +787,10 @@ fn policy_graph_targets_limit_the_rules_to_packages_the_target_builds() {
     let failed = run(true);
     assert_eq!(failed.status.code(), Some(2));
     let message = String::from_utf8_lossy(&failed.stderr);
-    assert!(message.contains("[graph] targets"), "{message}");
+    assert!(
+        message.contains("could not limit the policy to its [graph]"),
+        "{message}"
+    );
     assert!(
         message.contains("failed to download `serde v1.0.210`"),
         "{message}"
@@ -1374,5 +1377,72 @@ clarify = [
     assert!(
         text.contains("cargoscope.toml clarifies the license of gone, which matches no package")
     );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn policy_graph_features_limit_the_rules_to_the_selected_features() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-features-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    copy_dir(&fixture("policy"), &dir);
+    let policy = std::fs::read_to_string(dir.join("cargoscope.toml")).expect("policy");
+    std::fs::write(
+        dir.join("cargoscope.toml"),
+        format!("[graph]\nno-default-features = true\nfeatures = [\"extra\"]\n\n{policy}"),
+    )
+    .expect("write policy");
+
+    // A fake cargo checks the feature flags (and that no platform is
+    // filtered), and answers a graph without serde, which only a default
+    // feature would pull in.
+    let fake_src = dir.join("fake_cargo.rs");
+    let fake_bin = dir.join(format!("fake-cargo{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(
+        &fake_src,
+        r##"fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    assert!(args.iter().any(|a| a == "--no-default-features"), "{args:?}");
+    assert!(args.windows(2).any(|w| w[0] == "--features" && w[1] == "extra"), "{args:?}");
+    assert!(!args.iter().any(|a| a == "--filter-platform" || a == "--all-features"), "{args:?}");
+    let ids = ["policy-demo@0.1.0", "serde_json@1.0.128", "itoa@1.0.11", "forked@0.1.0"];
+    let packages: Vec<String> = ids
+        .iter()
+        .chain(["serde@1.0.210"].iter())
+        .map(|id| {
+            let (name, version) = id.split_once('@').unwrap();
+            format!(r#"{{"id":"{id}","name":"{name}","version":"{version}"}}"#)
+        })
+        .collect();
+    let nodes: Vec<String> = ids.iter().map(|id| format!(r#"{{"id":"{id}"}}"#)).collect();
+    println!(r#"{{"packages":[{}],"resolve":{{"nodes":[{}],"root":null}}}}"#, packages.join(","), nodes.join(","));
+}
+"##,
+    )
+    .expect("write fake cargo");
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let compiled = Command::new(rustc)
+        .arg(&fake_src)
+        .arg("-o")
+        .arg(&fake_bin)
+        .output()
+        .expect("rustc runs");
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+        .env("CARGO_HOME", fixture("empty-cargo-home"))
+        .env("CARGO", &fake_bin)
+        .args(["scan", "--fail-on", "none"])
+        .arg(&dir)
+        .output()
+        .expect("cargoscope binary runs");
+    let text = stdout(&output);
+    assert!(!text.contains("- [ban] serde 1.0.210"), "{text}");
+    assert!(text.contains("- [license] serde_json 1.0.128:"), "{text}");
+    assert!(text.contains("- [source] forked 0.1.0:"), "{text}");
     let _ = std::fs::remove_dir_all(dir);
 }
