@@ -38,10 +38,10 @@ const FIX_USAGE: &str = "  cargoscope fix [PATH] [--dry-run | --apply] [--only N
       dependencies are never removed. Formatting and comments of the
       manifests are kept; run cargo check afterwards.
   cargoscope fix --advisories [PATH] [--dry-run | --apply] [--format text|markdown]
-      Update vulnerable packages in Cargo.lock to the smallest fixed version
-      Cargo accepts without manifest changes (cargo update --precise), and say
-      which dependency blocks the others. Runs cargo update, which may read
-      the registry index; it compiles nothing.";
+      Update vulnerable packages to the smallest fixed version Cargo accepts
+      (in Cargo.lock, and in Cargo.toml when a direct requirement blocks the
+      fix), and say which dependency blocks the others. Runs cargo update,
+      which may read the registry index; it compiles nothing.";
 
 const SCAN_USAGE: &str = "  cargoscope scan [PATH] [--format text|json|sarif] [--output FILE] [--fail-on THRESHOLD] [--show-uncertain] [--verbose] [--precise]
       Report on a Cargo project, read-only and offline.
@@ -69,6 +69,8 @@ Options for scan:
 
 const FOOTER: &str = "Environment:
   CARGOSCOPE_CACHE_DIR  Directory for downloaded data.
+  HTTPS_PROXY           HTTP proxy for https:// downloads in `update` (also HTTP_PROXY, ALL_PROXY).
+  NO_PROXY              Comma-separated hosts bypassing the proxy (localhost always does).
 
 Exit codes: 0 OK, 1 threshold reached, 2 execution error.";
 

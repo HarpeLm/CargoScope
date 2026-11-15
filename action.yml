@@ -31,7 +31,7 @@ inputs:
     description: "On pull requests, fail only on advisories that are not already on the base branch."
     default: "true"
   open-pr:
-    description: "Outside pull requests (on a schedule, say), update vulnerable packages in Cargo.lock with `cargoscope fix --advisories` and open or update a pull request (needs `contents: write` and `pull-requests: write`)."
+    description: "Outside pull requests (on a schedule, say), update vulnerable packages in Cargo.lock (and Cargo.toml when needed) with `cargoscope fix --advisories` and open or update a pull request (needs `contents: write` and `pull-requests: write`)."
     default: "false"
   pr-branch:
     description: Branch of the security update pull request.
