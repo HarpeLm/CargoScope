@@ -95,7 +95,9 @@ pub fn declared_dependencies(
                             .and_then(toml::Value::as_bool)
                             .unwrap_or(false),
                         target_specific,
-                        sets_features: lookup("features").is_some()
+                        sets_features: lookup("features")
+                            .and_then(toml::Value::as_array)
+                            .is_some_and(|features| !features.is_empty())
                             || lookup("default-features").is_some()
                             || lookup("default_features").is_some(),
                         path: specification
@@ -631,11 +633,53 @@ fn collect_references_in(tokens: TokenStream, nested: bool, names: &mut BTreeSet
 fn collect_attribute_references(tokens: TokenStream, names: &mut BTreeSet<String>) {
     let tokens: Vec<TokenTree> = tokens.into_iter().collect();
     if let Some(TokenTree::Ident(head)) = tokens.first() {
-        if head == "doc" {
+        let head_name = head.to_string();
+        if head_name == "doc" {
             return;
         }
-        if matches!(tokens.get(1), Some(TokenTree::Group(_)) | None) {
-            names.insert(head.to_string());
+        let builtin_attribute = matches!(
+            head_name.as_str(),
+            "cfg"
+                | "cfg_attr"
+                | "derive"
+                | "test"
+                | "bench"
+                | "allow"
+                | "warn"
+                | "deny"
+                | "forbid"
+                | "expect"
+                | "inline"
+                | "cold"
+                | "repr"
+                | "must_use"
+                | "non_exhaustive"
+                | "track_caller"
+                | "no_mangle"
+                | "export_name"
+                | "link"
+                | "link_name"
+                | "link_section"
+                | "used"
+                | "global_allocator"
+                | "panic_handler"
+                | "feature"
+                | "macro_export"
+                | "macro_use"
+                | "path"
+                | "ignore"
+                | "should_panic"
+                | "automatically_derived"
+                | "no_std"
+                | "no_main"
+                | "recursion_limit"
+                | "type_length_limit"
+                | "windows_subsystem"
+                | "crate_name"
+                | "crate_type"
+        );
+        if !builtin_attribute && matches!(tokens.get(1), Some(TokenTree::Group(_)) | None) {
+            names.insert(head_name);
         }
     }
     collect_path_literals(&tokens, names);
@@ -873,7 +917,43 @@ fn library_name_guesses(crate_name: &str) -> Vec<String> {
             let guess = segments[start..end].join("_");
             let too_generic = matches!(
                 guess.as_str(),
-                "core" | "std" | "alloc" | "crate" | "self" | "super" | "rs" | "rust"
+                "core"
+                    | "std"
+                    | "alloc"
+                    | "proc_macro"
+                    | "crate"
+                    | "self"
+                    | "super"
+                    | "rs"
+                    | "rust"
+                    | "impl"
+                    | "assert"
+                    | "derive"
+                    | "macro"
+                    | "macros"
+                    | "test"
+                    | "tests"
+                    | "bench"
+                    | "benches"
+                    | "cfg"
+                    | "ext"
+                    | "util"
+                    | "utils"
+                    | "common"
+                    | "types"
+                    | "internal"
+                    | "internals"
+                    | "sys"
+                    | "ffi"
+                    | "build"
+                    | "cli"
+                    | "bin"
+                    | "lib"
+                    | "dev"
+                    | "async"
+                    | "sync"
+                    | "error"
+                    | "errors"
             );
             if !too_generic
                 && !guess.starts_with(|c: char| c.is_ascii_digit())
@@ -1018,6 +1098,48 @@ fn collect_identifier_strings(tokens: &[TokenTree], names: &mut BTreeSet<String>
     }
 }
 
+/// Names of packages that `package_name` depends on transitively (at depth
+/// 2 or more in `inventory`). Falls back to the dependencies of all
+/// non-root packages when `package_name` is not a local package in
+/// `inventory`.
+fn transitive_dependencies_of<'a>(
+    inventory: &'a Inventory,
+    package_name: &str,
+) -> BTreeSet<&'a str> {
+    let roots: Vec<usize> = inventory
+        .packages
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| candidate.source.is_none() && candidate.name == package_name)
+        .map(|(index, _)| index)
+        .collect();
+    if roots.is_empty() {
+        return inventory
+            .packages
+            .iter()
+            .filter(|candidate| !candidate.root)
+            .flat_map(|candidate| candidate.dependencies.iter())
+            .map(|&index| inventory.packages[index].name.as_str())
+            .collect();
+    }
+    let mut stack: Vec<usize> = roots
+        .iter()
+        .flat_map(|&root| inventory.packages[root].dependencies.iter().copied())
+        .collect();
+    let mut visited = BTreeSet::new();
+    let mut transitive = BTreeSet::new();
+    while let Some(index) = stack.pop() {
+        if !visited.insert(index) {
+            continue;
+        }
+        for &dep in &inventory.packages[index].dependencies {
+            transitive.insert(inventory.packages[dep].name.as_str());
+            stack.push(dep);
+        }
+    }
+    transitive
+}
+
 pub fn check_package(
     package: &PackageToCheck<'_>,
     workspace_dependencies: Option<&toml::Value>,
@@ -1035,12 +1157,10 @@ pub fn check_package(
         ));
     }
 
-    let transitive_names: BTreeSet<&str> = inventory
-        .packages
+    let transitive_names = transitive_dependencies_of(inventory, package.name);
+    let transitive_idents: BTreeSet<String> = transitive_names
         .iter()
-        .filter(|candidate| !candidate.root)
-        .flat_map(|candidate| candidate.dependencies.iter())
-        .map(|&index| inventory.packages[index].name.as_str())
+        .map(|name| name.replace('-', "_"))
         .collect();
 
     let mut findings = Vec::new();
@@ -1127,7 +1247,13 @@ pub fn check_package(
                 .proc_macros
                 .iter()
                 .find_map(|(crate_ident, names)| {
-                    (crate_ident != &ident && names.contains(&ident)).then_some(crate_ident)
+                    let proc_macro_reachable = if declared_idents.contains(crate_ident) {
+                        references.contains(crate_ident)
+                    } else {
+                        transitive_idents.contains(crate_ident)
+                    };
+                    (crate_ident != &ident && proc_macro_reachable && names.contains(&ident))
+                        .then_some(crate_ident)
                 })
         {
             exceptions.push(format!(
@@ -1458,6 +1584,9 @@ mod tests {
             vec!["tui", "tui_textarea", "textarea_2"]
         );
         assert_eq!(super::library_name_guesses("tracing-core"), vec!["tracing"]);
+        assert!(super::library_name_guesses("assert-impl").is_empty());
+        assert_eq!(super::library_name_guesses("tokio-test"), vec!["tokio"]);
+        assert_eq!(super::library_name_guesses("strum-macros"), vec!["strum"]);
         assert!(super::library_name_guesses("serde").is_empty());
     }
 
@@ -1816,5 +1945,180 @@ mod tests {
         );
         assert!(!ignored.contains_key("log"));
         assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn per_package_transitive_deps_proc_macros_and_builtin_attributes() {
+        // 1. Built-in attributes should not record `test`, `derive`, or `cfg`,
+        // while nested attribute paths (`serde(with = "serde_regex")`) are still kept.
+        let names = references(
+            r#"
+            #[cfg(test)]
+            #[derive(Debug)]
+            #[cfg_attr(test, serde(with = "serde_regex"))]
+            struct Demo;
+
+            #[test]
+            fn it_works() {}
+            "#,
+        );
+        for builtin in ["test", "derive", "cfg", "cfg_attr"] {
+            assert!(!names.contains(builtin), "built-in recorded: {builtin}");
+        }
+        assert!(names.contains("serde_regex"));
+
+        // 2. Empty `features = []` does not count as setting features.
+        let empty_features: toml::Value = toml::from_str(
+            "[package]\nname = \"app\"\n[dependencies]\ngetrandom = { version = \"0.2\", features = [] }\n",
+        )
+        .expect("valid");
+        let declared = declared_dependencies(&empty_features, None);
+        assert_eq!(declared.len(), 1);
+        assert!(!declared[0].sets_features);
+
+        // 3. Per-package transitive dependencies and scoped workspace proc-macros.
+        // Package `app` transitively reaches `reexport_macro` via `app_helper`,
+        // while `sibling_only_transitive` is only reachable from `sibling`.
+        let inventory = cargoscope_core::Inventory {
+            packages: vec![
+                cargoscope_core::Package {
+                    name: "app".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    source: None,
+                    root: true,
+                    direct: false,
+                    dependencies: vec![2, 3, 4], // app_helper, direct_macro, unrelated_dep
+                },
+                cargoscope_core::Package {
+                    name: "sibling".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    source: None,
+                    root: true,
+                    direct: false,
+                    dependencies: vec![5], // sibling_helper
+                },
+                cargoscope_core::Package {
+                    name: "app_helper".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    source: Some("registry".to_owned()),
+                    root: false,
+                    direct: true,
+                    dependencies: vec![6], // reexport_macro
+                },
+                cargoscope_core::Package {
+                    name: "direct_macro".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    source: None,
+                    root: false,
+                    direct: true,
+                    dependencies: vec![],
+                },
+                cargoscope_core::Package {
+                    name: "unrelated_dep".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    source: Some("registry".to_owned()),
+                    root: false,
+                    direct: true,
+                    dependencies: vec![],
+                },
+                cargoscope_core::Package {
+                    name: "sibling_helper".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    source: Some("registry".to_owned()),
+                    root: false,
+                    direct: true,
+                    dependencies: vec![7], // sibling_only_transitive
+                },
+                cargoscope_core::Package {
+                    name: "reexport_macro".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    source: None,
+                    root: false,
+                    direct: false,
+                    dependencies: vec![],
+                },
+                cargoscope_core::Package {
+                    name: "sibling_only_transitive".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    source: Some("registry".to_owned()),
+                    root: false,
+                    direct: false,
+                    dependencies: vec![],
+                },
+            ],
+        };
+        let app_transitive = super::transitive_dependencies_of(&inventory, "app");
+        assert!(app_transitive.contains("reexport_macro"));
+        assert!(!app_transitive.contains("sibling_only_transitive"));
+
+        let root = std::env::temp_dir().join(format!("cargoscope-scoped-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("app/src")).expect("dirs");
+        std::fs::create_dir_all(root.join(".git")).expect("git");
+        std::fs::write(
+            root.join("app/src/lib.rs"),
+            "#[derive(direct_macro::Gen)]\npub struct X;\n",
+        )
+        .expect("write");
+
+        let manifest: toml::Value = toml::from_str(
+            r#"
+            [package]
+            name = "app"
+            [dependencies]
+            direct_macro = "0.1"
+            sibling_only_transitive = { version = "0.1", features = ["a"] }
+            unreferenced_pm_dep = "0.1"
+            used_pm_dep = "0.1"
+            reexported_pm_dep = "0.1"
+            unused_pm_crate = "0.1"
+            "#,
+        )
+        .expect("valid");
+
+        let mut workspace_macros = super::WorkspaceMacros::default();
+        workspace_macros.proc_macros.insert(
+            "unrelated_pm_crate".to_owned(),
+            ["unreferenced_pm_dep".to_owned()].into_iter().collect(),
+        );
+        workspace_macros.proc_macros.insert(
+            "unused_pm_crate".to_owned(),
+            ["unreferenced_pm_dep".to_owned()].into_iter().collect(),
+        );
+        workspace_macros.proc_macros.insert(
+            "direct_macro".to_owned(),
+            ["used_pm_dep".to_owned()].into_iter().collect(),
+        );
+        workspace_macros.proc_macros.insert(
+            "reexport_macro".to_owned(),
+            ["reexported_pm_dep".to_owned()].into_iter().collect(),
+        );
+
+        let (findings, _) = super::check_package(
+            &super::PackageToCheck {
+                name: "app",
+                dir: &root.join("app"),
+                manifest_label: "app/Cargo.toml",
+                manifest: &manifest,
+                workspace_root: &root,
+            },
+            None,
+            &inventory,
+            &workspace_macros,
+        );
+        let confidence = |name: &str| {
+            findings
+                .iter()
+                .find(|finding| finding.dependency == name)
+                .map(|finding| finding.confidence)
+        };
+        use cargoscope_core::UnusedConfidence::{Likely, Possibly};
+        assert_eq!(confidence("sibling_only_transitive"), Some(Likely));
+        assert_eq!(confidence("unreferenced_pm_dep"), Some(Likely));
+        assert_eq!(confidence("unused_pm_crate"), Some(Likely));
+        assert_eq!(confidence("used_pm_dep"), Some(Possibly));
+        assert_eq!(confidence("reexported_pm_dep"), Some(Possibly));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
