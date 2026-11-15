@@ -147,12 +147,13 @@ pub fn render_sarif(report: &Report, locations: &SarifLocations, show_uncertain:
     for violation in report.policy.iter().flatten() {
         let package = &report.inventory.packages[violation.package];
         let rule_id = format!("cargoscope/policy-{}", violation.rule.as_str());
+        let level = violation.level.as_str();
         rules.entry(rule_id.clone()).or_insert_with(|| {
             json!({
                 "id": rule_id,
                 "name": format!("Policy{}", violation.rule.as_str()),
                 "shortDescription": { "text": format!("A dependency breaks the {} policy of cargoscope.toml", violation.rule.as_str()) },
-                "defaultConfiguration": { "level": "error" },
+                "defaultConfiguration": { "level": level },
                 "properties": { "tags": ["dependency", "policy"] },
             })
         });
@@ -161,7 +162,7 @@ pub fn render_sarif(report: &Report, locations: &SarifLocations, show_uncertain:
             .unwrap_or_default();
         results.push(json!({
             "ruleId": rule_id,
-            "level": "error",
+            "level": level,
             "message": { "text": format!("{} {}: {}.{via}", package.name, package.version, violation.message) },
             "locations": [location(&locations.lockfile_uri, package_line(violation.package))],
         }));

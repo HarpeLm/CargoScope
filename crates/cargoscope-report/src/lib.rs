@@ -169,7 +169,15 @@ pub fn summary(report: &Report) -> String {
         parts.push(format!("{outdated_direct} outdated direct"));
     }
     if let Some(violations) = &report.policy {
-        parts.push(plural(violations.len(), "policy violation"));
+        let errors = violations
+            .iter()
+            .filter(|v| v.level == cargoscope_core::policy::ViolationLevel::Error)
+            .count();
+        let warnings = violations.len() - errors;
+        parts.push(plural(errors, "policy violation"));
+        if warnings > 0 {
+            parts.push(plural(warnings, "policy warning"));
+        }
     }
     let duplicates = report.inventory.duplicates().len();
     if duplicates > 0 {
@@ -191,12 +199,29 @@ fn render_policy_text(out: &mut String, report: &Report) {
         out.push_str("\nPolicy: no cargoscope.toml policy\n");
         return;
     };
-    let _ = writeln!(out, "\nPolicy violations: {}", violations.len());
-    for violation in violations {
-        let package = &report.inventory.packages[violation.package];
+    let errors = violations
+        .iter()
+        .filter(|v| v.level == cargoscope_core::policy::ViolationLevel::Error)
+        .count();
+    let warnings = violations.len() - errors;
+    if warnings == 0 {
+        let _ = writeln!(out, "\nPolicy violations: {errors}");
+    } else {
+        let suffix = if warnings == 1 { "" } else { "s" };
         let _ = writeln!(
             out,
-            "- [{}] {} {}: {}",
+            "\nPolicy violations: {errors} ({warnings} warning{suffix})"
+        );
+    }
+    for violation in violations {
+        let package = &report.inventory.packages[violation.package];
+        let tag = match violation.level {
+            cargoscope_core::policy::ViolationLevel::Error => "",
+            cargoscope_core::policy::ViolationLevel::Warning => " [warning]",
+        };
+        let _ = writeln!(
+            out,
+            "- [{}]{tag} {} {}: {}",
             violation.rule.as_str(),
             package.name,
             package.version,
@@ -705,8 +730,9 @@ pub fn render_json(project_root: &Path, report: &Report) -> String {
                 let package = &inventory.packages[violation.package];
                 let _ = write!(
                     out,
-                    "{{\"rule\":\"{}\",\"package\":{{\"name\":\"{}\",\"version\":\"{}\"}},\"message\":\"{}\",\"path\":",
+                    "{{\"rule\":\"{}\",\"level\":\"{}\",\"package\":{{\"name\":\"{}\",\"version\":\"{}\"}},\"message\":\"{}\",\"path\":",
                     violation.rule.as_str(),
+                    violation.level.as_str(),
                     json_escape(&package.name),
                     json_escape(&package.version),
                     json_escape(&violation.message)

@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use cargoscope_advisory::AdvisoryDatabase;
 use cargoscope_advisory::crates_io::{self, RegistryCache};
-use cargoscope_core::policy::{Policy, Violation};
+use cargoscope_core::policy::{GraphContext, LintLevel, Policy, Violation, ViolationLevel};
 use cargoscope_core::{AdvisoryFinding, Checks, Inventory, PackageInfo, Report};
 use cargoscope_report::sarif::SarifLocations;
 
@@ -185,19 +185,28 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
     } else {
         (vec![PackageInfo::default(); inventory.packages.len()], None)
     };
-    // Clarified licenses replace the registry's everywhere in the report.
-    if let Some(policy) = &policy {
-        policy.clarify(&inventory, &mut package_info);
-    }
+    // Clarified licenses (verified against on-disk license-files hashes when
+    // specified) replace the registry's everywhere in the report.
     let violations = match policy {
-        Some(policy) => Some(check_policy(
-            root,
-            &policy,
-            &inventory,
-            &package_info,
-            registry_date.as_deref(),
-            &mut warnings,
-        )?),
+        Some(policy) => {
+            let (verified_clarifications, clarify_warnings) =
+                cargoscope_cargo::crate_sources::verify_clarifications(
+                    root,
+                    &inventory,
+                    &policy.license_clarifications,
+                );
+            warnings.extend(clarify_warnings);
+            policy.clarify_verified(&inventory, &mut package_info, &verified_clarifications);
+            Some(check_policy(
+                root,
+                &policy,
+                &inventory,
+                &package_info,
+                registry_date.as_deref(),
+                &verified_clarifications,
+                &mut warnings,
+            )?)
+        }
         None => None,
     };
     keep_checked_info(&mut package_info, checks);
@@ -305,6 +314,7 @@ fn check_policy(
     inventory: &Inventory,
     package_info: &[PackageInfo],
     registry_date: Option<&str>,
+    verified_clarifications: &[Option<usize>],
     warnings: &mut Vec<String>,
 ) -> Result<Vec<Violation>, ExitCode> {
     if policy.check_licenses && registry_date.is_none() {
@@ -317,8 +327,8 @@ fn check_policy(
         || policy.exclude_dev
         || policy.exclude_unpublished
         || policy.root_package_only;
-    let checks_duplicates =
-        policy.deny_multiple_versions || !policy.deny_multiple_versions_of.is_empty();
+    let checks_duplicates = policy.multiple_versions != LintLevel::Allow
+        || !policy.deny_multiple_versions_of.is_empty();
     let needs_non_dev = ((policy.duplicates_exclude_dev && checks_duplicates)
         || (policy.licenses_exclude_dev && policy.check_licenses))
         && !policy.exclude_dev;
@@ -359,14 +369,26 @@ fn check_policy(
     } else {
         active.clone()
     };
-    Ok(policy.check_graphs(
-        inventory,
-        package_info,
-        registry_date.is_some(),
-        active.as_ref(),
-        non_dev_active.as_ref(),
-        enabled_features.as_ref(),
-    ))
+    let build_scripts = if policy.allow_build_scripts.is_some() {
+        let (scripts, build_warnings) = cargoscope_cargo::crate_sources::detect_build_scripts(
+            root,
+            inventory,
+            active.as_ref(),
+            policy.build_include_workspace,
+        );
+        warnings.extend(build_warnings);
+        Some(scripts)
+    } else {
+        None
+    };
+    let context = GraphContext {
+        active: active.as_ref(),
+        non_dev_active: non_dev_active.as_ref(),
+        enabled_features: enabled_features.as_ref(),
+        build_scripts: build_scripts.as_ref(),
+        verified_clarifications: Some(verified_clarifications),
+    };
+    Ok(policy.check_with_context(inventory, package_info, registry_date.is_some(), &context))
 }
 
 /// Clears the registry data of checks that did not run, so the report only
@@ -448,10 +470,11 @@ fn exit_code(options: &ScanOptions, report: &Report) -> Result<ExitCode, ExitCod
         );
     }
     let policy_fails = options.fail_on != FailOn::Never
-        && report
-            .policy
-            .as_ref()
-            .is_some_and(|violations| !violations.is_empty());
+        && report.policy.as_ref().is_some_and(|violations| {
+            violations
+                .iter()
+                .any(|violation| violation.level == ViolationLevel::Error)
+        });
     let advisory_fails = report
         .advisories
         .iter()

@@ -6,10 +6,12 @@
 |---|---|---|---|
 | First translation (28 repos, commit `22495c9`) | 3 | 9 | 104 |
 | After the `834f525` fixes (28 repos) | 3 | 9 | 6 |
-| **After P4 fixes on `0.6.0-dev` (same 28 repos)** | **3** | **9** | **0** |
-| **Expanded corpora with `blind-judge` (34 valid repos, `0.6.0-dev`)** | **10** | **22** | **0** |
+| After P4 fixes (same 28 repos) | 3 | 9 | 0 |
+| **After Option A fixes (`[bans] build`, hashes, `"warn"`, same 28 repos)** | **12** | **0** | **0** |
+| Expanded corpora with `blind-judge` after P4 (34 valid repos) | 10 | 22 | 0 |
+| **Expanded corpora with `blind-judge` after Option A (34 valid repos)** | **31** | **1** | **2** |
 
-**27 of the original 28 repositories give exactly the same result** (up from 22/28 at `834f525`), and **30 of the 34 valid repositories** across all three corpora match identically with **0 crates reported by CargoScope only**.
+**28 of the original 28 repositories (100%) give exactly the same result** (up from 22/28 at `834f525` and 27/28 after P4), and **32 of the 34 valid repositories** across all three corpora match identically.
 
 The fixes the comparison led to:
 
@@ -25,11 +27,13 @@ Root-cause fixes implemented on `main` (`0.6.0-dev`) and verified in the re-run 
 - `multiple-versions` ignores `semver-trick` self-dependencies (cases where all direct parents of a duplicate have the same crate name).
 - `[bans] features` (`allow`, `deny`, `exact`) is now supported and translated from `deny.toml`.
 
-What still differs on the 34 valid repositories (`22` crates reported by `cargo-deny` only, `0` by CargoScope only):
+- `[bans] build` (`allow-build-scripts` and `include-workspace`), `[licenses.clarify]` `license-files` 32-bit `xxHash32` verification, and `"warn"` lint levels (`[bans] multiple-versions = "warn"`, `[sources] unknown-registry` / `unknown-git = "warn"`) were added: all **21 `[bans] build` errors** across `taiki-e/pin-project` (7), `taiki-e/pin-project-lite` (9), and `taiki-e/portable-atomic` (5) now match `cargo-deny`.
 
-- **21 `[bans] build` errors** across 3 `taiki-e` repositories (`pin-project`: 7, `pin-project-lite`: 9, `portable-atomic`: 5): CargoScope does not enforce allowed build scripts yet and says so in a note. (On all 10 disallowed `[sources]` crates across those 3 repositories, both tools agree.)
+What still differs on the 34 valid repositories (`1` crate reported by `cargo-deny` only, `2` by CargoScope only):
+
 - **1 license error** in `tower-rs/tower-http` (`zstd-sys`, `BSD-3-Clause AND BSD-2-Clause`): `tower-http` sets `exclude-unpublished = true` and `default = []`, while unpublished `examples/*` depend on `tower-http` with `features = ["full"]`. `cargo-deny` runs `cargo metadata` over the whole workspace before stripping `examples/*` in `krates`, keeping `zstd-sys` enabled by feature unification; CargoScope passes `--exclude` to `cargo tree`, so `tower-http` stays at `default = []` without `zstd-sys`.
+- **2 build-script errors** in `taiki-e/portable-atomic` (`proc-macro2`, `quote` via `serde -> serde_core -> serde_derive`): `portable-atomic` mixes a root `[package]` (`serde` with `default-features = false`) and a workspace member (`bench` / test helper) whose dependencies unify `serde/derive` under `cargo tree`, whereas `cargo-deny` / `krates` keeps `serde_derive` inactive for the root package graph.
 
 (Two older `deny.toml` files in `briansmith/untrusted` and `polyfill-rs/is_terminal_polyfill` use pre-0.14 `[advisories]` syntax rejected by cargo-deny 0.20.2 and were excluded from the comparison.)
 
-Every remaining unsupported setting is listed in the report's warnings (for example `confidence-threshold`, `private`, `[bans] build`, `unused-allowed-license`).
+Every remaining unsupported setting is listed in the report's warnings (for example `confidence-threshold`, `private`, `[bans.build] executables`/`interpreted`/`bypass`, `unused-allowed-license`).

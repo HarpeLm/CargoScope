@@ -2,7 +2,9 @@
 
 use std::path::Path;
 
-use cargoscope_core::policy::{Ban, FeatureBan, Policy, UnknownLicense};
+use cargoscope_core::policy::{
+    Ban, BuildScriptAllow, FeatureBan, LicenseFileHash, LintLevel, Policy, UnknownLicense,
+};
 
 /// File name, looked up in the scanned directory.
 pub const FILE_NAME: &str = "cargoscope.toml";
@@ -187,7 +189,7 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
         for entry in crate_entries(
             licenses,
             "clarify",
-            &["name", "version", "expression", "reason"],
+            &["name", "version", "expression", "reason", "license-files"],
         )? {
             let expression = entry
                 .table
@@ -206,6 +208,7 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
                     entry.name
                 )
             })?;
+            let license_files = parse_license_files(entry.table, &entry.name)?;
             policy
                 .license_clarifications
                 .push(cargoscope_core::policy::LicenseClarification {
@@ -213,12 +216,22 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
                     version: entry.version,
                     expression,
                     reason: entry.reason,
+                    license_files,
                 });
         }
     }
 
     if let Some(sources) = table("sources")? {
-        check_keys(sources, "sources", &["allow-registries", "allow-git"])?;
+        check_keys(
+            sources,
+            "sources",
+            &[
+                "allow-registries",
+                "allow-git",
+                "unknown-registry",
+                "unknown-git",
+            ],
+        )?;
         let registries = strings(sources, "allow-registries", "sources")?;
         policy.allow_registries = Some(if sources.contains_key("allow-registries") {
             registries
@@ -226,6 +239,10 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
             vec!["crates.io".to_owned()]
         });
         policy.allow_git = strings(sources, "allow-git", "sources")?;
+        policy.registry_source_level =
+            parse_lint_level(sources, "unknown-registry", "sources", LintLevel::Deny)?;
+        policy.git_source_level =
+            parse_lint_level(sources, "unknown-git", "sources", LintLevel::Deny)?;
     }
 
     if let Some(bans) = table("bans")? {
@@ -235,18 +252,13 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
             &[
                 "deny",
                 "features",
+                "build",
                 "multiple-versions",
                 "skip-multiple-versions",
             ],
         )?;
-        policy.deny_multiple_versions =
-            match bans.get("multiple-versions").map(|value| value.as_str()) {
-                None | Some(Some("allow")) => false,
-                Some(Some("deny")) => true,
-                _ => {
-                    return Err("[bans] multiple-versions must be \"deny\" or \"allow\"".to_owned());
-                }
-            };
+        policy.multiple_versions =
+            parse_lint_level(bans, "multiple-versions", "bans", LintLevel::Allow)?;
         policy.skip_multiple_versions = strings(bans, "skip-multiple-versions", "bans")?;
         let entries = match bans.get("deny") {
             None => Vec::new(),
@@ -286,9 +298,139 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
             });
         }
         policy.feature_bans = parse_feature_bans(bans)?;
+        (policy.allow_build_scripts, policy.build_include_workspace) = parse_build_config(bans)?;
     }
 
     Ok(Some(policy))
+}
+
+fn parse_lint_level(
+    section: &toml::Table,
+    key: &str,
+    context: &str,
+    default: LintLevel,
+) -> Result<LintLevel, String> {
+    match section.get(key) {
+        None => Ok(default),
+        Some(value) => match value.as_str() {
+            Some("allow") => Ok(LintLevel::Allow),
+            Some("warn") => Ok(LintLevel::Warn),
+            Some("deny") => Ok(LintLevel::Deny),
+            _ => Err(format!(
+                "[{context}] {key} must be \"deny\", \"warn\" or \"allow\""
+            )),
+        },
+    }
+}
+
+fn parse_license_files(
+    table: &toml::Table,
+    crate_name: &str,
+) -> Result<Vec<LicenseFileHash>, String> {
+    let Some(entries) = table.get("license-files") else {
+        return Ok(Vec::new());
+    };
+    let entries = entries.as_array().ok_or_else(|| {
+        format!("[licenses] clarify for `{crate_name}`: license-files must be an array of tables")
+    })?;
+    let mut parsed = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let entry = entry.as_table().ok_or_else(|| {
+            format!(
+                "[licenses] clarify for `{crate_name}`: license-files entries must be tables such as {{ path = \"LICENSE\", hash = 0x12345678 }}"
+            )
+        })?;
+        check_keys(entry, "licenses.clarify.license-files", &["path", "hash"])?;
+        let path = entry
+            .get("path")
+            .and_then(toml::Value::as_str)
+            .filter(|path| !path.trim().is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "[licenses] clarify for `{crate_name}`: license-files entries need a `path`"
+                )
+            })?
+            .to_owned();
+        let hash = match entry.get("hash") {
+            None => None,
+            Some(toml::Value::Integer(value)) => {
+                let value = u32::try_from(*value).map_err(|_| {
+                    format!(
+                        "[licenses] clarify for `{crate_name}`: hash for `{path}` must fit in a 32-bit unsigned integer"
+                    )
+                })?;
+                Some(value)
+            }
+            Some(_) => {
+                return Err(format!(
+                    "[licenses] clarify for `{crate_name}`: hash for `{path}` must be a 32-bit integer"
+                ));
+            }
+        };
+        parsed.push(LicenseFileHash { path, hash });
+    }
+    Ok(parsed)
+}
+
+fn parse_build_config(bans: &toml::Table) -> Result<(Option<Vec<BuildScriptAllow>>, bool), String> {
+    let Some(build) = bans.get("build") else {
+        return Ok((None, false));
+    };
+    let build = build
+        .as_table()
+        .ok_or("[bans] build must be a table".to_owned())?;
+    check_keys(
+        build,
+        "bans.build",
+        &["allow-build-scripts", "include-workspace"],
+    )?;
+    let include_workspace = match build.get("include-workspace") {
+        None => false,
+        Some(toml::Value::Boolean(value)) => *value,
+        Some(_) => return Err("[bans.build] include-workspace must be true or false".to_owned()),
+    };
+    let Some(allow) = build.get("allow-build-scripts") else {
+        return Ok((None, include_workspace));
+    };
+    let entries = allow
+        .as_array()
+        .ok_or("[bans.build] allow-build-scripts must be an array".to_owned())?;
+    let mut parsed = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let (name, version) = if let Some(spec) = entry.as_str() {
+            crate::deny::crate_spec(&toml::Value::String(spec.to_owned()))
+                .ok_or_else(|| format!("[bans.build] invalid crate spec `{spec}`"))?
+        } else if let Some(table) = entry.as_table() {
+            check_keys(
+                table,
+                "bans.build.allow-build-scripts",
+                &["name", "version"],
+            )?;
+            let name = table
+                .get("name")
+                .and_then(toml::Value::as_str)
+                .filter(|name| !name.trim().is_empty())
+                .ok_or("[bans.build] allow-build-scripts table entries need a `name`")?
+                .to_owned();
+            let version = table
+                .get("version")
+                .and_then(toml::Value::as_str)
+                .map(str::to_owned);
+            (name, version)
+        } else {
+            return Err(
+                "[bans.build] allow-build-scripts entries must be strings or `{ name, version }` tables"
+                    .to_owned(),
+            );
+        };
+        if let Some(req) = &version {
+            semver::VersionReq::parse(req).map_err(|error| {
+                format!("[bans.build] allow-build-scripts `{name}` version `{req}`: {error}")
+            })?;
+        }
+        parsed.push(BuildScriptAllow { name, version });
+    }
+    Ok((Some(parsed), include_workspace))
 }
 
 fn parse_feature_bans(bans: &toml::Table) -> Result<Vec<FeatureBan>, String> {
@@ -551,7 +693,7 @@ pub fn deny_notes(project_root: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::parse_policy;
-    use cargoscope_core::policy::UnknownLicense;
+    use cargoscope_core::policy::{LintLevel, UnknownLicense};
 
     #[test]
     fn parses_every_section() {
@@ -562,10 +704,14 @@ mod tests {
             unknown = "allow"
             [sources]
             allow-git = ["https://github.com/myorg/"]
+            unknown-registry = "warn"
             [bans]
             deny = [{ name = "openssl", version = "<0.10", reason = "use rustls" }]
             multiple-versions = "deny"
             skip-multiple-versions = ["windows-sys"]
+            [bans.build]
+            allow-build-scripts = ["cc", "ring@^0.17"]
+            include-workspace = true
             "#,
         )
         .expect("valid")
@@ -573,13 +719,21 @@ mod tests {
         assert_eq!(policy.allow_licenses, vec!["MIT", "Apache-2.0"]);
         assert_eq!(policy.unknown_license, UnknownLicense::Allow);
         assert_eq!(policy.allow_registries, Some(vec!["crates.io".to_owned()]));
+        assert_eq!(policy.registry_source_level, LintLevel::Warn);
+        assert_eq!(policy.git_source_level, LintLevel::Deny);
         assert_eq!(policy.bans[0].version.as_deref(), Some("<0.10"));
-        assert!(policy.deny_multiple_versions);
+        assert_eq!(policy.multiple_versions, LintLevel::Deny);
         assert_eq!(policy.skip_multiple_versions, vec!["windows-sys"]);
+        assert!(policy.build_include_workspace);
+        assert_eq!(policy.allow_build_scripts.as_ref().map(Vec::len), Some(2));
+        let warn_mv = parse_policy("[bans]\nmultiple-versions = \"warn\"\n")
+            .expect("valid")
+            .expect("policy");
+        assert_eq!(warn_mv.multiple_versions, LintLevel::Warn);
         assert!(
-            parse_policy("[bans]\nmultiple-versions = \"warn\"\n")
+            parse_policy("[bans]\nmultiple-versions = \"other\"\n")
                 .unwrap_err()
-                .contains("must be \"deny\" or \"allow\"")
+                .contains("must be \"deny\", \"warn\" or \"allow\"")
         );
     }
 

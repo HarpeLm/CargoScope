@@ -11,6 +11,49 @@ const CRATES_IO: [&str; 2] = [
     "sparse+https://index.crates.io/",
 ];
 
+/// Enforcement level for a configurable policy rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LintLevel {
+    /// Accept without a violation.
+    #[default]
+    Allow,
+    /// Emit a warning violation without failing the scan.
+    Warn,
+    /// Emit an error violation that fails the scan.
+    Deny,
+}
+
+impl LintLevel {
+    fn to_violation_level(self) -> Option<ViolationLevel> {
+        match self {
+            Self::Allow => None,
+            Self::Warn => Some(ViolationLevel::Warning),
+            Self::Deny => Some(ViolationLevel::Error),
+        }
+    }
+}
+
+/// Severity of a policy violation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum ViolationLevel {
+    /// Fails the scan (default).
+    #[default]
+    Error,
+    /// Reported without failing the scan.
+    Warning,
+}
+
+impl ViolationLevel {
+    /// Level name used in JSON and SARIF reports.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+        }
+    }
+}
+
 /// What to do with a package whose license is unknown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UnknownLicense {
@@ -19,6 +62,26 @@ pub enum UnknownLicense {
     Deny,
     /// Accept it.
     Allow,
+}
+
+/// A crate allowed to run a custom `build.rs` script (`[bans.build]`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildScriptAllow {
+    /// Crate name.
+    pub name: String,
+    /// Optional version requirement; without one, every version is allowed.
+    pub version: Option<String>,
+}
+
+/// Expected file path and optional 32-bit xxHash checksum under a crate's
+/// source directory (`[licenses] clarify.license-files`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LicenseFileHash {
+    /// Path relative to the crate root (e.g. `LICENSE`).
+    pub path: String,
+    /// Expected 32-bit xxHash checksum (seed `0`, `\r\n` normalized to `\n`),
+    /// matching cargo-deny. `None` checks only that the file exists.
+    pub hash: Option<u32>,
 }
 
 /// A crate that must not be used.
@@ -82,6 +145,9 @@ pub struct LicenseClarification {
     pub expression: String,
     /// Why, such as where the license was checked.
     pub reason: String,
+    /// License files and checksums that must match before applying the
+    /// clarification; empty skips disk verification.
+    pub license_files: Vec<LicenseFileHash>,
 }
 
 /// Whether `version` matches an optional requirement (an unreadable
@@ -100,7 +166,7 @@ fn version_matches(requirement: Option<&str>, version: &str) -> bool {
 }
 
 /// A dependency policy.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Policy {
     /// Allowed licenses; empty means any license that is not denied.
     pub allow_licenses: Vec<String>,
@@ -115,18 +181,27 @@ pub struct Policy {
     pub allow_registries: Option<Vec<String>>,
     /// Allowed git repository URL prefixes.
     pub allow_git: Vec<String>,
+    /// Enforcement level for packages from unlisted registries.
+    pub registry_source_level: LintLevel,
+    /// Enforcement level for packages from unlisted git repositories.
+    pub git_source_level: LintLevel,
     /// Banned crates.
     pub bans: Vec<Ban>,
+    /// Allowed crates with custom build scripts (`[bans.build] allow-build-scripts`).
+    /// `None` disables build-script checking; `Some(vec![])` forbids all build scripts.
+    pub allow_build_scripts: Option<Vec<BuildScriptAllow>>,
+    /// Whether `[bans.build]` also checks workspace members (off by default).
+    pub build_include_workspace: bool,
     /// Licenses allowed for one crate only.
     pub license_exceptions: Vec<LicenseException>,
     /// Licenses declared for crates whose metadata is wrong or missing.
     pub license_clarifications: Vec<LicenseClarification>,
-    /// Whether a crate resolved in several versions is a violation.
-    pub deny_multiple_versions: bool,
-    /// Crates allowed in several versions even when they are denied.
+    /// Enforcement level for crates resolved in several versions.
+    pub multiple_versions: LintLevel,
+    /// Crates allowed in several versions even when they are flagged.
     pub skip_multiple_versions: Vec<String>,
-    /// Crates whose duplicates are denied even when `deny_multiple_versions`
-    /// is off (cargo-deny's `deny-multiple-versions` on a crate).
+    /// Crates whose duplicates are denied even when `multiple_versions`
+    /// is not `Deny` (cargo-deny's `deny-multiple-versions` on a crate).
     pub deny_multiple_versions_of: Vec<String>,
     /// Crates whose whole dependency tree is allowed in several versions,
     /// with an optional depth (cargo-deny's `skip-tree`).
@@ -158,6 +233,38 @@ pub struct Policy {
     /// `no-default-features`) the rules are limited to; `None` checks the
     /// packages of every feature.
     pub features: Option<Features>,
+}
+
+impl Default for Policy {
+    fn default() -> Self {
+        Self {
+            allow_licenses: Vec::new(),
+            deny_licenses: Vec::new(),
+            unknown_license: UnknownLicense::default(),
+            check_licenses: false,
+            allow_registries: None,
+            allow_git: Vec::new(),
+            registry_source_level: LintLevel::Deny,
+            git_source_level: LintLevel::Deny,
+            bans: Vec::new(),
+            allow_build_scripts: None,
+            build_include_workspace: false,
+            license_exceptions: Vec::new(),
+            license_clarifications: Vec::new(),
+            multiple_versions: LintLevel::Allow,
+            skip_multiple_versions: Vec::new(),
+            deny_multiple_versions_of: Vec::new(),
+            skip_multiple_versions_trees: Vec::new(),
+            targets: Vec::new(),
+            exclude_dev: false,
+            exclude_unpublished: false,
+            duplicates_exclude_dev: false,
+            licenses_exclude_dev: false,
+            root_package_only: false,
+            feature_bans: Vec::new(),
+            features: None,
+        }
+    }
 }
 
 /// The features the dependency graph is computed with, as Cargo's
@@ -221,6 +328,23 @@ impl Rule {
     }
 }
 
+/// Resolved dependency graph and on-disk package facts passed to
+/// [`Policy::check_with_context`].
+#[derive(Debug, Clone, Default)]
+pub struct GraphContext<'a> {
+    /// Packages in the active dependency graph (`[graph]` targets/features/exclude-dev).
+    pub active: Option<&'a ActivePackages>,
+    /// Non-dev packages in the active dependency graph.
+    pub non_dev_active: Option<&'a ActivePackages>,
+    /// Enabled features per `(name, version)` package.
+    pub enabled_features: Option<&'a EnabledFeatures>,
+    /// Packages `(name, version)` whose unpacked source declares a custom `build.rs` script.
+    pub build_scripts: Option<&'a ActivePackages>,
+    /// Verified clarification index (into [`Policy::license_clarifications`])
+    /// per package in `inventory` order.
+    pub verified_clarifications: Option<&'a [Option<usize>]>,
+}
+
 /// A package that breaks the policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Violation {
@@ -228,6 +352,8 @@ pub struct Violation {
     pub package: usize,
     /// Broken rule.
     pub rule: Rule,
+    /// Severity level (`Error` or `Warning`).
+    pub level: ViolationLevel,
     /// Explanation.
     pub message: String,
 }
@@ -273,6 +399,27 @@ impl Policy {
     pub fn clarify(&self, inventory: &Inventory, info: &mut [PackageInfo]) {
         for (package, info) in inventory.packages.iter().zip(info.iter_mut()) {
             if let Some(clarification) = self.clarification(&package.name, &package.version) {
+                info.license = Some(clarification.expression.clone());
+            }
+        }
+    }
+
+    /// Replaces the license of each package whose clarification was verified
+    /// against disk license files (where `verified[index]` holds the index
+    /// into [`Self::license_clarifications`]).
+    pub fn clarify_verified(
+        &self,
+        inventory: &Inventory,
+        info: &mut [PackageInfo],
+        verified: &[Option<usize>],
+    ) {
+        for ((index, _), info) in inventory.packages.iter().enumerate().zip(info.iter_mut()) {
+            if let Some(clarification) = verified
+                .get(index)
+                .copied()
+                .flatten()
+                .and_then(|clarify_idx| self.license_clarifications.get(clarify_idx))
+            {
                 info.license = Some(clarification.expression.clone());
             }
         }
@@ -361,7 +508,7 @@ impl Policy {
         &self,
         package: &crate::Package,
         pkg_features: &BTreeSet<String>,
-        push: &mut impl FnMut(Rule, String),
+        push: &mut impl FnMut(Rule, ViolationLevel, String),
     ) {
         for ban in &self.feature_bans {
             if ban.name != package.name
@@ -373,6 +520,7 @@ impl Policy {
                 if pkg_features.contains(denied) {
                     push(
                         Rule::Ban,
+                        ViolationLevel::Error,
                         format!("feature `{denied}` is banned: {}", ban.reason),
                     );
                 }
@@ -382,6 +530,7 @@ impl Policy {
                     if !ban.deny.contains(enabled) && !ban.allow.contains(enabled) {
                         push(
                             Rule::Ban,
+                            ViolationLevel::Error,
                             format!(
                                 "feature `{enabled}` is not in the allow list: {}",
                                 ban.reason
@@ -395,6 +544,7 @@ impl Policy {
                     if !pkg_features.contains(allowed) && !ban.deny.contains(allowed) {
                         push(
                             Rule::Ban,
+                            ViolationLevel::Error,
                             format!(
                                 "exact feature set required, missing feature `{allowed}`: {}",
                                 ban.reason
@@ -419,38 +569,85 @@ impl Policy {
         non_dev_active: Option<&ActivePackages>,
         enabled_features: Option<&EnabledFeatures>,
     ) -> Vec<Violation> {
+        self.check_with_context(
+            inventory,
+            info,
+            licenses_known,
+            &GraphContext {
+                active,
+                non_dev_active,
+                enabled_features,
+                build_scripts: None,
+                verified_clarifications: None,
+            },
+        )
+    }
+
+    /// Checks `inventory` using the full [`GraphContext`] (active sets, enabled
+    /// features, detected custom build scripts and verified clarifications).
+    #[must_use]
+    pub fn check_with_context(
+        &self,
+        inventory: &Inventory,
+        info: &[PackageInfo],
+        licenses_known: bool,
+        context: &GraphContext<'_>,
+    ) -> Vec<Violation> {
         let in_set = |set: Option<&ActivePackages>, index: usize| {
             set.is_none_or(|set| {
                 let package = &inventory.packages[index];
                 set.contains(&(package.name.clone(), package.version.clone()))
             })
         };
-        let is_active = |index: usize| in_set(active, index);
+        let is_active = |index: usize| in_set(context.active, index);
         let licenses_set = if self.licenses_exclude_dev {
-            non_dev_active
+            context.non_dev_active
         } else {
-            active
+            context.active
         };
         let duplicates_set = if self.duplicates_exclude_dev {
-            non_dev_active
+            context.non_dev_active
         } else {
-            active
+            context.active
         };
         let empty_features = BTreeSet::new();
         let mut violations = Vec::new();
         for (index, package) in inventory.packages.iter().enumerate() {
-            let Some(source) = package.source.as_deref() else {
-                continue;
-            };
             if !is_active(index) {
                 continue;
             }
-            let mut push = |rule, message: String| {
+            let mut push = |rule, level, message: String| {
                 violations.push(Violation {
                     package: index,
                     rule,
+                    level,
                     message,
                 });
+            };
+
+            if let Some(allowed) = &self.allow_build_scripts
+                && (!package.root || self.build_include_workspace)
+                && let Some(scripts) = context.build_scripts
+                && scripts.contains(&(package.name.clone(), package.version.clone()))
+            {
+                let is_allowed = allowed.iter().any(|entry| {
+                    entry.name == package.name
+                        && version_matches(entry.version.as_deref(), &package.version)
+                });
+                if !is_allowed {
+                    push(
+                        Rule::Ban,
+                        ViolationLevel::Error,
+                        format!(
+                            "build script of `{}` is not in [bans.build] allow-build-scripts",
+                            package.name
+                        ),
+                    );
+                }
+            }
+
+            let Some(source) = package.source.as_deref() else {
+                continue;
             };
 
             for ban in &self.bans {
@@ -477,12 +674,13 @@ impl Policy {
                         .unwrap_or_default();
                     push(
                         Rule::Ban,
+                        ViolationLevel::Error,
                         format!("`{}`{versions} is banned: {}", ban.name, ban.reason),
                     );
                 }
             }
 
-            if let Some(features_map) = enabled_features {
+            if let Some(features_map) = context.enabled_features {
                 let pkg_features = features_map
                     .get(&(package.name.clone(), package.version.clone()))
                     .unwrap_or(&empty_features);
@@ -491,26 +689,38 @@ impl Policy {
 
             if let Some(allowed) = &self.allow_registries {
                 if let Some(url) = source.strip_prefix("git+") {
-                    if !self
-                        .allow_git
-                        .iter()
-                        .any(|prefix| url.starts_with(prefix.as_str()))
+                    if let Some(level) = self.git_source_level.to_violation_level()
+                        && !self
+                            .allow_git
+                            .iter()
+                            .any(|prefix| url.starts_with(prefix.as_str()))
                     {
                         let repository = url.split(['?', '#']).next().unwrap_or(url);
                         push(
                             Rule::Source,
+                            level,
                             format!("git source {repository} is not in [sources] allow-git"),
                         );
                     }
-                } else if !registry_allowed(source, allowed) {
+                } else if let Some(level) = self.registry_source_level.to_violation_level()
+                    && !registry_allowed(source, allowed)
+                {
                     push(
                         Rule::Source,
+                        level,
                         format!("source {source} is not in [sources] allow-registries"),
                     );
                 }
             }
 
-            let clarified = self.clarification(&package.name, &package.version);
+            let clarified = match context.verified_clarifications {
+                Some(verified) => verified
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .and_then(|clarify_idx| self.license_clarifications.get(clarify_idx)),
+                None => self.clarification(&package.name, &package.version),
+            };
             if self.check_licenses
                 && in_set(licenses_set, index)
                 && (clarified.is_some() || (licenses_known && CRATES_IO.contains(&source)))
@@ -553,6 +763,7 @@ impl Policy {
                         if self.unknown_license == UnknownLicense::Deny {
                             push(
                                 Rule::License,
+                                ViolationLevel::Error,
                                 "license is unknown (set `unknown = \"allow\"` to accept)"
                                     .to_owned(),
                             );
@@ -562,21 +773,30 @@ impl Policy {
                         Ok(true) => {}
                         Ok(false) => push(
                             Rule::License,
+                            ViolationLevel::Error,
                             format!("license `{expression}`{note} is not allowed by the policy"),
                         ),
                         Err(error) => push(
                             Rule::License,
+                            ViolationLevel::Error,
                             format!("license `{expression}` cannot be read: {error}"),
                         ),
                     },
                 }
             }
         }
-        if self.deny_multiple_versions || !self.deny_multiple_versions_of.is_empty() {
+        let default_mv_level = self.multiple_versions.to_violation_level();
+        if default_mv_level.is_some() || !self.deny_multiple_versions_of.is_empty() {
             let skipped_trees = self.skipped_trees(inventory);
             for (name, indices) in inventory.duplicates() {
-                if (!self.deny_multiple_versions && !self.deny_multiple_versions_of.contains(&name))
-                    || self.skip_multiple_versions.contains(&name)
+                let level = if self.deny_multiple_versions_of.contains(&name) {
+                    ViolationLevel::Error
+                } else if let Some(level) = default_mv_level {
+                    level
+                } else {
+                    continue;
+                };
+                if self.skip_multiple_versions.contains(&name)
                     || skipped_trees.contains(name.as_str())
                 {
                     continue;
@@ -621,6 +841,7 @@ impl Policy {
                 violations.push(Violation {
                     package: indices[0],
                     rule: Rule::MultipleVersions,
+                    level,
                     message: format!(
                         "`{name}` is resolved in {} versions ({}); add it to [bans] skip-multiple-versions to accept",
                         versions.len(),
@@ -660,7 +881,7 @@ mod multiple_versions_tests {
         };
         let mut policy = Policy::default();
         assert!(policy.check(&inventory, &[], false).is_empty());
-        policy.deny_multiple_versions = true;
+        policy.multiple_versions = super::LintLevel::Deny;
         policy.skip_multiple_versions = vec!["windows-sys".to_owned()];
         let violations = policy.check(&inventory, &[], false);
         assert_eq!(violations.len(), 1);
@@ -707,7 +928,7 @@ mod multiple_versions_tests {
             ],
         };
         let mut policy = Policy {
-            deny_multiple_versions: true,
+            multiple_versions: super::LintLevel::Deny,
             ..Default::default()
         };
 
@@ -858,12 +1079,14 @@ mod tests {
                 version: None,
                 expression: "MIT".to_owned(),
                 reason: "LICENSE file checked".to_owned(),
+                license_files: Vec::new(),
             },
             LicenseClarification {
                 name: "openssl".to_owned(),
                 version: Some("<0.9".to_owned()),
                 expression: "OpenSSL".to_owned(),
                 reason: "older versions only".to_owned(),
+                license_files: Vec::new(),
             },
         ];
         // The exception lifts both the allow list and the deny list for
@@ -1024,5 +1247,68 @@ mod tests {
                 .check_graphs(&inventory, &info, true, None, Some(&non_dev), None)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn allow_build_scripts_checks_external_and_optional_workspace_crates() {
+        let inventory = Inventory {
+            packages: vec![
+                package("app", "0.1.0", None),
+                package("cc", "1.0.90", Some(CRATES_IO)),
+                package("ring", "0.17.8", Some(CRATES_IO)),
+            ],
+        };
+        let build_scripts: super::ActivePackages =
+            [("app", "0.1.0"), ("cc", "1.0.90"), ("ring", "0.17.8")]
+                .into_iter()
+                .map(|(n, v)| (n.to_owned(), v.to_owned()))
+                .collect();
+        let mut policy = Policy {
+            allow_build_scripts: Some(vec![super::BuildScriptAllow {
+                name: "cc".to_owned(),
+                version: None,
+            }]),
+            ..Default::default()
+        };
+
+        let ctx = super::GraphContext {
+            build_scripts: Some(&build_scripts),
+            ..Default::default()
+        };
+        let violations = policy.check_with_context(&inventory, &[], false, &ctx);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(inventory.packages[violations[0].package].name, "ring");
+        assert_eq!(violations[0].rule, Rule::Ban);
+        assert_eq!(violations[0].level, super::ViolationLevel::Error);
+
+        policy.build_include_workspace = true;
+        let violations = policy.check_with_context(&inventory, &[], false, &ctx);
+        assert_eq!(violations.len(), 2);
+        assert_eq!(inventory.packages[violations[0].package].name, "app");
+        assert_eq!(inventory.packages[violations[1].package].name, "ring");
+    }
+
+    #[test]
+    fn warn_levels_emit_warning_violations_for_sources_and_duplicates() {
+        let (mut inventory, info) = sample();
+        inventory
+            .packages
+            .push(package("good", "2.0.0", Some(CRATES_IO)));
+        let policy = Policy {
+            allow_registries: Some(vec!["crates.io".to_owned()]),
+            allow_git: Vec::new(),
+            registry_source_level: super::LintLevel::Warn,
+            git_source_level: super::LintLevel::Deny,
+            multiple_versions: super::LintLevel::Warn,
+            ..Default::default()
+        };
+        let violations = policy.check(&inventory, &info, false);
+        assert_eq!(violations.len(), 3, "{violations:?}");
+        assert_eq!(inventory.packages[violations[0].package].name, "forked");
+        assert_eq!(violations[0].level, super::ViolationLevel::Error);
+        assert_eq!(inventory.packages[violations[1].package].name, "private");
+        assert_eq!(violations[1].level, super::ViolationLevel::Warning);
+        assert_eq!(violations[2].rule, Rule::MultipleVersions);
+        assert_eq!(violations[2].level, super::ViolationLevel::Warning);
     }
 }

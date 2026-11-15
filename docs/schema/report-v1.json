@@ -157,9 +157,10 @@
     "violation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["rule", "package", "message", "path"],
+      "required": ["rule", "level", "package", "message", "path"],
       "properties": {
         "rule": { "enum": ["license", "source", "ban", "multiple-versions"] },
+        "level": { "enum": ["error", "warning"] },
         "package": { "$ref": "#/$defs/package_ref" },
         "message": { "type": "string" },
         "path": { "$ref": "#/$defs/path" }

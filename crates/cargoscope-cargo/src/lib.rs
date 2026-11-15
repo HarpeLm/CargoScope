@@ -11,6 +11,7 @@ use cargoscope_core::{Inventory, Package, UnusedFinding};
 
 pub mod binary;
 pub mod config;
+pub mod crate_sources;
 pub mod deny;
 pub mod fix;
 pub mod locations;
