@@ -41,6 +41,11 @@ pub struct Comparison {
     pub resolved_unused: Vec<String>,
     /// Yanked versions in use that are new (`name version`).
     pub new_yanked: Vec<String>,
+    /// Crates now resolved in several versions that were not before, as
+    /// `name v1, v2` (oldest first).
+    pub new_duplicates: Vec<String>,
+    /// Crates of the baseline in several versions that now have only one.
+    pub resolved_duplicates: Vec<String>,
 }
 
 fn text(value: &Value, key: &str) -> String {
@@ -100,6 +105,33 @@ fn likely_unused(report: &Value) -> BTreeSet<String> {
                 text(finding, "section"),
                 text(finding, "dependency")
             )
+        })
+        .collect()
+}
+
+/// Crates resolved in several versions, by name, with their versions joined
+/// oldest first. Computed from `packages`, so older reports work too.
+fn duplicates(report: &Value) -> BTreeMap<String, String> {
+    let mut versions: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for package in array(report, "packages") {
+        if text(package, "scope") != "root" {
+            versions
+                .entry(text(package, "name"))
+                .or_default()
+                .push(text(package, "version"));
+        }
+    }
+    versions
+        .into_iter()
+        .filter_map(|(name, mut list)| {
+            list.sort_by(|left, right| {
+                match (semver::Version::parse(left), semver::Version::parse(right)) {
+                    (Ok(left), Ok(right)) => left.cmp(&right),
+                    _ => left.cmp(right),
+                }
+            });
+            list.dedup();
+            (list.len() > 1).then(|| (name, list.join(", ")))
         })
         .collect()
 }
@@ -194,6 +226,8 @@ pub fn compare(baseline: &Value, current: &Value) -> Comparison {
     let old_unused = likely_unused(baseline);
     let new_unused_set = likely_unused(current);
     let old_yanked = yanked(baseline);
+    let old_duplicates = duplicates(baseline);
+    let new_duplicates_map = duplicates(current);
 
     Comparison {
         new_advisories,
@@ -204,6 +238,16 @@ pub fn compare(baseline: &Value, current: &Value) -> Comparison {
         new_unused: new_unused_set.difference(&old_unused).cloned().collect(),
         resolved_unused: old_unused.difference(&new_unused_set).cloned().collect(),
         new_yanked: yanked(current).difference(&old_yanked).cloned().collect(),
+        new_duplicates: new_duplicates_map
+            .iter()
+            .filter(|(name, _)| !old_duplicates.contains_key(*name))
+            .map(|(name, versions)| format!("{name} {versions}"))
+            .collect(),
+        resolved_duplicates: old_duplicates
+            .keys()
+            .filter(|name| !new_duplicates_map.contains_key(*name))
+            .cloned()
+            .collect(),
     }
 }
 
@@ -256,6 +300,16 @@ pub fn render_comparison_text(comparison: &Comparison) -> String {
         &mut out,
         "Resolved likely-unused dependencies",
         &comparison.resolved_unused,
+    );
+    section(
+        &mut out,
+        "New crates in several versions",
+        &comparison.new_duplicates,
+    );
+    section(
+        &mut out,
+        "Crates no longer in several versions",
+        &comparison.resolved_duplicates,
     );
     let changed: Vec<String> = comparison
         .changed_versions
@@ -368,6 +422,24 @@ pub fn render_comparison_markdown(comparison: &Comparison) -> String {
         markdown_list(&mut out, &comparison.resolved_unused);
         out.push('\n');
     }
+    if !comparison.new_duplicates.is_empty() {
+        let _ = writeln!(
+            out,
+            "**New crates in several versions: {}** (each version is compiled separately)\n",
+            comparison.new_duplicates.len()
+        );
+        markdown_list(&mut out, &comparison.new_duplicates);
+        out.push('\n');
+    }
+    if !comparison.resolved_duplicates.is_empty() {
+        let _ = writeln!(
+            out,
+            "**No longer in several versions: {}**\n",
+            comparison.resolved_duplicates.len()
+        );
+        markdown_list(&mut out, &comparison.resolved_duplicates);
+        out.push('\n');
+    }
     let package_changes = comparison.changed_versions.len()
         + comparison.added_packages.len()
         + comparison.removed_packages.len();
@@ -423,6 +495,8 @@ pub fn render_comparison_json(comparison: &Comparison) -> String {
         "new_yanked": comparison.new_yanked,
         "new_unused": comparison.new_unused,
         "resolved_unused": comparison.resolved_unused,
+        "new_duplicates": comparison.new_duplicates,
+        "resolved_duplicates": comparison.resolved_duplicates,
         "changed_versions": comparison.changed_versions.iter().map(|(name, before, after)| json!({ "name": name, "before": before, "after": after })).collect::<Vec<_>>(),
         "added_packages": comparison.added_packages,
         "removed_packages": comparison.removed_packages,
@@ -525,6 +599,48 @@ mod tests {
         assert!(same.contains("No new advisory, yanked version or likely-unused dependency."));
         assert!(same.contains("No package added, removed or changed"));
         assert!(!same.contains("<details>"));
+    }
+
+    #[test]
+    fn finds_new_and_resolved_crates_in_several_versions() {
+        let package = |name: &str, version: &str, scope: &str| json!({ "name": name, "version": version, "scope": scope });
+        let baseline = report(
+            json!([]),
+            json!([
+                package("app", "0.1.0", "root"),
+                package("bytes", "0.4.12", "transitive"),
+                package("bytes", "1.0.0", "direct"),
+                package("syn", "2.0.0", "direct"),
+            ]),
+            json!([]),
+        );
+        let current = report(
+            json!([]),
+            json!([
+                package("app", "0.1.0", "root"),
+                package("app", "0.2.0", "transitive"),
+                package("bytes", "1.0.0", "direct"),
+                package("syn", "2.0.0", "direct"),
+                package("syn", "1.10.0", "transitive"),
+                package("syn", "1.9.0", "transitive"),
+            ]),
+            json!([]),
+        );
+        let comparison = compare(&baseline, &current);
+        // Oldest first in semantic version order; a root package never counts.
+        assert_eq!(comparison.new_duplicates, vec!["syn 1.9.0, 1.10.0, 2.0.0"]);
+        assert_eq!(comparison.resolved_duplicates, vec!["bytes"]);
+        assert!(
+            render_comparison_text(&comparison)
+                .contains("New crates in several versions: 1\n- syn 1.9.0, 1.10.0, 2.0.0\n")
+        );
+        let markdown = super::render_comparison_markdown(&comparison);
+        assert!(markdown.contains("**New crates in several versions: 1**"));
+        assert!(markdown.contains("**No longer in several versions: 1**\n\n- `bytes`\n"));
+        assert!(
+            super::render_comparison_json(&comparison)
+                .contains("\"resolved_duplicates\": [\n    \"bytes\"")
+        );
     }
 
     #[test]
