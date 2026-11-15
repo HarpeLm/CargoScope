@@ -7,7 +7,7 @@
 | First translation (commit `22495c9`) | 3 | 9 | 104 |
 | After the fixes below (commit `834f525`) | 3 | 9 | 6 |
 
-**23 of the 28 repositories give exactly the same result** (in 22 of them, no error from either tool).
+**22 of the 28 repositories give exactly the same result** (no error from either tool).
 
 The fixes the comparison led to:
 

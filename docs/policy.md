@@ -81,7 +81,7 @@ A project that already uses cargo-deny needs no `cargoscope.toml`: when there is
 
 What has no equivalent is listed in the report's warnings, never dropped in silence: for example `confidence-threshold`, the hashes of `license-files` (a clarification is not tied to the license files), feature bans, build-script rules (`[bans] build`), `"warn"` levels (a duplicate or a source at `"warn"` is shown but does not fail), and advisory settings such as `unmaintained`. The reading is tolerant: an unknown key is a note, not an error, unlike in `cargoscope.toml`.
 
-On 28 repositories with their own `deny.toml`, CargoScope gives exactly cargo-deny's result in 23, and is slightly stricter in the others: see [tests/corpus/deny-toml.md](../tests/corpus/deny-toml.md).
+On 28 repositories with their own `deny.toml`, CargoScope gives exactly cargo-deny's result in 22; in 5 others it is slightly stricter, and in one cargo-deny applies a build-script rule CargoScope lacks: see [tests/corpus/deny-toml.md](../tests/corpus/deny-toml.md).
 
 ## Ignoring an advisory
 
