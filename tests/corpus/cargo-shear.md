@@ -64,6 +64,19 @@ A second set of refinements tightened three checks to package scope and fixed tw
 
 On the 70-repository corpus (`cargo run --release -p cargoscope-corpus --offline`), this surfaced **13 newly detected genuinely unused dependencies** with **0 new false positives** (**233 of 235** correct, **99.1%**: 20/20 development, 11/11 held-out, 134/134 held-out-2, 68/70 held-out-3). Both wrong findings that remain are the known, accepted ones of egui. On the 73-library compiler-judged benchmark re-run on `main` (`5acaf7f` with `rustc 1.99.1`, `cargo-shear 1.14.1`, `cargo-machete 0.9.2`), CargoScope confirms **12 of 12** judged right (`100.0%` precision, `0` errors) and **12 of 16** (`75.0%` recall; **12 of 15 = 80.0%** excluding `digest`'s `sha2`, which CargoScope intentionally keeps because `README.md` doctests use it — the remaining 3 misses are downgraded to `possibly-unused`: `strum_macros`, `rustc-std-workspace-alloc`/`alloc`, and `uuid`'s wasm-test `getrandom`). `cargo-shear` 1.14.1 finds more on libraries (**14 of 15** corrected, `15/16` raw), with 2 compiler-proven errors (`anstyle-syntect`'s `same-file` and `thiserror`) plus `digest`'s `sha2` (`16/18` raw = `88.9%`, `15/18` = `83.3%` corrected).
 
+## Only exported macros (commit `9d3d5c1`)
+
+A `macro_rules!` without `#[macro_export]` cannot be called from another crate, so what its body names can never be a dependency its callers need. Only exported macros now keep a dependency `possibly-unused` (strum's internal `DocumentMacroRexports` had kept `strum_macros` there).
+
+| Libraries (rustc judge) | CargoScope | cargo-shear |
+|---|---|---|
+| Correct of reported | **13 of 13** | 16 of 18 |
+| Certain unused found (of 16) | 13 | 15 |
+
+Of the 16 "certain" ones, 2 must not be removed: `sha2` (README doctests of `digest`) and `getrandom` in uuid's wasm test, declared with `features = ["wasm_js"]` only to select that backend; without it the wasm build fails. Both are among cargo-shear's 15. On the 14 that can really be removed, **both tools find 13** (neither finds `alloc`, an optional dependency of wasip1), and CargoScope makes no wrong or harmful suggestion.
+
+Applications: the change brought 12 new findings, all checked as really unused (`serde_json` in 5 tauri apps, `polars-error` in 2 polars crates, `proptest`, `bevy_platform`, `sqlx-core`, `itoa`, `gloo`); the labelled corpus is at 246 correct of 248 (the 2 known egui cases).
+
 ## Limits
 
 - The corpus labels were built from CargoScope's findings, and CargoScope's rules were tuned on part of this corpus: its numbers here are not blind. The library set is blind for cargo-shear, not for CargoScope (see the compiler benchmark).
