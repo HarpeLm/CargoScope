@@ -189,6 +189,15 @@ cargoscope compare baseline.json current.json                  # what changed be
 
 `compare` lists new and resolved advisories, new yanked versions, new and resolved likely-unused dependencies, new and resolved crates in several versions, and version changes, as text, JSON (`--format json`) or Markdown for a pull request comment (`--format markdown`). It exits with 1 when new advisories reach `--fail-on`.
 
+## Auditing a Compiled Binary
+
+```sh
+cargoscope update                      # once, for the advisory database
+cargoscope audit-bin target/release/my-app
+```
+
+Reports the advisories of the crates compiled into a Rust binary, with the chain that pulls each one in. It is exact for binaries built with [`cargo auditable build`](https://github.com/rust-secure-code/cargo-auditable), which embeds the dependency tree; on a test project it gives the same findings as `cargo audit bin`. Without that data, it falls back to the crate paths that panic messages keep in the binary: that list is incomplete, has no tree, and the report says so. The file is only read, never run. Options: `--format text|json`, `--fail-on`.
+
 ## Ignoring an Advisory
 
 ```toml
