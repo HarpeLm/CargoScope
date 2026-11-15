@@ -21,7 +21,7 @@ CargoScope is an open-source CLI, written in Rust, for Rust/Cargo projects. One 
 
 ## Status
 
-**Version 0.4.0.** New in 0.4.0: `cargoscope fix` removes unused dependencies (dry run first), the heaviest direct dependencies, a `multiple-versions` policy rule, and sharper unused-dependency rules. Since 0.3.0, crates in several versions; since 0.2.0, pull request comments in the GitHub Action. `cargoscope update` downloads the RustSec advisory database and the crates.io data of a project; `cargoscope scan` then reports, offline, matching advisories, likely-unused dependencies with the evidence behind each one, licenses, yanked and outdated versions, a `cargoscope.toml` policy, and the dependency chain behind every finding, as text, JSON or SARIF. It is young: please report anything wrong in the [feedback issue](https://github.com/HarpeLm/CargoScope/issues/1).
+**Version 0.4.1.** New in 0.4 (0.4.1 adds `--help` for each command): `cargoscope fix` removes unused dependencies (dry run first), the heaviest direct dependencies, a `multiple-versions` policy rule, and sharper unused-dependency rules. Since 0.3.0, crates in several versions; since 0.2.0, pull request comments in the GitHub Action. `cargoscope update` downloads the RustSec advisory database and the crates.io data of a project; `cargoscope scan` then reports, offline, matching advisories, likely-unused dependencies with the evidence behind each one, licenses, yanked and outdated versions, a `cargoscope.toml` policy, and the dependency chain behind every finding, as text, JSON or SARIF. It is young: please report anything wrong in the [feedback issue](https://github.com/HarpeLm/CargoScope/issues/1).
 
 **New here?** [Try CargoScope in two minutes](docs/try-it.md), then tell us how it went.
 
@@ -61,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: HarpeLm/CargoScope@v0.4.0
+      - uses: HarpeLm/CargoScope@v0.4.1
         with:
           fail-on: high        # or none, to report without failing
 ```
