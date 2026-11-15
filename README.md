@@ -205,6 +205,39 @@ time 0.1.45 (RUSTSEC-2020-0071)
 
 For each vulnerability with a fix, CargoScope tries the smallest fixed version first with `cargo update --precise ... --dry-run`, so Cargo, which knows every version requirement, decides whether `Cargo.lock` can move without changing a manifest. When it cannot, Cargo's explanation shows which dependency to upgrade or which requirement to relax. Only `Cargo.lock` changes, and only with `--apply`. This runs `cargo update`, which may read the registry index; it compiles and runs nothing.
 
+### Security update pull requests
+
+The GitHub Action can open the pull request itself, on a schedule:
+
+```yaml
+on:
+  schedule:
+    - cron: "0 6 * * *"   # every day
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write          # only for ci-workflow
+  security-events: write
+
+jobs:
+  security-updates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: HarpeLm/CargoScope@v0.5.0
+        with:
+          fail-on: none
+          open-pr: true
+          ci-workflow: ci.yml   # optional: starts your CI on the pull request
+```
+
+It runs `cargoscope fix --advisories --apply`; when `Cargo.lock` changes, it pushes the branch `cargoscope/security-updates` and opens a pull request listing the fixed advisories, the versions before and after, and what stays vulnerable with Cargo's reason. A later run updates the same pull request. Two GitHub rules apply:
+
+- With the default token, the repository must allow GitHub Actions to create pull requests (Settings, Actions, General, Workflow permissions). A personal access token or a GitHub App token passed as `token` does not need it.
+- A pull request opened with the default token starts no workflow. `ci-workflow` works around it: a `workflow_dispatch` started by the default token does run, and its checks show on the pull request commit (your CI needs a `workflow_dispatch` trigger). A personal access token or a GitHub App token starts the usual pull request workflows.
+
 ## Auditing a Compiled Binary
 
 ```sh
