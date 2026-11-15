@@ -38,6 +38,22 @@ So between about a third (13 of 37) and three quarters (29 of 37, if every undec
 - **CargoScope's misses are concentrated in a few rules** (macros of workspace crates, library names, packages without tests, feature selection). Making these rules sharper is the clearest way to close the recall gap without losing precision.
 - **Since Rust 1.100, Cargo warns about unused normal and build dependencies by itself**, from the compiler (not dev-dependencies, and `cargo fix` removes nothing). Static tools keep their value for dev-dependencies, for CI without a build, and for removal, but the bar is now the compiler.
 
+## After sharpening CargoScope's rules (commit `112740c`)
+
+The rules behind CargoScope's misses were made narrower, each on a fact the scanner can check:
+
+- **Library names**: when the dependency's manifest is available (a path dependency, or a crate unpacked in `$CARGO_HOME`), its library name is known even without a `[lib] name`, so no guess is made from the package name (`assert-impl`, `human-sort`).
+- **Packages without test files**: missing test files are only suspected in published copies; inside a git checkout, a dev-dependency used by no test file is reported (`snapbox`, `tokio-test`, `insta`).
+- **Workspace macros**: a macro of a workspace crate can only explain a dependency if the package uses that crate.
+- Two new cautious rules found while labelling: a package without `tests/` that runs trybuild compiles test files from elsewhere against its dev-dependencies (deno's `compile_test_runner`), and `#[wasm_bindgen]` on an async function expands to `wasm-bindgen-futures`.
+
+| | Before | After |
+|---|---|---|
+| Libraries (rustc judge): correct of reported, certain unused found | 10 of 10, 10 of 15 | **12 of 12, 12 of 15** |
+| Applications (labelled corpus): correct of reported | 181 of 183 | **221 of 223** |
+
+The sharper rules brought 37 new application findings, all checked by reading the code: 35 really unused, and 2 wrong, which led to the two new rules above. Both wrong findings that remain are the known, accepted ones of egui. cargo-shear still finds more on libraries (14 of 15), with errors CargoScope does not make.
+
 ## Limits
 
 - The corpus labels were built from CargoScope's findings, and CargoScope's rules were tuned on part of this corpus: its numbers here are not blind. The library set is blind for cargo-shear, not for CargoScope (see the compiler benchmark).
