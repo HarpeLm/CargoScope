@@ -209,7 +209,7 @@ A `cargoscope.toml` next to `Cargo.toml` enforces allowed licenses, allowed sour
 cargoscope scan . --precise
 ```
 
-Confirms unused dependencies with rustc's `unused_crate_dependencies` lint (`cargo check --all-targets --all-features`, in `target/cargoscope-precise`). **It compiles the project, so build scripts and proc macros run**: use it on code you trust. It is never enabled by default, and covers only the current platform.
+Confirms unused dependencies with the compiler (`cargo check --all-targets --all-features`, in `target/cargoscope-precise`): rustc's `unused_crate_dependencies` lint, or, from Rust 1.100, Cargo's own `unused_dependencies` lint. Cargo's lint does not check dev-dependencies, which then keep their static result. **It compiles the project, so build scripts and proc macros run**: use it on code you trust. It is never enabled by default, and covers only the current platform.
 
 ## Removing Unused Dependencies
 
