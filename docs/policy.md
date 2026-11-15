@@ -73,13 +73,15 @@ A project that already uses cargo-deny needs no `cargoscope.toml`: when there is
 
 | deny.toml | CargoScope |
 |---|---|
-| `[graph] targets` (strings or `{ triple }`), `features`, `all-features`, `no-default-features`, `exclude-dev` | the same `[graph]` keys |
+| `[graph] targets` (strings or `{ triple }`), `features`, `all-features`, `no-default-features`, `exclude-dev`, `exclude-unpublished` (default: default features, as cargo-deny) | the same `[graph]` keys |
 | `[licenses] allow`, `exceptions`, `clarify` | the same, with `crate = "name"`, `"name@version"` or `name`/`version`; a missing reason becomes "from deny.toml" |
-| `[bans] deny`, `multiple-versions = "deny"`, `skip` | `[bans] deny`, `multiple-versions = "deny"`, `skip-multiple-versions` |
+| `[bans] deny` (with `wrappers`; `deny-multiple-versions` on a crate), `multiple-versions = "deny"`, `skip`, `skip-tree`, `multiple-versions-include-dev` | bans with wrappers, duplicate rules per crate, `skip-multiple-versions`, skipped trees; duplicates of dev-dependencies left out unless `multiple-versions-include-dev = true` |
 | `[sources] unknown-registry`/`unknown-git = "deny"`, `allow-registry`, `allow-git`, `allow-org` | `allow-registries`, `allow-git` (an organisation becomes its URL prefix) |
 | `[advisories] ignore` (IDs or `{ id, reason }`) | `[advisories] ignore` |
 
-What has no equivalent is listed in the report's warnings, never dropped in silence: for example `confidence-threshold`, the hashes of `license-files` (a clarification is not tied to the license files), `wrappers` (the ban then applies everywhere), `skip-tree`, feature bans, `"warn"` levels (a duplicate or a source at `"warn"` is shown but does not fail), and advisory settings such as `unmaintained`. The reading is tolerant: an unknown key is a note, not an error, unlike in `cargoscope.toml`.
+What has no equivalent is listed in the report's warnings, never dropped in silence: for example `confidence-threshold`, the hashes of `license-files` (a clarification is not tied to the license files), feature bans, build-script rules (`[bans] build`), `"warn"` levels (a duplicate or a source at `"warn"` is shown but does not fail), and advisory settings such as `unmaintained`. The reading is tolerant: an unknown key is a note, not an error, unlike in `cargoscope.toml`.
+
+On 28 repositories with their own `deny.toml`, CargoScope gives exactly cargo-deny's result in 23, and is slightly stricter in the others: see [tests/corpus/deny-toml.md](../tests/corpus/deny-toml.md).
 
 ## Ignoring an advisory
 
