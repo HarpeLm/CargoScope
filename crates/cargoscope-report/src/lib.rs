@@ -82,6 +82,7 @@ pub fn render_text(project_root: &Path, report: &Report, options: TextOptions) -
         out.push_str("\nUnused dependencies: not checked\n");
     }
     render_registry_text(&mut out, report);
+    render_duplicates_text(&mut out, inventory);
     render_policy_text(&mut out, report);
 
     if options.verbose {
@@ -167,6 +168,13 @@ pub fn summary(report: &Report) -> String {
     }
     if let Some(violations) = &report.policy {
         parts.push(plural(violations.len(), "policy violation"));
+    }
+    let duplicates = report.inventory.duplicates().len();
+    if duplicates > 0 {
+        parts.push(format!(
+            "{} in several versions",
+            plural(duplicates, "crate")
+        ));
     }
     parts.push(plural(report.inventory.packages.len(), "package"));
     parts.join(", ")
@@ -334,6 +342,32 @@ fn render_unused_text(
             finding.manifest,
             finding.ignored.as_deref().unwrap_or_default()
         );
+    }
+}
+
+/// Crates resolved in several versions: every version but the newest shows
+/// the chain that pulls it in, since that is what keeps it in the build.
+fn render_duplicates_text(out: &mut String, inventory: &Inventory) {
+    let duplicates = inventory.duplicates();
+    if duplicates.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "\nCrates in several versions: {} (each version is compiled separately)",
+        duplicates.len()
+    );
+    for (name, indices) in &duplicates {
+        let versions: Vec<&str> = indices
+            .iter()
+            .map(|&index| inventory.packages[index].version.as_str())
+            .collect();
+        let _ = writeln!(out, "- {name} {}", versions.join(", "));
+        for &index in &indices[..indices.len() - 1] {
+            if let Some(chain) = chain(inventory, index) {
+                let _ = writeln!(out, "    {} via {chain}", inventory.packages[index].version);
+            }
+        }
     }
 }
 
@@ -537,6 +571,24 @@ pub fn render_json(project_root: &Path, report: &Report) -> String {
     }
     out.push_str("],");
 
+    out.push_str("\"duplicates\":[");
+    for (position, (name, indices)) in inventory.duplicates().iter().enumerate() {
+        if position > 0 {
+            out.push(',');
+        }
+        let versions: Vec<String> = indices
+            .iter()
+            .map(|&index| inventory.packages[index].version.clone())
+            .collect();
+        let _ = write!(
+            out,
+            "{{\"name\":\"{}\",\"versions\":{}}}",
+            json_escape(name),
+            json_string_array(&versions)
+        );
+    }
+    out.push_str("],");
+
     out.push_str("\"policy\":");
     match &report.policy {
         None => out.push_str("null,"),
@@ -704,6 +756,34 @@ mod tests {
             advisory_db_date: Some("2026-01-02".to_owned()),
             warnings: Vec::new(),
         }
+    }
+
+    #[test]
+    fn lists_crates_in_several_versions_with_the_chain_of_older_ones() {
+        let mut report = sample(Vec::new());
+        // app -> alpha -> beta 1.0.0, and app -> beta 2.0.0 directly.
+        report.inventory.packages[0].dependencies.push(4);
+        report.inventory.packages.push(Package {
+            version: "2.0.0".to_owned(),
+            ..package("beta", None, false, true, vec![])
+        });
+        let text = render_text(Path::new("."), &report, TextOptions::default());
+        assert!(
+            text.contains("1 crate in several versions, 5 packages"),
+            "{text}"
+        );
+        assert!(text.contains(
+            "Crates in several versions: 1 (each version is compiled separately)\n- beta 1.0.0, 2.0.0\n    1.0.0 via app -> alpha -> beta\n"
+        ));
+        let json: serde_json::Value =
+            serde_json::from_str(&render_json(Path::new("."), &report)).expect("valid JSON");
+        assert_eq!(
+            json["duplicates"],
+            serde_json::json!([{ "name": "beta", "versions": ["1.0.0", "2.0.0"] }])
+        );
+        // Nothing is printed when every crate has a single version.
+        let single = render_text(Path::new("."), &sample(Vec::new()), TextOptions::default());
+        assert!(!single.contains("several versions"));
     }
 
     fn finding(kind: AdvisoryKind, patched: Vec<String>) -> AdvisoryFinding {

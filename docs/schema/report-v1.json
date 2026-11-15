@@ -32,6 +32,19 @@
     "advisories": { "type": "array", "items": { "$ref": "#/$defs/advisory" } },
     "packages": { "type": "array", "items": { "$ref": "#/$defs/package" } },
     "unused": { "type": "array", "items": { "$ref": "#/$defs/unused" } },
+    "duplicates": {
+      "description": "Crates resolved in more than one version (packages of the project excluded), by name. Added in CargoScope 0.3.0.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "versions"],
+        "properties": {
+          "name": { "type": "string" },
+          "versions": { "description": "Oldest first.", "type": "array", "minItems": 2, "items": { "type": "string" } }
+        }
+      }
+    },
     "policy": {
       "description": "Violations of the cargoscope.toml policy, or null when no policy is configured or checked.",
       "oneOf": [{ "type": "array", "items": { "$ref": "#/$defs/violation" } }, { "type": "null" }]
