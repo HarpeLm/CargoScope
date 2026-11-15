@@ -174,6 +174,9 @@ struct Sources {
     published_copy: bool,
     /// At least one file was found in tests/, benches/ or examples/.
     has_test_files: bool,
+    /// The package is inside a git checkout (a `.git` entry in it or an
+    /// ancestor), so its test files are not missing.
+    git_checkout: bool,
     /// Files skipped because of size, depth or count limits.
     skipped: usize,
 }
@@ -202,6 +205,17 @@ fn source_bound(package_dir: &Path) -> PathBuf {
     start
 }
 
+/// Whether `package_dir` or one of its ancestors holds a `.git` directory or
+/// file (a worktree or submodule).
+fn in_git_checkout(package_dir: &Path) -> bool {
+    let start = package_dir
+        .canonicalize()
+        .unwrap_or_else(|_| package_dir.to_path_buf());
+    start
+        .ancestors()
+        .any(|dir| fs::symlink_metadata(dir.join(".git")).is_ok())
+}
+
 /// Whether `path` resolves to a location inside `bound` (no escape through
 /// `..`, an absolute path or a symbolic link).
 fn is_within(bound: &Path, path: &Path) -> bool {
@@ -213,6 +227,7 @@ fn collect_sources(package_dir: &Path, manifest: &toml::Value) -> Sources {
     let bound = source_bound(package_dir);
     let mut sources = Sources {
         published_copy: is_regular_file(&package_dir.join("Cargo.toml.orig")),
+        git_checkout: in_git_checkout(package_dir),
         ..Sources::default()
     };
     for dir in SOURCE_DIRS {
@@ -763,8 +778,10 @@ pub struct PackageToCheck<'a> {
     pub workspace_root: &'a Path,
 }
 
-/// The `[lib] name` of a dependency, when its manifest is available locally:
-/// a path dependency, or a crate unpacked in `$CARGO_HOME/registry/src`.
+/// The library name of a dependency, when its manifest is available locally
+/// (a path dependency, or a crate unpacked in `$CARGO_HOME/registry/src`):
+/// its `[lib] name`, or else its package name with `-` read as `_`.
+/// `None` when the manifest is not available.
 fn library_name(
     dependency: &DeclaredDependency,
     package: &PackageToCheck<'_>,
@@ -776,11 +793,16 @@ fn library_name(
             return None;
         }
         let value: toml::Value = toml::from_str(&fs::read_to_string(manifest).ok()?).ok()?;
-        value
+        let explicit = value
             .get("lib")
             .and_then(|lib| lib.get("name"))
             .and_then(toml::Value::as_str)
-            .map(str::to_owned)
+            .map(str::to_owned);
+        let package_name = value
+            .get("package")
+            .and_then(|package| package.get("name"))
+            .and_then(toml::Value::as_str)?;
+        Some(explicit.unwrap_or_else(|| package_name.replace('-', "_")))
     };
     if let Some((path, from_workspace)) = &dependency.path {
         let base = if *from_workspace {
@@ -1024,12 +1046,13 @@ pub fn check_package(
     let mut findings = Vec::new();
     for dependency in declared_dependencies(package.manifest, workspace_dependencies) {
         let renamed = dependency.key != dependency.package;
-        let ident = if renamed {
-            dependency.key.replace('-', "_")
+        let known_library = if renamed {
+            None
         } else {
             library_name(&dependency, package, inventory)
-                .unwrap_or_else(|| dependency.key.replace('-', "_"))
         };
+        let library_known = known_library.is_some();
+        let ident = known_library.unwrap_or_else(|| dependency.key.replace('-', "_"));
         let (references, searched, searched_label) = match dependency.kind {
             DependencyKind::Build => (&build_refs, sources.build.len(), "build script"),
             _ => (
@@ -1070,7 +1093,9 @@ pub fn check_package(
                 .iter()
                 .map(|declared| declared.key.replace('-', "_"))
                 .collect();
+        // Guesses only when the library name could not be read.
         if !renamed
+            && !library_known
             && ident == dependency.key.replace('-', "_")
             && let Some(guess) = library_name_guesses(&dependency.package)
                 .into_iter()
@@ -1114,13 +1139,33 @@ pub fn check_package(
                 .macro_rules
                 .iter()
                 .find_map(|(crate_ident, names)| {
-                    (declared_idents.contains(crate_ident) && names.contains(&ident))
-                        .then_some(crate_ident)
+                    // A macro can only be called through its crate: a path,
+                    // `use` or `extern crate` of the provider.
+                    (declared_idents.contains(crate_ident)
+                        && references.contains(crate_ident)
+                        && names.contains(&ident))
+                    .then_some(crate_ident)
                 })
         {
             exceptions.push(format!(
                 "may be used through a macro of workspace crate `{provider}`, which mentions it"
             ));
+        }
+        // Compile tests in tests/ are read like any test; without tests/,
+        // the files trybuild compiles live elsewhere and are not read.
+        if dependency.kind == DependencyKind::Dev
+            && !sources.has_test_files
+            && (code_refs.contains("trybuild") || code_refs.contains("ui_test"))
+        {
+            exceptions.push(
+                "the package runs compile tests (trybuild) on files outside it, built against its dev-dependencies"
+                    .to_owned(),
+            );
+        }
+        if ident == "wasm_bindgen_futures" && code_refs.contains("wasm_bindgen") {
+            exceptions.push(
+                "`#[wasm_bindgen]` on an async function expands to wasm-bindgen-futures".to_owned(),
+            );
         }
         if sources.has_build_script
             && dependency.kind != DependencyKind::Build
@@ -1142,7 +1187,10 @@ pub fn check_package(
                 "published package copy (Cargo.toml.orig present): test files are often excluded from it"
                     .to_owned(),
             );
-        } else if dependency.kind == DependencyKind::Dev && !sources.has_test_files {
+        } else if dependency.kind == DependencyKind::Dev
+            && !sources.has_test_files
+            && !sources.git_checkout
+        {
             exceptions.push(
                 "no tests/, benches/ or examples/ found: test files may be missing from this copy"
                     .to_owned(),
@@ -1481,6 +1529,81 @@ mod tests {
             cargoscope_core::UnusedConfidence::Possibly
         );
         assert!(warnings.iter().any(|warning| warning.contains("skipped")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn known_library_names_git_checkouts_and_compile_tests() {
+        let root = std::env::temp_dir().join(format!("cargoscope-rules-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("app/src")).expect("dirs");
+        std::fs::create_dir_all(root.join("assert-impl")).expect("dirs");
+        // A path dependency whose library keeps its package name.
+        std::fs::write(
+            root.join("assert-impl/Cargo.toml"),
+            "[package]\nname = \"assert-impl\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("write");
+        std::fs::write(
+            root.join("app/src/lib.rs"),
+            "use wasm_bindgen::prelude::*;\nmod imp { pub fn f() {} }\npub fn g() { imp::f(); }\n",
+        )
+        .expect("write");
+        let manifest: toml::Value = toml::from_str(
+            "[package]\nname = \"app\"\n[dependencies]\nassert-impl = { path = \"../assert-impl\" }\nwasm-bindgen = \"0.2\"\nwasm-bindgen-futures = \"0.4\"\n[dev-dependencies]\nbytes = \"1\"\n",
+        )
+        .expect("valid");
+        let check = || {
+            super::check_package(
+                &super::PackageToCheck {
+                    name: "app",
+                    dir: &root.join("app"),
+                    manifest_label: "app/Cargo.toml",
+                    manifest: &manifest,
+                    workspace_root: &root,
+                },
+                None,
+                &cargoscope_core::Inventory {
+                    packages: Vec::new(),
+                },
+                &super::WorkspaceMacros::default(),
+            )
+            .0
+        };
+        let confidence = |findings: &[cargoscope_core::UnusedFinding], name: &str| {
+            findings
+                .iter()
+                .find(|finding| finding.dependency == name)
+                .map(|finding| finding.confidence)
+        };
+        use cargoscope_core::UnusedConfidence::{Likely, Possibly};
+
+        let findings = check();
+        // `imp::` would look like a guess for `assert-impl`, but its library
+        // name is known (`assert_impl`), so no guess is made.
+        assert_eq!(confidence(&findings, "assert-impl"), Some(Likely));
+        assert_eq!(
+            confidence(&findings, "wasm-bindgen-futures"),
+            Some(Possibly)
+        );
+        // No tests and no git checkout: the test files may be missing.
+        assert_eq!(confidence(&findings, "bytes"), Some(Possibly));
+
+        // In a git checkout, missing test files are really missing.
+        std::fs::create_dir_all(root.join(".git")).expect("git dir");
+        assert_eq!(confidence(&check(), "bytes"), Some(Likely));
+
+        // A package that runs trybuild compiles test files with its dev-dependencies.
+        std::fs::write(
+            root.join("app/src/lib.rs"),
+            "#[test] fn ui() { trybuild::TestCases::new(); }\n",
+        )
+        .expect("write");
+        assert_eq!(confidence(&check(), "bytes"), Some(Possibly));
+        // ... unless its compile tests are in tests/, which are read.
+        std::fs::create_dir_all(root.join("app/tests")).expect("tests dir");
+        std::fs::write(root.join("app/tests/ui.rs"), "fn main() {}\n").expect("write");
+        assert_eq!(confidence(&check(), "bytes"), Some(Likely));
         let _ = std::fs::remove_dir_all(&root);
     }
 
