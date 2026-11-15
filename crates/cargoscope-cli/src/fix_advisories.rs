@@ -108,8 +108,85 @@ fn reason(stderr: &str) -> String {
     }
 }
 
-/// `cargoscope fix --advisories [PATH] [--apply]`.
-pub fn run(root: &Path, apply: bool) -> Result<ExitCode, ExitCode> {
+/// First line of the Markdown report: lets the GitHub Action find the pull
+/// request it opened before.
+pub const PR_MARKER: &str = "<!-- cargoscope-security-pr -->";
+
+/// One vulnerable package and what happens to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Row {
+    name: String,
+    from: String,
+    ids: Vec<String>,
+    step: Step,
+}
+
+fn advisory_link(id: &str) -> String {
+    if id.starts_with("RUSTSEC-") {
+        format!("[{id}](https://rustsec.org/advisories/{id})")
+    } else {
+        format!("`{id}`")
+    }
+}
+
+/// The report as Markdown, for the body of a pull request.
+fn render_markdown(rows: &[Row]) -> String {
+    use std::fmt::Write;
+    let mut out = format!("{PR_MARKER}\n### CargoScope: security updates\n\n");
+    let updates: Vec<&Row> = rows
+        .iter()
+        .filter(|row| matches!(row.step, Step::Update { .. }))
+        .collect();
+    let blocked: Vec<&Row> = rows
+        .iter()
+        .filter(|row| matches!(row.step, Step::Blocked(_)))
+        .collect();
+    if updates.is_empty() {
+        out.push_str("No vulnerable package can be updated without a manifest change.\n\n");
+    } else {
+        out.push_str("This updates `Cargo.lock` to the smallest fixed version Cargo accepts:\n\n| Package | From | To | Advisories |\n|---|---|---|---|\n");
+        for row in &updates {
+            if let Step::Update { version, .. } = &row.step {
+                let ids: Vec<String> = row.ids.iter().map(|id| advisory_link(id)).collect();
+                let _ = writeln!(
+                    out,
+                    "| `{}` | {} | **{version}** | {} |",
+                    row.name,
+                    row.from,
+                    ids.join(", ")
+                );
+            }
+        }
+        out.push('\n');
+    }
+    if !blocked.is_empty() {
+        let _ = writeln!(
+            out,
+            "**Still vulnerable: {}** (a manifest change or a newer dependent is needed)\n",
+            blocked.len()
+        );
+        for row in &blocked {
+            if let Step::Blocked(why) = &row.step {
+                let ids: Vec<String> = row.ids.iter().map(|id| advisory_link(id)).collect();
+                let _ = writeln!(
+                    out,
+                    "- `{} {}` ({}): {}",
+                    row.name,
+                    row.from,
+                    ids.join(", "),
+                    why.replace('\n', " ")
+                );
+            }
+        }
+        out.push('\n');
+    }
+    out.push_str("Made with `cargoscope fix --advisories --apply`: only `Cargo.lock` changes; review the build and tests before merging.\n");
+    out
+}
+
+/// `cargoscope fix --advisories [PATH] [--apply] [--format markdown]`. With
+/// `markdown`, only the Markdown report is printed (after the updates).
+pub fn run(root: &Path, apply: bool, markdown: bool) -> Result<ExitCode, ExitCode> {
     let inventory: Inventory = cargoscope_cargo::scan_cargo_project(root)
         .map_err(|error| execution_error(root, &error))?;
     let mut warnings = Vec::new();
@@ -120,7 +197,7 @@ pub fn run(root: &Path, apply: bool) -> Result<ExitCode, ExitCode> {
 
     // One step per vulnerable package, ignored advisories left out.
     let mut seen = BTreeSet::new();
-    let mut steps = Vec::new();
+    let mut rows: Vec<Row> = Vec::new();
     for finding in &findings {
         if finding.ignored.is_some()
             || !matches!(finding.kind, AdvisoryKind::Vulnerability)
@@ -160,26 +237,50 @@ pub fn run(root: &Path, apply: bool) -> Result<ExitCode, ExitCode> {
                 }
             }
         };
-        println!("{} {} ({})", package.name, package.version, ids.join(", "));
-        match &step {
-            Step::Update { version, .. } => println!("  - update to {version}"),
-            Step::Blocked(why) => println!("  = cannot update: {why}"),
+        if !markdown {
+            println!("{} {} ({})", package.name, package.version, ids.join(", "));
+            match &step {
+                Step::Update { version, .. } => println!("  - update to {version}"),
+                Step::Blocked(why) => println!("  = cannot update: {why}"),
+            }
         }
-        steps.push(step);
+        rows.push(Row {
+            name: package.name.clone(),
+            from: package.version.clone(),
+            ids: ids.iter().map(|id| (*id).to_owned()).collect(),
+            step,
+        });
     }
-    if steps.is_empty() {
-        println!("No vulnerable package to update.");
+    if rows.is_empty() {
+        if !markdown {
+            println!("No vulnerable package to update.");
+        }
         return Ok(ExitCode::SUCCESS);
     }
 
-    let updates: Vec<(&String, &String)> = steps
+    let updates: Vec<(&String, &String)> = rows
         .iter()
-        .filter_map(|step| match step {
+        .filter_map(|row| match &row.step {
             Step::Update { spec, version } => Some((spec, version)),
             Step::Blocked(_) => None,
         })
         .collect();
-    let blocked = steps.len() - updates.len();
+    let blocked = rows.len() - updates.len();
+    if markdown {
+        if apply {
+            for (spec, version) in &updates {
+                cargo_update(root, spec, version, false).map_err(|error| {
+                    eprintln!(
+                        "cargo update -p {spec} --precise {version} failed: {}",
+                        reason(&error)
+                    );
+                    ExitCode::from(2)
+                })?;
+            }
+        }
+        print!("{}", render_markdown(&rows));
+        return Ok(ExitCode::SUCCESS);
+    }
     if !apply {
         println!(
             "\nDry run: Cargo.lock was not changed. Run `cargoscope fix --advisories --apply` to make {} update(s); {blocked} package(s) need a manifest change or a newer dependent.",
@@ -231,6 +332,35 @@ mod tests {
         );
         assert!(versions(&[">= 1.0.0"], "2.0.0").is_empty());
         assert!(versions(&["not a range"], "1.0.0").is_empty());
+    }
+
+    #[test]
+    fn renders_the_pull_request_body() {
+        use super::{Row, Step, render_markdown};
+        let rows = vec![
+            Row {
+                name: "chrono".to_owned(),
+                from: "0.4.19".to_owned(),
+                ids: vec!["RUSTSEC-2020-0159".to_owned()],
+                step: Step::Update {
+                    spec: "chrono@0.4.19".to_owned(),
+                    version: "0.4.20".to_owned(),
+                },
+            },
+            Row {
+                name: "time".to_owned(),
+                from: "0.1.45".to_owned(),
+                ids: vec!["RUSTSEC-2020-0071".to_owned()],
+                step: Step::Blocked("required by package `chrono v0.4.19`".to_owned()),
+            },
+        ];
+        let body = render_markdown(&rows);
+        assert!(body.starts_with("<!-- cargoscope-security-pr -->\n"));
+        assert!(body.contains(
+            "| `chrono` | 0.4.19 | **0.4.20** | [RUSTSEC-2020-0159](https://rustsec.org/advisories/RUSTSEC-2020-0159) |"
+        ));
+        assert!(body.contains("**Still vulnerable: 1**"));
+        assert!(body.contains("- `time 0.1.45` ([RUSTSEC-2020-0071](https://rustsec.org/advisories/RUSTSEC-2020-0071)): required by package `chrono v0.4.19`"));
     }
 
     #[test]

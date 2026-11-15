@@ -37,7 +37,7 @@ const FIX_USAGE: &str = "  cargoscope fix [PATH] [--dry-run | --apply] [--only N
       to a comma-separated list of dependencies. Possibly-unused and ignored
       dependencies are never removed. Formatting and comments of the
       manifests are kept; run cargo check afterwards.
-  cargoscope fix --advisories [PATH] [--dry-run | --apply]
+  cargoscope fix --advisories [PATH] [--dry-run | --apply] [--format text|markdown]
       Update vulnerable packages in Cargo.lock to the smallest fixed version
       Cargo accepts without manifest changes (cargo update --precise), and say
       which dependency blocks the others. Runs cargo update, which may read
