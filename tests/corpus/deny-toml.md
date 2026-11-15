@@ -9,9 +9,10 @@
 | After P4 fixes (same 28 repos) | 3 | 9 | 0 |
 | **After Option A fixes (`[bans] build`, hashes, `"warn"`, same 28 repos)** | **12** | **0** | **0** |
 | Expanded corpora with `blind-judge` after P4 (34 valid repos) | 10 | 22 | 0 |
-| **Expanded corpora with `blind-judge` after Option A (34 valid repos)** | **31** | **1** | **2** |
+| Expanded corpora with `blind-judge` after Option A (34 valid repos) | 31 | 1 | 2 |
+| **Expanded corpora with `blind-judge` after graph fixes (34 valid repos)** | **32** | **0** | **0** |
 
-**28 of the original 28 repositories (100%) give exactly the same result** (up from 22/28 at `834f525` and 27/28 after P4), and **32 of the 34 valid repositories** across all three corpora match identically.
+**28 of the original 28 repositories (100%) give the same error set**, and the last two graph discrepancies across the **34 valid repositories** (`tower-rs/tower-http` and `taiki-e/portable-atomic`) are now resolved (both verified directly against `cargo-deny 0.20.2`).
 
 The fixes the comparison led to:
 
@@ -29,10 +30,8 @@ Root-cause fixes implemented on `main` (`0.6.0-dev`) and verified in the re-run 
 
 - `[bans] build` (`allow-build-scripts` and `include-workspace`), `[licenses.clarify]` `license-files` 32-bit `xxHash32` verification, and `"warn"` lint levels (`[bans] multiple-versions = "warn"`, `[sources] unknown-registry` / `unknown-git = "warn"`) were added: all **21 `[bans] build` errors** across `taiki-e/pin-project` (7), `taiki-e/pin-project-lite` (9), and `taiki-e/portable-atomic` (5) now match `cargo-deny`.
 
-What still differs on the 34 valid repositories (`1` crate reported by `cargo-deny` only, `2` by CargoScope only):
-
-- **1 license error** in `tower-rs/tower-http` (`zstd-sys`, `BSD-3-Clause AND BSD-2-Clause`): `tower-http` sets `exclude-unpublished = true` and `default = []`, while unpublished `examples/*` depend on `tower-http` with `features = ["full"]`. `cargo-deny` runs `cargo metadata` over the whole workspace before stripping `examples/*` in `krates`, keeping `zstd-sys` enabled by feature unification; CargoScope passes `--exclude` to `cargo tree`, so `tower-http` stays at `default = []` without `zstd-sys`.
-- **2 build-script errors** in `taiki-e/portable-atomic` (`proc-macro2`, `quote` via `serde -> serde_core -> serde_derive`): `portable-atomic` mixes a root `[package]` (`serde` with `default-features = false`) and a workspace member (`bench` / test helper) whose dependencies unify `serde/derive` under `cargo tree`, whereas `cargo-deny` / `krates` keeps `serde_derive` inactive for the root package graph.
+- **1 license error** in `tower-rs/tower-http` (`zstd-sys`, `BSD-3-Clause AND BSD-2-Clause`), fixed on `0.6.0-dev`: `active_packages` now runs `cargo tree --prefix depth` without `--exclude` and prunes `exclude-unpublished` workspace members afterward, preserving workspace feature unification from `examples/*` onto `tower-http` (`full` -> `zstd-sys`) before excluding example-only dependencies (`cargo deny` 1 error == CargoScope 1 error).
+- **2 build-script errors** (`proc-macro2`, `quote`) in `taiki-e/portable-atomic`, fixed on `0.6.0-dev`: `serde_core` declares `serde_derive` under `[target."cfg(any())".dependencies]`, which `cargo tree --target all` retains. CargoScope now reads `cargo metadata` `resolve.nodes` `dep_kinds` when `targets` is empty and prunes edges whose matching `dep_kinds` are all unsatisfiable (`cfg(any())` / `cfg(not(all()))`), matching `cargo-deny`'s 10 errors (`5` `[bans.build]` + `5` `[sources]`).
 
 (Two older `deny.toml` files in `briansmith/untrusted` and `polyfill-rs/is_terminal_polyfill` use pre-0.14 `[advisories]` syntax rejected by cargo-deny 0.20.2 and were excluded from the comparison.)
 
