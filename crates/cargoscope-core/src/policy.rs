@@ -116,6 +116,13 @@ pub struct Policy {
     /// `[graph] exclude-dev`: packages only the project's dev-dependencies
     /// pull in are not checked.
     pub exclude_dev: bool,
+    /// `[graph] exclude-unpublished`: workspace members with
+    /// `publish = false` and what only they pull in are not checked.
+    pub exclude_unpublished: bool,
+    /// Whether duplicates pulled in only by dev-dependencies count for
+    /// `multiple-versions` (cargo-deny's `multiple-versions-include-dev`,
+    /// off by default there). `cargoscope.toml` counts them.
+    pub duplicates_exclude_dev: bool,
     /// Features of the project (`[graph] features`, `all-features`,
     /// `no-default-features`) the rules are limited to; `None` checks the
     /// packages of every feature.
@@ -316,12 +323,28 @@ impl Policy {
         licenses_known: bool,
         active: Option<&ActivePackages>,
     ) -> Vec<Violation> {
-        let is_active = |index: usize| {
-            active.is_none_or(|active| {
+        self.check_graphs(inventory, info, licenses_known, active, active)
+    }
+
+    /// Like [`Policy::check_scoped`], with a separate set of packages for the
+    /// `multiple-versions` rule (`duplicates_active`, without the
+    /// dev-dependencies when `duplicates_exclude_dev`).
+    #[must_use]
+    pub fn check_graphs(
+        &self,
+        inventory: &Inventory,
+        info: &[PackageInfo],
+        licenses_known: bool,
+        active: Option<&ActivePackages>,
+        duplicates_active: Option<&ActivePackages>,
+    ) -> Vec<Violation> {
+        let in_set = |set: Option<&ActivePackages>, index: usize| {
+            set.is_none_or(|set| {
                 let package = &inventory.packages[index];
-                active.contains(&(package.name.clone(), package.version.clone()))
+                set.contains(&(package.name.clone(), package.version.clone()))
             })
         };
+        let is_active = |index: usize| in_set(active, index);
         let mut violations = Vec::new();
         for (index, package) in inventory.packages.iter().enumerate() {
             let Some(source) = package.source.as_deref() else {
@@ -469,7 +492,10 @@ impl Policy {
                     continue;
                 }
                 // Only the versions a target builds count as duplicates.
-                let indices: Vec<usize> = indices.into_iter().filter(|&i| is_active(i)).collect();
+                let indices: Vec<usize> = indices
+                    .into_iter()
+                    .filter(|&i| in_set(duplicates_active, i))
+                    .collect();
                 let distinct: BTreeSet<&str> = indices
                     .iter()
                     .map(|&index| inventory.packages[index].version.as_str())

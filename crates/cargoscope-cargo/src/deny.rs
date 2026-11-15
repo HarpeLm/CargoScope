@@ -192,6 +192,7 @@ pub fn translate(text: &str) -> Result<Translated, String> {
             });
         }
         policy.exclude_dev = flag("exclude-dev");
+        policy.exclude_unpublished = flag("exclude-unpublished");
         unsupported(
             &mut notes,
             "graph",
@@ -202,6 +203,7 @@ pub fn translate(text: &str) -> Result<Translated, String> {
                 "all-features",
                 "no-default-features",
                 "exclude-dev",
+                "exclude-unpublished",
             ],
         );
     }
@@ -344,6 +346,11 @@ pub fn translate(text: &str) -> Result<Translated, String> {
                 wrappers,
             });
         }
+        // cargo-deny leaves duplicates of dev-dependencies out by default.
+        policy.duplicates_exclude_dev = bans
+            .get("multiple-versions-include-dev")
+            .and_then(toml::Value::as_bool)
+            != Some(true);
         match bans.get("multiple-versions").and_then(toml::Value::as_str) {
             Some("deny") => policy.deny_multiple_versions = true,
             Some("warn") => notes.push("deny.toml: multiple-versions = \"warn\": duplicates are listed in the report but do not fail the scan".to_owned()),
@@ -379,6 +386,7 @@ pub fn translate(text: &str) -> Result<Translated, String> {
                 "multiple-versions",
                 "skip",
                 "skip-tree",
+                "multiple-versions-include-dev",
                 "wildcards",
                 "highlight",
                 "allow-wildcard-paths",

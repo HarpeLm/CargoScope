@@ -41,6 +41,7 @@ pub fn tree_args(
     targets: &[String],
     features: Option<&Features>,
     exclude_dev: bool,
+    excluded_members: &[String],
 ) -> Vec<String> {
     let mut args: Vec<String> = [
         "tree",
@@ -72,7 +73,58 @@ pub fn tree_args(
         args.extend(["--target".to_owned(), target.clone()]);
     }
     args.extend(features.map(Features::cargo_args).unwrap_or_default());
+    for member in excluded_members {
+        args.extend(["--exclude".to_owned(), member.clone()]);
+    }
     args
+}
+
+/// Workspace members with `publish = false` (or an empty `publish` list),
+/// from `cargo metadata --no-deps`.
+///
+/// # Errors
+///
+/// Returns Cargo's explanation when it cannot read the workspace.
+pub fn unpublished_members(root: &Path) -> Result<Vec<String>, String> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let output = Command::new(&cargo)
+        .current_dir(root)
+        .args([
+            "metadata",
+            "--no-deps",
+            "--format-version",
+            "1",
+            "--locked",
+            "--color",
+            "never",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("could not run cargo: {error}"))?;
+    if !output.status.success() {
+        return Err("`cargo metadata --no-deps` failed".to_owned());
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("cargo metadata did not return JSON: {error}"))?;
+    Ok(unpublished_in(&value))
+}
+
+/// Names of the packages whose `publish` is an empty list (`publish = false`).
+fn unpublished_in(metadata: &serde_json::Value) -> Vec<String> {
+    metadata
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|package| {
+            package
+                .get("publish")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(Vec::is_empty)
+        })
+        .filter_map(|package| package.get("name").and_then(serde_json::Value::as_str))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Packages a build of the project at `root` uses for `targets` (every
@@ -88,11 +140,12 @@ pub fn active_packages(
     targets: &[String],
     features: Option<&Features>,
     exclude_dev: bool,
+    excluded_members: &[String],
 ) -> Result<ActivePackages, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let output = Command::new(&cargo)
         .current_dir(root)
-        .args(tree_args(targets, features, exclude_dev))
+        .args(tree_args(targets, features, exclude_dev, excluded_members))
         .stdin(Stdio::null())
         .output()
         .map_err(|error| format!("could not run cargo: {error}"))?;
@@ -138,8 +191,19 @@ mod tests {
     fn builds_the_cargo_tree_arguments() {
         let joined = |args: Vec<String>| args.join(" ");
         assert!(
-            joined(tree_args(&[], None, false)).ends_with("--edges normal,build,dev --target all")
+            joined(tree_args(&[], None, false, &[]))
+                .ends_with("--edges normal,build,dev --target all")
         );
+        assert!(
+            joined(tree_args(&[], None, false, &["xtask".to_owned()]))
+                .ends_with("--target all --exclude xtask")
+        );
+        let metadata = serde_json::json!({"packages": [
+            {"name": "app", "publish": null},
+            {"name": "xtask", "publish": []},
+            {"name": "internal", "publish": ["my-registry"]}
+        ]});
+        assert_eq!(super::unpublished_in(&metadata), vec!["xtask"]);
         let features = Features {
             list: vec!["tls".to_owned()],
             all: false,
@@ -152,6 +216,7 @@ mod tests {
             ],
             Some(&features),
             true,
+            &[],
         ));
         assert!(args.starts_with("tree --workspace --locked"), "{args}");
         assert!(args.ends_with("--edges normal,build --target x86_64-unknown-linux-gnu --target aarch64-apple-darwin --no-default-features --features tls"), "{args}");

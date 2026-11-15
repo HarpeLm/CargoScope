@@ -309,30 +309,48 @@ fn check_policy(
         warnings.push("license rules of the policy were skipped: no crates.io data".to_owned());
     }
     warnings.extend(policy.unused_license_entries(inventory));
-    // `[graph]`: only the packages its targets and features build are checked.
-    let active = if policy.targets.is_empty() && policy.features.is_none() && !policy.exclude_dev {
-        None
+    // `[graph]`: only the packages that build uses are checked.
+    let graph_set = !policy.targets.is_empty()
+        || policy.features.is_some()
+        || policy.exclude_dev
+        || policy.exclude_unpublished;
+    let failed = |error: String| {
+        eprintln!(
+            "CargoScope could not limit the policy to its [graph]: {error}. Check the target and feature names and run `cargo fetch` first, or remove them from [graph]."
+        );
+        ExitCode::from(2)
+    };
+    let excluded = if policy.exclude_unpublished {
+        cargoscope_cargo::targets::unpublished_members(root).map_err(failed)?
     } else {
-        Some(
-            cargoscope_cargo::targets::active_packages(
-                root,
-                &policy.targets,
-                policy.features.as_ref(),
-                policy.exclude_dev,
-            )
-            .map_err(|error| {
-                eprintln!(
-                    "CargoScope could not limit the policy to its [graph]: {error}. Check the target and feature names and run `cargo fetch` first, or remove them from [graph]."
-                );
-                ExitCode::from(2)
-            })?,
+        Vec::new()
+    };
+    let graph = |exclude_dev: bool| {
+        cargoscope_cargo::targets::active_packages(
+            root,
+            &policy.targets,
+            policy.features.as_ref(),
+            exclude_dev,
+            &excluded,
         )
     };
-    Ok(policy.check_scoped(
+    let active = if graph_set {
+        Some(graph(policy.exclude_dev).map_err(failed)?)
+    } else {
+        None
+    };
+    // Duplicates may leave out the dev-dependencies (as cargo-deny does).
+    let duplicates_active = if policy.duplicates_exclude_dev && !policy.exclude_dev {
+        Some(graph(true).map_err(failed)?)
+    } else {
+        active.clone()
+    };
+    Ok(policy.check_graphs(
         inventory,
         package_info,
         registry_date.is_some(),
         active.as_ref(),
+        duplicates_active.as_ref(),
     ))
 }
 
