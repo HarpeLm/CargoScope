@@ -21,7 +21,7 @@ CargoScope is an open-source CLI, written in Rust, for Rust/Cargo projects. One 
 
 ## Status
 
-**Version 0.2.0.** New in 0.2.0: the GitHub Action comments on pull requests with what they change, and `compare --format markdown`. `cargoscope update` downloads the RustSec advisory database and the crates.io data of a project; `cargoscope scan` then reports, offline, matching advisories, likely-unused dependencies with the evidence behind each one, licenses, yanked and outdated versions, a `cargoscope.toml` policy, and the dependency chain behind every finding, as text, JSON or SARIF. It is young: please report anything wrong in the [feedback issue](https://github.com/HarpeLm/CargoScope/issues/1).
+**Version 0.3.0.** New in 0.3.0: crates resolved in several versions, with the chain that pulls in each older version. Since 0.2.0, the GitHub Action comments on pull requests with what they change. `cargoscope update` downloads the RustSec advisory database and the crates.io data of a project; `cargoscope scan` then reports, offline, matching advisories, likely-unused dependencies with the evidence behind each one, licenses, yanked and outdated versions, a `cargoscope.toml` policy, and the dependency chain behind every finding, as text, JSON or SARIF. It is young: please report anything wrong in the [feedback issue](https://github.com/HarpeLm/CargoScope/issues/1).
 
 **New here?** [Try CargoScope in two minutes](docs/try-it.md), then tell us how it went.
 
@@ -61,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: HarpeLm/CargoScope@v0.2.0
+      - uses: HarpeLm/CargoScope@v0.3.0
         with:
           fail-on: high        # or none, to report without failing
 ```
