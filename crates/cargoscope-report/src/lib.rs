@@ -168,6 +168,10 @@ pub fn summary(report: &Report) -> String {
             .count();
         parts.push(format!("{yanked} yanked"));
         parts.push(format!("{outdated_direct} outdated direct"));
+        let fragile = maintenance_rows(report).len();
+        if fragile > 0 {
+            parts.push(format!("{fragile} direct to watch"));
+        }
     }
     if let Some(violations) = &report.policy {
         let errors = violations
@@ -517,8 +521,88 @@ fn render_registry_text(out: &mut String, report: &Report) {
     }
     if report.checks.versions {
         render_versions_text(out, report, &registry_packages);
+        render_maintenance_text(out, report);
     } else {
         out.push_str("\nVersions: not checked\n");
+    }
+}
+
+/// Direct crates.io dependencies with maintenance concerns, in package order.
+pub(crate) fn maintenance_rows(
+    report: &Report,
+) -> Vec<(usize, Vec<cargoscope_core::MaintenanceConcern>)> {
+    registry_packages(report)
+        .into_iter()
+        .filter(|(index, _)| {
+            let package = &report.inventory.packages[*index];
+            package.direct && !package.root
+        })
+        .map(|(index, info)| (index, info.maintenance_concerns()))
+        .filter(|(_, concerns)| !concerns.is_empty())
+        .collect()
+}
+
+/// One concern in words, with its evidence.
+pub(crate) fn describe_concern(
+    concern: cargoscope_core::MaintenanceConcern,
+    info: &cargoscope_core::PackageInfo,
+) -> String {
+    use cargoscope_core::MaintenanceConcern;
+    match concern {
+        MaintenanceConcern::Archived => format!(
+            "repository archived ({})",
+            info.repository.as_deref().unwrap_or("?")
+        ),
+        MaintenanceConcern::Stale => format!(
+            "no release since {}",
+            info.last_release.as_deref().unwrap_or("?")
+        ),
+        MaintenanceConcern::SingleOwner => format!(
+            "single owner ({})",
+            info.owners
+                .as_ref()
+                .and_then(|owners| owners.first())
+                .map_or("?", String::as_str)
+        ),
+    }
+}
+
+fn render_maintenance_text(out: &mut String, report: &Report) {
+    let direct: Vec<&cargoscope_core::PackageInfo> = registry_packages(report)
+        .into_iter()
+        .filter(|(index, _)| {
+            let package = &report.inventory.packages[*index];
+            package.direct && !package.root
+        })
+        .map(|(_, info)| info)
+        .collect();
+    if direct.is_empty() {
+        return;
+    }
+    let rows = maintenance_rows(report);
+    let _ = writeln!(
+        out,
+        "\nMaintenance: {} of {} direct dependencies to watch",
+        rows.len(),
+        direct.len()
+    );
+    for (index, concerns) in &rows {
+        let package = &report.inventory.packages[*index];
+        let info = &report.package_info[*index];
+        let reasons: Vec<String> = concerns
+            .iter()
+            .map(|&concern| describe_concern(concern, info))
+            .collect();
+        let _ = writeln!(
+            out,
+            "- {} {}: {}",
+            package.name,
+            package.version,
+            reasons.join("; ")
+        );
+    }
+    if direct.iter().all(|info| info.owners.is_none()) {
+        out.push_str("  (owners and archived status not downloaded: run `cargoscope update`)\n");
     }
 }
 
@@ -714,7 +798,7 @@ pub fn render_json(project_root: &Path, report: &Report) -> String {
         let outdated_kind = info.outdated_kind(&package.version);
         let _ = write!(
             out,
-            ",\"license\":{},\"latest_version\":{},\"latest_published\":{},\"latest_compatible\":{},\"compatible_published\":{},\"outdated\":{},\"outdated_kind\":\"{}\",\"yanked\":{}}}",
+            ",\"license\":{},\"latest_version\":{},\"latest_published\":{},\"latest_compatible\":{},\"compatible_published\":{},\"outdated\":{},\"outdated_kind\":\"{}\",\"yanked\":{},\"last_release\":{},\"owners\":{},\"repository\":{},\"archived\":{},\"maintenance\":{}}}",
             json_string_or_null(info.license.as_deref()),
             json_string_or_null(info.latest_version.as_deref()),
             json_string_or_null(info.latest_published.as_deref()),
@@ -724,6 +808,20 @@ pub fn render_json(project_root: &Path, report: &Report) -> String {
             outdated_kind.as_str(),
             info.yanked
                 .map_or("null", |yanked| if yanked { "true" } else { "false" }),
+            json_string_or_null(info.last_release.as_deref()),
+            info.owners
+                .as_deref()
+                .map_or_else(|| "null".to_owned(), json_string_array),
+            json_string_or_null(info.repository.as_deref()),
+            info.archived
+                .map_or("null", |archived| if archived { "true" } else { "false" }),
+            json_string_array(
+                &info
+                    .maintenance_concerns()
+                    .into_iter()
+                    .map(|concern| concern.as_str().to_owned())
+                    .collect::<Vec<_>>()
+            ),
         );
     }
     out.push_str("],");
@@ -1087,7 +1185,7 @@ mod tests {
             "{\"id\":\"TEST-0001\",\"aliases\":[\"CVE-TEST\"],\"title\":\"Beta is broken\",\"date\":\"2025-05-05\",\"url\":\"https://example.test/report\",\"kind\":\"vulnerability\",\"informational\":null,\"severity\":\"high\",\"package\":{\"name\":\"beta\",\"version\":\"1.0.0\"},\"patched\":[\">= 1.2.0\"],\"path\":[{\"name\":\"app\",\"version\":\"1.0.0\"},{\"name\":\"alpha\",\"version\":\"1.0.0\"},{\"name\":\"beta\",\"version\":\"1.0.0\"}],\"ignored_reason\":null}"
         ));
         assert!(json.contains(
-            "{\"name\":\"orphan\",\"version\":\"1.0.0\",\"scope\":\"transitive\",\"direct\":false,\"source\":null,\"path\":null,\"license\":null,\"latest_version\":null,\"latest_published\":null,\"latest_compatible\":null,\"compatible_published\":null,\"outdated\":false,\"outdated_kind\":\"none\",\"yanked\":null}"
+            "{\"name\":\"orphan\",\"version\":\"1.0.0\",\"scope\":\"transitive\",\"direct\":false,\"source\":null,\"path\":null,\"license\":null,\"latest_version\":null,\"latest_published\":null,\"latest_compatible\":null,\"compatible_published\":null,\"outdated\":false,\"outdated_kind\":\"none\",\"yanked\":null,\"last_release\":null,\"owners\":null,\"repository\":null,\"archived\":null,\"maintenance\":[]}"
         ));
         assert!(json.ends_with("\"unused\":[],\"warnings\":[]}\n"));
     }
@@ -1212,7 +1310,7 @@ mod tests {
                 "\"registry\":{\"source\":\"crates.io\",\"downloaded_on\":\"2026-02-03\"}"
             )
         );
-        assert!(json.contains("\"license\":\"MIT\",\"latest_version\":\"2.0.0\",\"latest_published\":\"2026-01-01\",\"latest_compatible\":\"1.4.0\",\"compatible_published\":\"2025-11-10\",\"outdated\":true,\"outdated_kind\":\"both\",\"yanked\":true}"));
+        assert!(json.contains("\"license\":\"MIT\",\"latest_version\":\"2.0.0\",\"latest_published\":\"2026-01-01\",\"latest_compatible\":\"1.4.0\",\"compatible_published\":\"2025-11-10\",\"outdated\":true,\"outdated_kind\":\"both\",\"yanked\":true,\"last_release\":null,\"owners\":null,\"repository\":null,\"archived\":null,\"maintenance\":[]}"));
     }
 
     #[test]

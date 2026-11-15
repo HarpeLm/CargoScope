@@ -758,8 +758,43 @@ fn render_versions_licenses_section(out: &mut String, report: &Report, counts: &
             }
             out.push_str("</tbody></table></div>\n");
         }
+        render_maintenance_panel(out, report);
     }
     out.push_str("</div>\n</div>\n</section>\n");
+}
+
+fn render_maintenance_panel(out: &mut String, report: &Report) {
+    let rows = crate::maintenance_rows(report);
+    out.push_str("<h3>Maintenance of Direct Dependencies</h3>\n");
+    if rows.is_empty() {
+        out.push_str("<p class=\"empty empty-ok\">No archived, stale or single-owner direct dependency found.</p>\n");
+        return;
+    }
+    out.push_str(
+        "<div class=\"table-wrap\"><table>\n<thead><tr><th>Package</th><th>Concerns</th></tr></thead>\n<tbody>\n",
+    );
+    for (index, concerns) in rows {
+        let pkg = &report.inventory.packages[index];
+        let info = &report.package_info[index];
+        let badges: Vec<String> = concerns
+            .iter()
+            .map(|&concern| {
+                format!(
+                    "<span class=\"badge badge-warn\">{}</span> {}",
+                    escape_html(concern.as_str()),
+                    escape_html(&crate::describe_concern(concern, info))
+                )
+            })
+            .collect();
+        let _ = writeln!(
+            out,
+            "<tr class=\"filter-row\"><td><code>{}</code> <span class=\"muted\">{}</span></td><td>{}</td></tr>",
+            escape_html(&pkg.name),
+            escape_html(&pkg.version),
+            badges.join("<br>")
+        );
+    }
+    out.push_str("</tbody></table></div>\n");
 }
 
 fn render_graph_section(out: &mut String, report: &Report) {

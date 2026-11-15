@@ -139,7 +139,8 @@
       "required": [
         "name", "version", "scope", "direct", "source", "path", "license",
         "latest_version", "latest_published", "latest_compatible",
-        "compatible_published", "outdated", "outdated_kind", "yanked"
+        "compatible_published", "outdated", "outdated_kind", "yanked",
+        "last_release", "owners", "repository", "archived", "maintenance"
       ],
       "properties": {
         "name": { "type": "string" },
@@ -155,7 +156,20 @@
         "compatible_published": { "$ref": "#/$defs/nullable_date" },
         "outdated": { "type": "boolean" },
         "outdated_kind": { "enum": ["none", "compatible", "breaking", "both"] },
-        "yanked": { "type": ["boolean", "null"], "description": "null when no registry data is cached." }
+        "yanked": { "type": ["boolean", "null"], "description": "null when no registry data is cached." },
+        "last_release": { "$ref": "#/$defs/nullable_date", "description": "Date of the most recent non-yanked release of any version (since 0.7.0)." },
+        "owners": {
+          "type": ["array", "null"],
+          "items": { "type": "string" },
+          "description": "crates.io owners (teams as github:org:team); null when not downloaded. Fetched for direct dependencies only (since 0.7.0)."
+        },
+        "repository": { "$ref": "#/$defs/nullable_string", "description": "Repository URL; fetched for direct dependencies only (since 0.7.0)." },
+        "archived": { "type": ["boolean", "null"], "description": "Whether the GitHub repository is archived; null when unknown or not on GitHub (since 0.7.0)." },
+        "maintenance": {
+          "type": "array",
+          "items": { "enum": ["archived", "stale", "single-owner"] },
+          "description": "Maintenance concerns: archived repository, no release for 2 years, single crates.io owner (since 0.7.0)."
+        }
       }
     },
     "violation": {

@@ -264,7 +264,19 @@ fn json_output_includes_registry_data() {
     assert!(
         json.contains("\"registry\":{\"source\":\"crates.io\",\"downloaded_on\":\"2026-01-01\"}")
     );
-    assert!(json.contains("\"license\":\"MIT OR Apache-2.0\",\"latest_version\":\"1.0.200\",\"latest_published\":\"2025-12-01\",\"latest_compatible\":\"1.0.200\",\"compatible_published\":\"2025-12-01\",\"outdated\":true,\"outdated_kind\":\"compatible\",\"yanked\":false}"));
+    assert!(json.contains("\"license\":\"MIT OR Apache-2.0\",\"latest_version\":\"1.0.200\",\"latest_published\":\"2025-12-01\",\"latest_compatible\":\"1.0.200\",\"compatible_published\":\"2025-12-01\",\"outdated\":true,\"outdated_kind\":\"compatible\",\"yanked\":false,\"last_release\":\"2025-12-20\",\"owners\":[\"dtolnay\"],\"repository\":\"https://github.com/serde-rs/json\",\"archived\":false,\"maintenance\":[\"single-owner\"]}"));
+}
+
+#[test]
+fn text_report_lists_direct_dependencies_to_watch() {
+    let text = stdout(&scan("simple", &["--fail-on", "none"]));
+    assert!(text.contains("1 direct to watch"), "{text}");
+    assert!(
+        text.contains("Maintenance: 1 of 1 direct dependencies to watch\n- serde_json 1.0.128: single owner (dtolnay)\n"),
+        "{text}"
+    );
+    let html = stdout(&scan("simple", &["--format", "html", "--fail-on", "none"]));
+    assert!(html.contains("<span class=\"badge badge-warn\">single-owner</span> single owner (dtolnay)"));
 }
 
 #[test]
@@ -723,7 +735,7 @@ fn package_list_is_hidden_without_verbose() {
         .expect("cargoscope binary runs");
     let text = stdout(&output);
     assert!(text.starts_with("CargoScope "));
-    assert!(text.contains("Summary: 1 vulnerability (1 informational), 0 likely-unused, 1 yanked, 1 outdated direct, 4 packages\n"));
+    assert!(text.contains("Summary: 1 vulnerability (1 informational), 0 likely-unused, 1 yanked, 1 outdated direct, 1 direct to watch, 4 packages\n"));
     assert!(text.contains("Resolved packages: 4 (use --verbose to list them)\n"));
     assert!(!text.contains("- simple 0.1.0 [root]"));
 }
