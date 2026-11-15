@@ -1,4 +1,4 @@
-"""Scores CargoScope and cargo-machete against the compiler verdicts."""
+"""Scores CargoScope, cargo-machete and cargo-shear against the compiler verdicts."""
 import glob
 import json
 import os
@@ -17,6 +17,33 @@ def machete_findings(path):
             findings.add((current, line.strip()))
         elif not line.strip():
             current = None
+    return findings
+
+
+def shear_findings(path, repo_dir):
+    """`shear/unused_dependency` findings of `cargo shear --format json`, as
+    (manifest, dependency, section). The section is the table header that
+    precedes the reported offset."""
+    try:
+        report = json.load(open(path))
+    except (OSError, ValueError):
+        return set()
+    findings = set()
+    for finding in report.get("findings", []):
+        if finding.get("code") != "shear/unused_dependency":
+            continue
+        name = re.search(r"`([^`]+)`", finding["message"]).group(1)
+        manifest = finding["file"]
+        text = open(os.path.join(repo_dir, manifest), "rb").read()[: finding["location"]["offset"]].decode(errors="ignore")
+        headers = re.findall(r"(?m)^\s*\[([^\]]+)\]", text)
+        header = headers[-1].strip() if headers else ""
+        section = None
+        for candidate in ("dev-dependencies", "build-dependencies", "dependencies"):
+            spellings = (candidate, candidate.replace("-", "_"))
+            if any(header == s or header.endswith("." + s) or header.startswith(s + ".") or f".{s}." in header for s in spellings):
+                section = candidate
+                break
+        findings.add((manifest, name, section))
     return findings
 
 
@@ -52,14 +79,15 @@ def all_feature_repos():
     """Repositories compiled with --all-features: with default features only,
     code behind features is not compiled and the lint over-reports."""
     repos = set()
-    for line in open(f"{O}/judge/status.txt"):
-        parts = line.split()
-        if parts[1] == "all-features":
-            repos.add(parts[0])
-    for line in open(f"{O}/judge/retry-status.txt"):
-        parts = line.split()
-        if len(parts) >= 3 and parts[1] == "no-benches" and parts[2] == "all-features":
-            repos.add(parts[0])
+    for name in ("status.txt", "retry-status.txt"):
+        if not os.path.exists(f"{O}/judge/{name}"):
+            continue
+        for line in open(f"{O}/judge/{name}"):
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == "all-features":
+                repos.add(parts[0])
+            if len(parts) >= 3 and parts[1] == "no-benches" and parts[2] == "all-features":
+                repos.add(parts[0])
     return repos
 
 
@@ -97,7 +125,7 @@ def main():
     truth_unused = len(sure)
     judged = sum(v != "unknown" for verdicts in verdicts_by_repo.values() for v in verdicts.values())
 
-    cs_likely, cs_all, machete = [], [], []
+    cs_likely, cs_all, machete, shear = [], [], [], []
     for repo in verdicts_by_repo:
         report = json.load(open(f"{O}/tools/cs-{repo}.json"))
         for finding in report["unused"]:
@@ -109,11 +137,14 @@ def main():
                 cs_likely.append(item)
         for manifest, dependency in machete_findings(f"{O}/tools/machete-{repo}.txt"):
             machete.append((repo, manifest, dependency, None))
+        for manifest, dependency, section in shear_findings(f"{O}/tools/shear-{repo}.json", os.path.join(O, "repos", repo)):
+            shear.append((repo, manifest, dependency, section))
 
     results = [
         score("CargoScope (likely-unused, default output)", cs_likely, verdicts_by_repo, sure),
         score("CargoScope (likely + possibly, --show-uncertain)", cs_all, verdicts_by_repo, sure),
         score("cargo-machete (default)", machete, verdicts_by_repo, sure),
+        score("cargo-shear (default)", shear, verdicts_by_repo, sure),
     ]
     for result in results:
         judged_reported = result["reported_judged"]
@@ -131,7 +162,7 @@ def main():
         print(
             f"{result['tool']}: judged {result['reported_judged']}, correct {result['correct']}, "
             f"wrong {result['wrong']}, not judged {result['not_judged']}, "
-            f"precision {result['precision']:.1%}, recall {result['recall']:.1%} ({result['found_sure']}/{truth_unused})"
+            f"precision {result['precision'] or 0:.1%}, recall {result['recall'] or 0:.1%} ({result['found_sure']}/{truth_unused})"
         )
         for item in result["wrong_list"]:
             print("    wrong:", item)

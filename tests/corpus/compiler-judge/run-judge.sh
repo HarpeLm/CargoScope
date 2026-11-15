@@ -5,6 +5,9 @@
 set -u
 O="$1"
 mkdir -p "$O/judge" "$O/targets"
+# Rust 1.99.1: from 1.100, Cargo reports unused dependencies itself and
+# rustc's JSON messages no longer carry them.
+TOOLCHAIN=$(docker run --rm --network none rust:1.99.1 rustup default | cut -d' ' -f1)
 for repo in "$O"/repos/*; do
   d=$(basename "$repo")
   [ -f "$O/judge/$d.verdicts.json" ] && continue
@@ -13,7 +16,7 @@ for repo in "$O"/repos/*; do
     python3 "$O/timeout.py" 1200 docker run --rm --network none \
       -v "$O/cargo-home:/cargo" -v "$repo:/src" -v "$O/targets:/targets" \
       -e CARGO_HOME=/cargo -e RUSTFLAGS="-W unused-crate-dependencies" \
-      -w /src rust:1 \
+      -e RUSTUP_TOOLCHAIN="$TOOLCHAIN" -w /src rust:1.99.1 \
       cargo check --offline --workspace --all-targets $features \
         --message-format=json --target-dir "/targets/$d" \
       > "$O/judge/$d.messages.json" 2> "$O/judge/$d.stderr.txt"
