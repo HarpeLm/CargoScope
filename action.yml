@@ -98,6 +98,8 @@ runs:
       shell: bash
       env:
         PROJECT: ${{ inputs.path }}
+        # Raises the GitHub API limit for the archived status of repositories.
+        GITHUB_TOKEN: ${{ github.token }}
       run: cargoscope update "$PROJECT"
 
     - name: Scan the base branch of the pull request

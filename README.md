@@ -135,7 +135,7 @@ The JSON report follows a published schema with a compatibility policy: see [doc
 | **v0.4** | Delivered: `cargoscope fix` for unused dependencies, heaviest direct dependencies, `multiple-versions` rule (maintenance indicators and justified recommendations moved later) |
 | **v0.5** | Delivered: `fix --advisories`, `audit-bin`, `deny.toml` parity, `[graph]` scoping, per-crate licenses |
 | **v0.6** | Delivered: offline HTML report (`--format html`), SemVer compatible vs breaking updates, CycloneDX 1.5 SBOM, `cargoscope why`, full `deny.toml` parity (34 of 34 projects) |
-| **v0.7** | Multi-project aggregation of local reports |
+| **v0.7** | In progress: maintenance indicators (archived, stale, single owner); multi-project aggregation of local reports |
 | **1.0** | Stable CLI, JSON schema and compatibility policy |
 
 CargoScope supports **Rust/Cargo only**. Other ecosystems are not planned until the Rust experience is clearly better than combining existing tools. See [SPEC.md](SPEC.md) for the full specification.
@@ -165,7 +165,7 @@ cargo clippy -- -W clippy::pedantic
 cargo run -p cargoscope -- scan .
 ```
 
-Unused-dependency detection is measured on a labelled corpus of 70 real repositories (about 91–94% precision on unseen code, above the 90% criterion of v0.1; on the same packages, cargo-machete's default mode has about 41% precision, see [the comparison](tests/corpus/cargo-machete.md), a [blind benchmark](tests/corpus/blind-benchmark.md) against cargo-machete, cargo-audit and cargo-deny, and a [benchmark judged by rustc](tests/corpus/compiler-benchmark.md) on 73 popular crates: 100% precision on `main` across 12 judged findings — 91.7% on the initial blind run — and more than twice cargo-machete's recall there; [against cargo-shear](tests/corpus/cargo-shear.md), CargoScope errs less but cargo-shear finds more, especially on libraries; and a [second blind test judged by rustc on 56 new repositories](tests/corpus/blind-judge/README.md), with no mistake in CargoScope's default output): see [tests/corpus](tests/corpus/README.md) for the method and the honest numbers.
+Unused-dependency detection is measured on a labelled corpus of 70 real repositories (about 91–94% precision on unseen code, above the 90% criterion of v0.1; on the same packages, cargo-machete's default mode has about 41% precision, see [the comparison](tests/corpus/cargo-machete.md), a [blind benchmark](tests/corpus/blind-benchmark.md) against cargo-machete, cargo-audit and cargo-deny, and a [benchmark judged by rustc](tests/corpus/compiler-benchmark.md) on 73 popular crates: 100% precision on `main` across 12 judged findings — 91.7% on the initial blind run — and more than twice cargo-machete's recall there; [against cargo-shear](tests/corpus/cargo-shear.md), CargoScope errs less and now finds as many removable library dependencies (13 of 14 each, with no CargoScope mistake against 2 for cargo-shear); and a [second blind test judged by rustc on 56 new repositories](tests/corpus/blind-judge/README.md), with no mistake in CargoScope's default output): see [tests/corpus](tests/corpus/README.md) for the method and the honest numbers.
 
 ## Crates in Several Versions
 
@@ -185,6 +185,23 @@ Heaviest direct dependencies: packages that would leave the tree without each on
 ```
 
 Dependencies declared only under `[dev-dependencies]` or `[build-dependencies]` are labelled `(dev)` or `(build)` and listed after the others, since they do not ship with the project; the same label marks a duplicate pulled in through them. For each direct dependency, the report counts the packages that would leave the dependency tree if no member depended on it directly (itself included), and the size of its own tree: the first number is what removing or replacing it saves. The ten heaviest are shown (all with `--verbose`), and the JSON report has every direct dependency in `direct_weights`. Like the rest of the report, it comes from `Cargo.lock`.
+
+## Maintenance Indicators
+
+"What do we rely on that is fragile?" For every direct dependency from crates.io, the report says when one of these is true:
+
+```
+Maintenance: 3 of 18 direct dependencies to watch
+- ansi_term 0.12.1: no release since 2019-09-02
+- atty 0.2.14: no release since 2020-01-05; single owner (softprops)
+- cfg-if 1.0.0: repository archived (https://github.com/rust-lang/cfg-if)
+```
+
+- **Archived repository**: GitHub marks the repository read-only. The repository is the one declared by the crate's newest release, since crates that move keep their old URL in older versions.
+- **Stale**: no release of any version for 2 years or more before the data was downloaded. Many finished crates are stale and fine; it is a question to ask, not a verdict.
+- **Single owner**: one crates.io owner and no team. If that person leaves, nobody can publish a fix. The `rust-lang-owner` account counts as a team.
+
+`cargoscope update` downloads this data for direct dependencies only: the owners from the crates.io API (one request per second, as its crawler policy asks), the repository from the local registry sources or the API, and the archived status from the GitHub API, with `GITHUB_TOKEN` or `GH_TOKEN` when set (60 requests an hour without one; if the limit is reached, the archived status stays unknown and is fetched at the next update). The data is kept for a week, so later updates are quick. The JSON report has it on each package (`last_release`, `owners`, `repository`, `archived`, `maintenance`). These indicators never fail the scan.
 
 ## Comparing Reports and Baselines
 
