@@ -30,7 +30,7 @@ The 70 repositories of [corpus.toml](corpus.toml), mostly applications and large
 - **8 are really unused**: dev-dependencies of packages without tests (`tokio` in pingora-openssl, `bevy_core_pipeline` in bevy_ui), libraries whose name never appears (`human-sort` in lsd, `tokio-test` in leptos), dependencies only named by local variables (`bytes` in zellij-server).
 - **16 could not be decided quickly** (uses through workspace macros, platform-specific code, generated test files).
 
-So, roughly, between a third and two thirds of these 349 are needed, which means **cargo-shear's precision on applications is somewhere between about 55% and 80%**, against 98.9% for CargoScope's default output on the same corpus (not a blind number, see the limits); and **cargo-shear finds real unused dependencies that CargoScope only lists as `possibly-unused`** (with `--show-uncertain`).
+So between about a third (13 of 37) and three quarters (29 of 37, if every undecided one is needed) of these 349 are needed, which puts **cargo-shear's precision on applications between about 48% and 75%**, against 98.9% for CargoScope's default output on the same corpus (not a blind number, see the limits); and **cargo-shear finds real unused dependencies that CargoScope only lists as `possibly-unused`** (with `--show-uncertain`).
 
 ## What this says
 
