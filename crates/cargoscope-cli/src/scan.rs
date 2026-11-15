@@ -18,6 +18,7 @@ pub enum OutputFormat {
     Text,
     Json,
     Sarif,
+    CycloneDx,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -94,8 +95,9 @@ fn parse_output_format(value: &str) -> Result<OutputFormat, String> {
         "text" => Ok(OutputFormat::Text),
         "json" => Ok(OutputFormat::Json),
         "sarif" => Ok(OutputFormat::Sarif),
+        "cyclonedx" => Ok(OutputFormat::CycloneDx),
         _ => Err(format!(
-            "Unsupported output format: {value}. Use text, json or sarif."
+            "Unsupported output format: {value}. Use text, json, sarif or cyclonedx."
         )),
     }
 }
@@ -388,6 +390,7 @@ fn write_report(options: &ScanOptions, report: &Report) -> Result<(), ExitCode> 
             &sarif_locations(root, report),
             options.show_uncertain,
         ),
+        OutputFormat::CycloneDx => cargoscope_report::cyclonedx::render_cyclonedx(root, report),
     };
     match &options.output {
         Some(path) => std::fs::write(path, rendered).map_err(|error| {
@@ -517,6 +520,8 @@ mod tests {
         assert_eq!(before.path, PathBuf::from("."));
         assert_eq!(before.format, OutputFormat::Json);
         assert_eq!(before.fail_on, FailOn::AtLeast(Severity::High));
+        let cyclonedx = parse(&["--format", "cyclonedx", "."]).expect("valid");
+        assert_eq!(cyclonedx.format, OutputFormat::CycloneDx);
     }
 
     #[test]

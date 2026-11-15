@@ -433,6 +433,67 @@ fn sarif_points_unused_dependencies_at_their_manifest_line() {
 }
 
 #[test]
+fn cyclonedx_exports_components_licenses_dependencies_and_vulnerabilities() {
+    let bom: serde_json::Value = serde_json::from_slice(
+        &scan("simple", &["--format", "cyclonedx", "--fail-on", "none"]).stdout,
+    )
+    .expect("CycloneDX output parses");
+    assert_eq!(bom["bomFormat"], "CycloneDX");
+    assert_eq!(bom["specVersion"], "1.5");
+    assert_eq!(bom["metadata"]["component"]["name"], "simple");
+    assert_eq!(
+        bom["metadata"]["component"]["purl"],
+        "pkg:cargo/simple@0.1.0"
+    );
+
+    let components = bom["components"].as_array().expect("components");
+    let serde_json = components
+        .iter()
+        .find(|component| component["name"] == "serde_json")
+        .expect("serde_json component");
+    assert_eq!(serde_json["version"], "1.0.128");
+    assert_eq!(serde_json["purl"], "pkg:cargo/serde_json@1.0.128");
+    assert_eq!(serde_json["licenses"][0]["expression"], "MIT OR Apache-2.0");
+
+    let dependencies = bom["dependencies"].as_array().expect("dependencies");
+    let root_edge = dependencies
+        .iter()
+        .find(|entry| entry["ref"] == "pkg:cargo/simple@0.1.0")
+        .expect("root dependency edge");
+    assert_eq!(root_edge["dependsOn"][0], "pkg:cargo/serde_json@1.0.128");
+
+    let vuln = bom["vulnerabilities"]
+        .as_array()
+        .expect("vulnerabilities")
+        .iter()
+        .find(|entry| entry["id"] == "CARGOSCOPE-TEST-0001")
+        .expect("CARGOSCOPE-TEST-0001 present");
+    assert_eq!(vuln["affects"][0]["ref"], "pkg:cargo/serde_json@1.0.128");
+    assert_eq!(vuln["ratings"][0]["severity"], "high");
+
+    let ignored_bom: serde_json::Value =
+        serde_json::from_slice(&scan("ignore-advisory", &["--format", "cyclonedx"]).stdout)
+            .expect("ignored CycloneDX parses");
+    let ignored_vuln = ignored_bom["vulnerabilities"]
+        .as_array()
+        .expect("vulnerabilities")
+        .iter()
+        .find(|entry| entry["id"] == "CARGOSCOPE-TEST-0001")
+        .expect("ignored vulnerability kept with VEX analysis");
+    assert_eq!(ignored_vuln["analysis"]["state"], "not_affected");
+    assert_eq!(
+        ignored_vuln["analysis"]["detail"],
+        "the vulnerable function is never called"
+    );
+
+    let ws_bom: serde_json::Value =
+        serde_json::from_slice(&scan("workspace", &["--format", "cyclonedx"]).stdout)
+            .expect("workspace CycloneDX parses");
+    assert_eq!(ws_bom["metadata"]["component"]["bom-ref"], "workspace");
+    assert_eq!(ws_bom["metadata"]["component"]["name"], "workspace");
+}
+
+#[test]
 fn inventory_only_scan_needs_no_advisory_database() {
     let empty =
         std::env::temp_dir().join(format!("cargoscope-inventory-only-{}", std::process::id()));

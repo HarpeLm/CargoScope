@@ -43,12 +43,12 @@ const FIX_USAGE: &str = "  cargoscope fix [PATH] [--dry-run | --apply] [--only N
       fix), and say which dependency blocks the others. Runs cargo update,
       which may read the registry index; it compiles nothing.";
 
-const SCAN_USAGE: &str = "  cargoscope scan [PATH] [--format text|json|sarif] [--output FILE] [--fail-on THRESHOLD] [--show-uncertain] [--verbose] [--precise]
+const SCAN_USAGE: &str = "  cargoscope scan [PATH] [--format text|json|sarif|cyclonedx] [--output FILE] [--fail-on THRESHOLD] [--show-uncertain] [--verbose] [--precise]
       Report on a Cargo project, read-only and offline.
 
 Options for scan:
-  --format text|json|sarif
-                       Output format (default: text).
+  --format text|json|sarif|cyclonedx
+                       Output format (default: text; cyclonedx: CycloneDX 1.5 SBOM).
   --output FILE        Write the report to FILE instead of standard output.
   --fail-on THRESHOLD  none, low, medium, high or critical.
                        Default: fail on any security vulnerability.

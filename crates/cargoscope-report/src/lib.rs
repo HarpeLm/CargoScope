@@ -1,6 +1,7 @@
-//! Report rendering: text, JSON and SARIF.
+//! Report rendering: text, JSON, SARIF and CycloneDX.
 
 pub mod compare;
+pub mod cyclonedx;
 pub mod sarif;
 
 use std::fmt::Write;

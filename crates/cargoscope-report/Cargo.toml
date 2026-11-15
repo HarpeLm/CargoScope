@@ -8,7 +8,7 @@ repository.workspace = true
 readme = "../../README.md"
 keywords.workspace = true
 categories.workspace = true
-description = "Text, JSON and SARIF report rendering for CargoScope"
+description = "Text, JSON, SARIF and CycloneDX report rendering for CargoScope"
 
 [dependencies]
 cargoscope-core = { path = "../cargoscope-core", version = "0.5.1" }

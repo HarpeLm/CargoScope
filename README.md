@@ -109,8 +109,9 @@ Every transitive package shows the shortest dependency chain that pulls it in. T
 ## More Usage
 
 ```sh
-cargoscope scan . --format json --output report.json   # versioned JSON report
-cargoscope scan . --format sarif --output results.sarif # SARIF 2.1.0 for GitHub code scanning
+cargoscope scan . --format json --output report.json         # versioned JSON report
+cargoscope scan . --format sarif --output results.sarif       # SARIF 2.1.0 for GitHub code scanning
+cargoscope scan . --format cyclonedx --output bom.cdx.json    # CycloneDX 1.5 SBOM (components, licenses, advisories)
 cargoscope scan . --fail-on high                    # fail only on high or critical vulnerabilities
 cargoscope scan . --fail-on none                    # never fail CI on findings
 cargoscope scan . --checks inventory,unused          # run only some checks (no download needed)
@@ -146,7 +147,7 @@ cargoscope/
 │   ├── cargoscope-core/       # data model, orchestration, configuration
 │   ├── cargoscope-cargo/      # Cargo parsing, resolution, unused analysis
 │   ├── cargoscope-advisory/   # RustSec database and cache (skeleton)
-│   └── cargoscope-report/     # text, JSON and SARIF
+│   └── cargoscope-report/     # text, JSON, SARIF and CycloneDX SBOM
 └── tests/                     # fixtures and integration tests
 ```
 
