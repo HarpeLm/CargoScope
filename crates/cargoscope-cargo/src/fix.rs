@@ -104,6 +104,70 @@ pub fn remove_dependencies(
     Ok((document.to_string(), outcomes))
 }
 
+/// Keys declared with `workspace = true` in the dependency tables of a
+/// manifest (target-specific tables included).
+#[must_use]
+pub fn workspace_references(contents: &str) -> std::collections::BTreeSet<String> {
+    let mut keys = std::collections::BTreeSet::new();
+    let Ok(document) = contents.parse::<DocumentMut>() else {
+        return keys;
+    };
+    let mut tables: Vec<&Item> = Vec::new();
+    let sections = [
+        "dependencies",
+        "dev-dependencies",
+        "dev_dependencies",
+        "build-dependencies",
+        "build_dependencies",
+    ];
+    for section in sections {
+        if let Some(table) = document.get(section) {
+            tables.push(table);
+        }
+    }
+    if let Some(targets) = document.get("target").and_then(Item::as_table_like) {
+        for (_, target) in targets.iter() {
+            for section in sections {
+                if let Some(table) = target.get(section) {
+                    tables.push(table);
+                }
+            }
+        }
+    }
+    for table in tables.into_iter().filter_map(Item::as_table_like) {
+        for (key, value) in table.iter() {
+            let inherited = value
+                .as_table_like()
+                .and_then(|entry| entry.get("workspace"))
+                .and_then(Item::as_bool)
+                == Some(true);
+            if inherited {
+                keys.insert(key.to_owned());
+            }
+        }
+    }
+    keys
+}
+
+/// Removes `keys` from `[workspace.dependencies]`; returns the new contents
+/// and the keys that were there.
+///
+/// # Errors
+///
+/// Returns a message when the manifest is not valid TOML.
+pub fn remove_workspace_dependencies(
+    contents: &str,
+    keys: &[&str],
+) -> Result<(String, Vec<String>), String> {
+    let mut document: DocumentMut = contents.parse().map_err(|error| format!("{error}"))?;
+    let removed = keys
+        .iter()
+        .filter(|key| remove_from(&mut document, &["workspace", "dependencies"], key))
+        .map(|key| (*key).to_owned())
+        .collect();
+    Ok((document.to_string(), removed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Outcome, remove_dependencies};
@@ -178,6 +242,22 @@ extra = ["dep:optional-thing"]
                 Outcome::Skipped("`cc` was not found in [build-dependencies]".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn finds_and_removes_workspace_dependencies() {
+        let member = "[dependencies]\nlog.workspace = true\nregex = { workspace = true, features = [\"std\"] }\nrand = \"0.8\"\n\n[target.'cfg(unix)'.dev-dependencies]\nlibc = { workspace = true }\n";
+        assert_eq!(
+            super::workspace_references(member)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["libc", "log", "regex"]
+        );
+        let root = "[workspace]\nmembers = [\"a\"]\n\n[workspace.dependencies]\nlog = \"0.4\" # logging\nregex = \"1\"\n";
+        let (edited, removed) =
+            super::remove_workspace_dependencies(root, &["regex", "absent"]).expect("valid");
+        assert_eq!(removed, vec!["regex"]);
+        assert_eq!(edited, root.replace("regex = \"1\"\n", ""));
     }
 
     #[test]

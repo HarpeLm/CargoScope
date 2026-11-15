@@ -912,3 +912,68 @@ fn fix_shows_then_removes_only_likely_unused_dependencies() {
     assert_eq!(fix(&dir, &["--apply", "--dry-run"]).status.code(), Some(2));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn fix_removes_workspace_dependencies_no_member_uses_anymore_and_honours_only() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-fix-ws-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("a/src")).expect("create");
+    let root_manifest = "[workspace]\nmembers = [\"a\"]\n\n[workspace.dependencies]\nlog = \"0.4\"\nregex = \"1\" # shared regex\nrand = \"0.8\"\n";
+    std::fs::write(dir.join("Cargo.toml"), root_manifest).expect("write");
+    std::fs::write(
+        dir.join("a/Cargo.toml"),
+        "[package]\nname = \"a\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nlog.workspace = true\nregex = { workspace = true }\nrand.workspace = true\n",
+    )
+    .expect("write");
+    std::fs::write(
+        dir.join("a/src/lib.rs"),
+        "pub fn f() -> regex::Regex { todo!() }\n",
+    )
+    .expect("write");
+    let registry = "source = \"registry+https://github.com/rust-lang/crates.io-index\"";
+    std::fs::write(
+        dir.join("Cargo.lock"),
+        format!("version = 4\n\n[[package]]\nname = \"a\"\nversion = \"0.1.0\"\ndependencies = [\"log\", \"rand\", \"regex\"]\n\n[[package]]\nname = \"log\"\nversion = \"0.4.22\"\n{registry}\n\n[[package]]\nname = \"rand\"\nversion = \"0.8.5\"\n{registry}\n\n[[package]]\nname = \"regex\"\nversion = \"1.11.0\"\n{registry}\n"),
+    )
+    .expect("write");
+
+    // --only: just `log`, and a note for a name that is not a candidate.
+    let only = fix(&dir, &["--only", "log,regex", "--apply"]);
+    assert_eq!(only.status.code(), Some(0));
+    let text = stdout(&only);
+    assert!(
+        text.contains("`regex` is not a likely-unused dependency: left alone."),
+        "{text}"
+    );
+    assert!(
+        text.contains("  - remove `log` from [dependencies]\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "  - remove `log` from [workspace.dependencies]: no member uses it anymore\n"
+        )
+    );
+    assert!(!text.contains("rand"), "{text}");
+    let root = std::fs::read_to_string(dir.join("Cargo.toml")).expect("root");
+    assert_eq!(root, root_manifest.replace("log = \"0.4\"\n", ""));
+
+    // Then the rest: rand goes from the member and the workspace; regex stays.
+    let rest = fix(&dir, &["--apply"]);
+    assert!(
+        stdout(&rest).contains("Removed 2 dependencies from 2 manifest(s)."),
+        "{}",
+        stdout(&rest)
+    );
+    let root = std::fs::read_to_string(dir.join("Cargo.toml")).expect("root");
+    assert_eq!(
+        root,
+        "[workspace]\nmembers = [\"a\"]\n\n[workspace.dependencies]\nregex = \"1\" # shared regex\n"
+    );
+    let member = std::fs::read_to_string(dir.join("a/Cargo.toml")).expect("member");
+    assert!(
+        member.ends_with("[dependencies]\nregex = { workspace = true }\n"),
+        "{member}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}

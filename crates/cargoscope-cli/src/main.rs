@@ -18,11 +18,13 @@ const USAGE: &str = "Usage:
       licenses) of the project at PATH. The only command that uses the network.
   cargoscope compare BASELINE CURRENT [--format text|json|markdown] [--fail-on THRESHOLD]
       Compare two JSON reports (markdown: for a pull request comment). Exit code 1 when new advisories reach the threshold.
-  cargoscope fix [PATH] [--dry-run | --apply] [--precise]
-      Remove likely-unused dependencies from the Cargo.toml files. Without
-      --apply, only shows what would be removed (dry run). Possibly-unused
-      and ignored dependencies are never removed. Formatting and comments of
-      the manifests are kept; run cargo check afterwards.
+  cargoscope fix [PATH] [--dry-run | --apply] [--only NAMES] [--precise]
+      Remove likely-unused dependencies from the Cargo.toml files, and the
+      [workspace.dependencies] entries no member uses anymore. Without
+      --apply, only shows what would be removed (dry run). --only limits it
+      to a comma-separated list of dependencies. Possibly-unused and ignored
+      dependencies are never removed. Formatting and comments of the
+      manifests are kept; run cargo check afterwards.
   cargoscope scan [PATH] [--format text|json|sarif] [--output FILE] [--fail-on THRESHOLD] [--show-uncertain] [--verbose] [--precise]
       Report on a Cargo project, read-only and offline.
 
@@ -716,11 +718,26 @@ fn sarif_locations(root: &Path, report: &Report) -> SarifLocations {
     }
 }
 
-/// `cargoscope fix [PATH] [--dry-run | --apply] [--precise]`.
+/// `cargoscope fix [PATH] [--dry-run | --apply] [--only NAMES] [--precise]`.
 fn fix_command(arguments: impl Iterator<Item = String>) -> ExitCode {
     let mut path = None;
     let (mut apply, mut dry_run, mut precise) = (false, false, false);
-    for argument in arguments {
+    let mut only: Option<Vec<String>> = None;
+    let mut arguments = arguments.peekable();
+    while let Some(argument) = arguments.next() {
+        let only_value = if argument == "--only" {
+            arguments.next()
+        } else {
+            argument.strip_prefix("--only=").map(str::to_owned)
+        };
+        if argument == "--only" || argument.starts_with("--only=") {
+            let Some(list) = only_value.filter(|list| !list.trim().is_empty()) else {
+                eprintln!("Missing value for --only.");
+                return ExitCode::from(2);
+            };
+            only = Some(list.split(',').map(|name| name.trim().to_owned()).collect());
+            continue;
+        }
         match argument.as_str() {
             "--apply" => apply = true,
             "--dry-run" => dry_run = true,
@@ -772,12 +789,16 @@ fn fix_command(arguments: impl Iterator<Item = String>) -> ExitCode {
         unused
     };
 
-    // Only likely-unused findings that are not ignored, grouped by manifest.
+    // Only likely-unused findings that are not ignored, grouped by manifest,
+    // restricted to `--only` names when given.
     let mut by_manifest: std::collections::BTreeMap<&str, Vec<(&str, &str)>> =
         std::collections::BTreeMap::new();
     for finding in &unused {
         if finding.confidence == cargoscope_core::UnusedConfidence::Likely
             && finding.ignored.is_none()
+            && only
+                .as_ref()
+                .is_none_or(|names| names.contains(&finding.dependency))
         {
             by_manifest
                 .entry(finding.manifest.as_str())
@@ -785,29 +806,66 @@ fn fix_command(arguments: impl Iterator<Item = String>) -> ExitCode {
                 .push((finding.kind.section(), finding.dependency.as_str()));
         }
     }
+    if let Some(names) = &only {
+        for name in names {
+            if !by_manifest.values().flatten().any(|(_, key)| key == name) {
+                println!("`{name}` is not a likely-unused dependency: left alone.");
+            }
+        }
+    }
     if by_manifest.is_empty() {
         println!("No likely-unused dependency to remove.");
         return ExitCode::SUCCESS;
     }
 
-    let (mut removed, mut edited) = (0, 0);
-    for (manifest, removals) in &by_manifest {
-        let file = root.join(manifest);
-        let contents = match std::fs::read_to_string(&file) {
-            Ok(contents) => contents,
+    // Every manifest of the project, original and edited contents.
+    let packages = match cargoscope_cargo::project_packages(root) {
+        Ok(packages) => packages,
+        Err(error) => return execution_error(root, &error),
+    };
+    let mut files: std::collections::BTreeMap<PathBuf, (String, String)> =
+        std::collections::BTreeMap::new();
+    let mut manifest_paths: Vec<PathBuf> = packages
+        .packages
+        .iter()
+        .map(|(dir, _, _)| dir.join("Cargo.toml"))
+        .collect();
+    manifest_paths.push(root.join("Cargo.toml"));
+    manifest_paths.extend(by_manifest.keys().map(|manifest| root.join(manifest)));
+    for path in manifest_paths {
+        if files.contains_key(&path) {
+            continue;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => {
+                files.insert(path, (contents.clone(), contents));
+            }
             Err(error) => {
-                eprintln!("CargoScope could not read {}: {error}", file.display());
+                eprintln!("CargoScope could not read {}: {error}", path.display());
                 return ExitCode::from(2);
             }
+        }
+    }
+    let inherited_before: std::collections::BTreeSet<String> = files
+        .values()
+        .flat_map(|(original, _)| cargoscope_cargo::fix::workspace_references(original))
+        .collect();
+
+    let mut removed = 0;
+    for (manifest, removals) in &by_manifest {
+        let path = root.join(manifest);
+        let Some((_, current)) = files.get_mut(&path) else {
+            continue;
         };
         let (new_contents, outcomes) =
-            match cargoscope_cargo::fix::remove_dependencies(&contents, removals) {
+            match cargoscope_cargo::fix::remove_dependencies(current, removals) {
                 Ok(result) => result,
                 Err(error) => {
-                    eprintln!("CargoScope could not edit {}: {error}", file.display());
+                    eprintln!("CargoScope could not edit {}: {error}", path.display());
                     return ExitCode::from(2);
                 }
             };
+        *current = new_contents;
         println!("{manifest}");
         for ((section, key), outcome) in removals.iter().zip(&outcomes) {
             match outcome {
@@ -820,23 +878,57 @@ fn fix_command(arguments: impl Iterator<Item = String>) -> ExitCode {
                 }
             }
         }
-        if apply && new_contents != contents {
-            if let Err(error) = std::fs::write(&file, new_contents) {
-                eprintln!("CargoScope could not write {}: {error}", file.display());
+    }
+
+    // `[workspace.dependencies]` entries that only the removed lines used.
+    let inherited_after: std::collections::BTreeSet<String> = files
+        .values()
+        .flat_map(|(_, current)| cargoscope_cargo::fix::workspace_references(current))
+        .collect();
+    let orphans: Vec<&str> = inherited_before
+        .difference(&inherited_after)
+        .map(String::as_str)
+        .collect();
+    if !orphans.is_empty()
+        && let Some((_, current)) = files.get_mut(&root.join("Cargo.toml"))
+    {
+        match cargoscope_cargo::fix::remove_workspace_dependencies(current, &orphans) {
+            Ok((new_contents, gone)) if !gone.is_empty() => {
+                *current = new_contents;
+                println!("Cargo.toml");
+                for key in gone {
+                    removed += 1;
+                    println!(
+                        "  - remove `{key}` from [workspace.dependencies]: no member uses it anymore"
+                    );
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                eprintln!("CargoScope could not edit the workspace manifest: {error}");
                 return ExitCode::from(2);
             }
-            edited += 1;
         }
     }
+
+    let plural = if removed == 1 { "y" } else { "ies" };
     if apply {
+        let mut edited = 0;
+        for (path, (original, current)) in &files {
+            if original != current {
+                if let Err(error) = std::fs::write(path, current) {
+                    eprintln!("CargoScope could not write {}: {error}", path.display());
+                    return ExitCode::from(2);
+                }
+                edited += 1;
+            }
+        }
         println!(
-            "\nRemoved {removed} dependenc{} from {edited} manifest(s). Run `cargo check` to update Cargo.lock and confirm the build.",
-            if removed == 1 { "y" } else { "ies" }
+            "\nRemoved {removed} dependenc{plural} from {edited} manifest(s). Run `cargo check` to update Cargo.lock and confirm the build."
         );
     } else {
         println!(
-            "\nDry run: nothing was written. Run `cargoscope fix --apply` to remove {removed} dependenc{}.",
-            if removed == 1 { "y" } else { "ies" }
+            "\nDry run: nothing was written. Run `cargoscope fix --apply` to remove {removed} dependenc{plural}."
         );
     }
     ExitCode::SUCCESS
