@@ -86,6 +86,9 @@ Released on 2026-11-15: reading cargo-deny's `deny.toml` when there is no `cargo
 
 Released on 2026-11-15: offline HTML report (`--format html`), SemVer compatible vs breaking classification of updates, CycloneDX 1.5 SBOM (`--format cyclonedx`), `cargoscope why`, and full `deny.toml` parity with cargo-deny 0.20.2 on 34 of 34 projects (`[bans] features`, `[bans.build]`, `license-files` hashes, `"warn"` levels, graph fixes). Before tagging: `cargo clean`, then `cargo package --workspace --exclude cargoscope-corpus` (see the 0.5.0 note on stale local builds).
 
+- ✅ `cargo clean` then `cargo package --workspace --exclude cargoscope-corpus`: the 5 crates verify. Tag `v0.6.0` pushed; GitHub Release, crates.io (5 crates), npm, Homebrew and the installer report 0.6.0; the Action passes on the 3 operating systems with 0.6.0.
+- ✅ Set the version back to `0.7.0-dev`.
+
 ## One-time setup (maintainer)
 
 1. **crates.io**: create an API token with the `publish-new` and `publish-update` scopes, then add it as the repository secret `CARGO_REGISTRY_TOKEN`.
