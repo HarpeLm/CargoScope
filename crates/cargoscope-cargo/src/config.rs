@@ -33,13 +33,14 @@ fn check_keys(table: &toml::Table, context: &str, known: &[&str]) -> Result<(), 
 }
 
 /// Reads `[graph] targets`: target triples the policy is limited to.
-/// `[graph] targets` and the feature keys (`features`, `all-features`,
-/// `no-default-features`); features are `None` when no feature key is set.
-fn parse_graph(
-    value: &toml::Table,
-) -> Result<(Vec<String>, Option<cargoscope_core::policy::Features>), String> {
+/// `[graph]`: targets, the feature keys (`features`, `all-features`,
+/// `no-default-features`; `None` when no feature key is set) and
+/// `exclude-dev`.
+type Graph = (Vec<String>, Option<cargoscope_core::policy::Features>, bool);
+
+fn parse_graph(value: &toml::Table) -> Result<Graph, String> {
     let Some(graph) = value.get("graph") else {
-        return Ok((Vec::new(), None));
+        return Ok((Vec::new(), None, false));
     };
     let graph = graph
         .as_table()
@@ -47,7 +48,13 @@ fn parse_graph(
     check_keys(
         graph,
         "graph",
-        &["targets", "features", "all-features", "no-default-features"],
+        &[
+            "targets",
+            "features",
+            "all-features",
+            "no-default-features",
+            "exclude-dev",
+        ],
     )?;
     let flag = |key: &str| match graph.get(key) {
         None => Ok(false),
@@ -91,7 +98,8 @@ fn parse_graph(
             ));
         }
     }
-    Ok((targets, features))
+    let exclude_dev = flag("exclude-dev")?;
+    Ok((targets, features, exclude_dev))
 }
 
 /// Parses the text of a `cargoscope.toml`. Returns `None` when it defines
@@ -108,7 +116,7 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
         "top level",
         &["licenses", "sources", "bans", "advisories", "graph"],
     )?;
-    let (targets, features) = parse_graph(&value)?;
+    let (targets, features, exclude_dev) = parse_graph(&value)?;
     if !["licenses", "sources", "bans"]
         .iter()
         .any(|key| value.contains_key(*key))
@@ -125,6 +133,7 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
     let mut policy = Policy {
         targets,
         features,
+        exclude_dev,
         ..Policy::default()
     };
 
@@ -511,6 +520,7 @@ mod tests {
     #[test]
     fn parses_graph_features() {
         let policy = |text: &str| parse_policy(text).expect("valid").expect("policy");
+        assert!(policy("[graph]\nexclude-dev = true\n[bans]\n").exclude_dev);
         let none = policy("[graph]\ntargets = [\"x86_64-unknown-linux-gnu\"]\n[bans]\n");
         assert_eq!(none.features, None);
         let some = policy(

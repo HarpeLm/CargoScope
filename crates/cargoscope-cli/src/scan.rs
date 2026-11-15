@@ -307,7 +307,7 @@ fn check_policy(
     }
     warnings.extend(policy.unused_license_entries(inventory));
     // `[graph]`: only the packages its targets and features build are checked.
-    let active = if policy.targets.is_empty() && policy.features.is_none() {
+    let active = if policy.targets.is_empty() && policy.features.is_none() && !policy.exclude_dev {
         None
     } else {
         Some(
@@ -315,6 +315,7 @@ fn check_policy(
                 root,
                 &policy.targets,
                 policy.features.as_ref(),
+                policy.exclude_dev,
             )
             .map_err(|error| {
                 eprintln!(

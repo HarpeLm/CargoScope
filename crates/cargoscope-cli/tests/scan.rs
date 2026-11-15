@@ -716,8 +716,8 @@ fn policy_graph_targets_limit_the_rules_to_packages_the_target_builds() {
     )
     .expect("write policy");
 
-    // A fake cargo answers `cargo metadata --filter-platform`: the target
-    // builds policy-demo, serde_json and serde, but not itoa nor forked.
+    // A fake cargo answers `cargo tree --target`: the target builds
+    // policy-demo, serde_json and serde, but not itoa nor forked.
     let fake_src = dir.join("fake_cargo.rs");
     let fake_bin = dir.join(format!("fake-cargo{}", std::env::consts::EXE_SUFFIX));
     std::fs::write(
@@ -728,20 +728,10 @@ fn policy_graph_targets_limit_the_rules_to_packages_the_target_builds() {
         eprintln!("error: failed to download `serde v1.0.210`");
         std::process::exit(101);
     }
-    let target = args.windows(2).find(|w| w[0] == "--filter-platform").map(|w| w[1].clone());
-    assert!(args.iter().any(|a| a == "metadata") && args.iter().any(|a| a == "--locked"), "{args:?}");
+    let target = args.windows(2).find(|w| w[0] == "--target").map(|w| w[1].clone());
+    assert!(args.iter().any(|a| a == "tree") && args.iter().any(|a| a == "--locked") && args.iter().any(|a| a == "--workspace"), "{args:?}");
     assert_eq!(target.as_deref(), Some("x86_64-unknown-linux-gnu"));
-    let ids = ["policy-demo@0.1.0", "serde_json@1.0.128", "serde@1.0.210"];
-    let packages: Vec<String> = ids
-        .iter()
-        .chain(["itoa@1.0.11", "forked@0.1.0"].iter())
-        .map(|id| {
-            let (name, version) = id.split_once('@').unwrap();
-            format!(r#"{{"id":"{id}","name":"{name}","version":"{version}"}}"#)
-        })
-        .collect();
-    let nodes: Vec<String> = ids.iter().map(|id| format!(r#"{{"id":"{id}"}}"#)).collect();
-    println!(r#"{{"packages":[{}],"resolve":{{"nodes":[{}],"root":null}}}}"#, packages.join(","), nodes.join(","));
+    println!("policy-demo v0.1.0 (/work/policy-demo)\nserde_json v1.0.128\nserde v1.0.210\nserde v1.0.210 (*)");
 }
 "##,
     )
@@ -1403,18 +1393,9 @@ fn policy_graph_features_limit_the_rules_to_the_selected_features() {
     let args: Vec<String> = std::env::args().collect();
     assert!(args.iter().any(|a| a == "--no-default-features"), "{args:?}");
     assert!(args.windows(2).any(|w| w[0] == "--features" && w[1] == "extra"), "{args:?}");
-    assert!(!args.iter().any(|a| a == "--filter-platform" || a == "--all-features"), "{args:?}");
-    let ids = ["policy-demo@0.1.0", "serde_json@1.0.128", "itoa@1.0.11", "forked@0.1.0"];
-    let packages: Vec<String> = ids
-        .iter()
-        .chain(["serde@1.0.210"].iter())
-        .map(|id| {
-            let (name, version) = id.split_once('@').unwrap();
-            format!(r#"{{"id":"{id}","name":"{name}","version":"{version}"}}"#)
-        })
-        .collect();
-    let nodes: Vec<String> = ids.iter().map(|id| format!(r#"{{"id":"{id}"}}"#)).collect();
-    println!(r#"{{"packages":[{}],"resolve":{{"nodes":[{}],"root":null}}}}"#, packages.join(","), nodes.join(","));
+    assert!(args.windows(2).any(|w| w[0] == "--target" && w[1] == "all"), "{args:?}");
+    assert!(!args.iter().any(|a| a == "--all-features"), "{args:?}");
+    println!("policy-demo v0.1.0 (/work/policy-demo)\nserde_json v1.0.128\nitoa v1.0.11\nforked v0.1.0 (https://github.com/someone/forked?rev=abc#abc)");
 }
 "##,
     )

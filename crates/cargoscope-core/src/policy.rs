@@ -104,6 +104,9 @@ pub struct Policy {
     /// that no listed target builds is not checked. Empty checks every
     /// package of the lockfile.
     pub targets: Vec<String>,
+    /// `[graph] exclude-dev`: packages only the project's dev-dependencies
+    /// pull in are not checked.
+    pub exclude_dev: bool,
     /// Features of the project (`[graph] features`, `all-features`,
     /// `no-default-features`) the rules are limited to; `None` checks the
     /// packages of every feature.
