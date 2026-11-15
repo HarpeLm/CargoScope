@@ -164,7 +164,19 @@ Unused-dependency detection is measured on a labelled corpus of 70 real reposito
 
 The report lists crates resolved in more than one version (for example `syn` 1 and 2), which Cargo compiles once per version. Every version but the newest shows the chain that pulls it in: that is the dependency to update to remove the duplicate. The JSON report has them in `duplicates`, and `compare` and the pull request comment list new ones.
 
+With `multiple-versions = "deny"` under `[bans]` in `cargoscope.toml`, a duplicate fails the scan, as in cargo-deny; `skip-multiple-versions` lists crates accepted anyway (see [docs/policy.md](docs/policy.md)).
+
 The list comes from `Cargo.lock`, which covers every platform and also optional dependencies that may never be enabled: on [uv](https://github.com/astral-sh/uv), it finds the 35 crates that `cargo tree --duplicates --target all --all-features` reports, plus one only present in the lockfile.
+
+## Heaviest Direct Dependencies
+
+```
+Heaviest direct dependencies: packages that would leave the tree without each one
+- jsonschema 0.61.2: 57 of the 79 packages it pulls in
+- ureq 2.12.1: 54 of the 72 packages it pulls in
+```
+
+For each direct dependency, the report counts the packages that would leave the dependency tree if no member depended on it directly (itself included), and the size of its own tree: the first number is what removing or replacing it saves. The ten heaviest are shown (all with `--verbose`), and the JSON report has every direct dependency in `direct_weights`. Like the rest of the report, it comes from `Cargo.lock`, so dev- and build-dependencies count too.
 
 ## Comparing Reports and Baselines
 
@@ -188,7 +200,7 @@ Ignored advisories stay visible with their reason, but never fail the scan; in S
 
 ## Dependency Policy
 
-A `cargoscope.toml` next to `Cargo.toml` enforces allowed licenses, allowed sources and banned crates, in the spirit of cargo-deny. Violations fail the scan. See [docs/policy.md](docs/policy.md).
+A `cargoscope.toml` next to `Cargo.toml` enforces allowed licenses, allowed sources, banned crates and, optionally, a single version per crate, in the spirit of cargo-deny. Violations fail the scan. See [docs/policy.md](docs/policy.md).
 
 ## Compiler-Accurate Mode
 

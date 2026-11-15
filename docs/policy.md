@@ -25,6 +25,11 @@ deny = [
   { name = "openssl", reason = "use rustls" },
   { name = "time", version = "<0.2.23", reason = "RUSTSEC-2020-0071" },
 ]
+# "deny" makes every crate resolved in several versions a violation
+# (default "allow": they are only listed in the report).
+multiple-versions = "deny"
+# Crates accepted in several versions anyway.
+skip-multiple-versions = ["windows-sys"]
 ```
 
 ## Ignoring an advisory
@@ -59,4 +64,4 @@ A file with only `[advisories]` defines no policy.
 
 ## Compared with cargo-deny
 
-This covers the license, source and ban checks most projects use. cargo-deny has more: license clarifications, per-crate exceptions, duplicate-version rules, feature bans, and advisory configuration. Use it when you need those.
+This covers the license, source and ban checks most projects use. cargo-deny has more: license clarifications, per-crate exceptions, duplicate rules per version or with wrappers, feature bans, and advisory configuration. Use it when you need those.
