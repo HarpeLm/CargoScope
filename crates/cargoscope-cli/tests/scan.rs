@@ -977,3 +977,52 @@ fn fix_removes_workspace_dependencies_no_member_uses_anymore_and_honours_only() 
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn multiple_versions_rule_fails_the_scan_unless_the_crate_is_skipped() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-dups-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    copy_dir(&fixture("multi-version"), &dir);
+    let run = |extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+            .env("CARGO_HOME", fixture("empty-cargo-home"))
+            .arg("scan")
+            .arg(&dir)
+            .args(["--checks", "inventory,policy"])
+            .args(extra)
+            .output()
+            .expect("cargoscope binary runs")
+    };
+
+    std::fs::write(
+        dir.join("cargoscope.toml"),
+        "[bans]\nmultiple-versions = \"deny\"\n",
+    )
+    .expect("write");
+    let denied = run(&[]);
+    assert_eq!(denied.status.code(), Some(1));
+    let text = stdout(&denied);
+    assert!(
+        text.contains("- [multiple-versions] bitflags 1.3.2: `bitflags` is resolved in 2 versions (1.3.2, 2.6.0)"),
+        "{text}"
+    );
+    assert!(text.contains("    via multi-version -> old-wrapper -> bitflags\n"));
+    let sarif: serde_json::Value =
+        serde_json::from_slice(&run(&["--format", "sarif"]).stdout).expect("valid SARIF");
+    assert_eq!(
+        sarif["runs"][0]["results"][0]["ruleId"],
+        "cargoscope/policy-multiple-versions"
+    );
+    assert_eq!(run(&["--fail-on", "none"]).status.code(), Some(0));
+
+    std::fs::write(
+        dir.join("cargoscope.toml"),
+        "[bans]\nmultiple-versions = \"deny\"\nskip-multiple-versions = [\"bitflags\"]\n",
+    )
+    .expect("write");
+    let skipped = run(&[]);
+    assert_eq!(skipped.status.code(), Some(0), "{}", stdout(&skipped));
+    assert!(stdout(&skipped).contains("Policy violations: 0"));
+    let _ = std::fs::remove_dir_all(dir);
+}
