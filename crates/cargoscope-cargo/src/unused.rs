@@ -993,12 +993,48 @@ pub fn macro_references(dir: &Path, manifest: &toml::Value) -> BTreeSet<String> 
     names
 }
 
+/// Whether the item starting at `index` has `#[macro_export]` among its
+/// attributes (also inside `#[cfg_attr(..., macro_export)]`).
+fn has_macro_export(tokens: &[TokenTree], index: usize) -> bool {
+    let mut end = index;
+    while end >= 2 {
+        let (TokenTree::Punct(hash), TokenTree::Group(attribute)) =
+            (&tokens[end - 2], &tokens[end - 1])
+        else {
+            return false;
+        };
+        if hash.as_char() != '#' || attribute.delimiter() != proc_macro2::Delimiter::Bracket {
+            return false;
+        }
+        let mentions = |stream: TokenStream| -> bool {
+            fn walk(stream: TokenStream) -> bool {
+                stream.into_iter().any(|tree| match tree {
+                    TokenTree::Ident(ident) => ident == "macro_export",
+                    TokenTree::Group(group) => walk(group.stream()),
+                    _ => false,
+                })
+            }
+            walk(stream)
+        };
+        if mentions(attribute.stream()) {
+            return true;
+        }
+        end -= 2;
+    }
+    false
+}
+
+/// Crates named in the bodies of the exported `macro_rules!` of a token
+/// stream: a macro without `#[macro_export]` cannot be called from another
+/// crate, so what it names never needs to be a dependency of its callers.
 fn collect_macro_bodies(tokens: TokenStream, names: &mut BTreeSet<String>) {
     let tokens: Vec<TokenTree> = tokens.into_iter().collect();
     for (index, token) in tokens.iter().enumerate() {
         match token {
             TokenTree::Ident(ident) if ident == "macro_rules" => {
-                if let Some(TokenTree::Group(body)) = tokens.get(index + 3) {
+                if has_macro_export(&tokens, index)
+                    && let Some(TokenTree::Group(body)) = tokens.get(index + 3)
+                {
                     collect_references(body.stream(), names);
                 }
             }
@@ -1782,6 +1818,27 @@ mod tests {
                 ("args".to_owned(), Some("src/args.rs".to_owned())),
                 ("after_fn".to_owned(), None),
             ]
+        );
+    }
+
+    #[test]
+    fn only_exported_macros_count_for_their_callers() {
+        use std::str::FromStr;
+        let names = |code: &str| {
+            let mut names = std::collections::BTreeSet::new();
+            super::collect_macro_bodies(
+                proc_macro2::TokenStream::from_str(code).expect("tokens"),
+                &mut names,
+            );
+            names
+        };
+        // A macro without #[macro_export] cannot be called from another crate.
+        assert!(names("macro_rules! inner { () => { serde_json::json!({}) }; }").is_empty());
+        assert!(names("#[macro_export]\n#[doc(hidden)]\nmacro_rules! out { () => { serde_json::json!({}) }; }").contains("serde_json"));
+        assert!(names("#[cfg_attr(feature = \"x\", macro_export)]\nmacro_rules! out { () => { itoa::Buffer::new() }; }").contains("itoa"));
+        assert!(
+            names("mod m { #[macro_export] macro_rules! nested { () => { log::info!(\"\") }; } }")
+                .contains("log")
         );
     }
 
