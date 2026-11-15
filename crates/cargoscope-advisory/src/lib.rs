@@ -15,6 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use cargoscope_core::{AdvisoryFinding, AdvisoryKind, Inventory, Severity};
 
 pub mod crates_io;
+mod maintenance;
 mod proxy;
 
 /// Where the RustSec database archive is downloaded from.

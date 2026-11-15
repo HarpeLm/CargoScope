@@ -267,8 +267,8 @@ fn update(project_root: &Path) -> ExitCode {
     match crates_io::refresh(&cache, &inventory, cargo_home.as_deref()) {
         Ok(summary) => {
             println!(
-                "crates.io data updated: {} crates, {} licenses from local sources, {} from the crates.io API",
-                summary.crates, summary.licenses_local, summary.licenses_api
+                "crates.io data updated: {} crates, {} licenses from local sources, {} from the crates.io API, maintenance data of {} direct dependencies",
+                summary.crates, summary.licenses_local, summary.licenses_api, summary.maintenance
             );
             for failure in &summary.failures {
                 eprintln!("warning: {failure}");

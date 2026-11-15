@@ -507,9 +507,68 @@ pub struct PackageInfo {
     pub yanked: Option<bool>,
     /// Whether `latest_version` is newer than the resolved version.
     pub outdated: bool,
+    /// Publication date (`YYYY-MM-DD`) of the most recent non-yanked release
+    /// of any version, when known.
+    pub last_release: Option<String>,
+    /// Whether the crate has had no release for [`STALE_YEARS`] years or more
+    /// before the registry data was downloaded.
+    pub stale: bool,
+    /// crates.io owners (user logins, `github:org:team` for teams), when known.
+    pub owners: Option<Vec<String>>,
+    /// Repository URL declared by the crate, when known.
+    pub repository: Option<String>,
+    /// Whether the repository is archived on GitHub. `None` when unknown or
+    /// not hosted on GitHub.
+    pub archived: Option<bool>,
+}
+
+/// A crate without a release for this many years counts as stale.
+pub const STALE_YEARS: u32 = 2;
+
+/// A sign that a dependency may be fragile, from crates.io and GitHub data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaintenanceConcern {
+    /// No release for [`STALE_YEARS`] years or more.
+    Stale,
+    /// A single crates.io owner, and no team.
+    SingleOwner,
+    /// The repository is archived (read-only).
+    Archived,
+}
+
+impl MaintenanceConcern {
+    /// Stable identifier used in JSON and SARIF.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stale => "stale",
+            Self::SingleOwner => "single-owner",
+            Self::Archived => "archived",
+        }
+    }
 }
 
 impl PackageInfo {
+    /// Maintenance concerns, in a fixed order: archived, stale, single owner.
+    #[must_use]
+    pub fn maintenance_concerns(&self) -> Vec<MaintenanceConcern> {
+        let mut concerns = Vec::new();
+        if self.archived == Some(true) {
+            concerns.push(MaintenanceConcern::Archived);
+        }
+        if self.stale {
+            concerns.push(MaintenanceConcern::Stale);
+        }
+        if self
+            .owners
+            .as_ref()
+            .is_some_and(|owners| owners.len() == 1 && !owners[0].contains(':'))
+        {
+            concerns.push(MaintenanceConcern::SingleOwner);
+        }
+        concerns
+    }
+
     /// Classifies whether newer cached versions for `current_version` are
     /// SemVer-compatible, SemVer-breaking, or both.
     #[must_use]
@@ -866,5 +925,37 @@ mod tests {
             super::OutdatedKind::Breaking
         );
         assert_eq!(breaking.compatible_upgrade("0.0.3"), None);
+    }
+
+    #[test]
+    fn lists_maintenance_concerns_and_treats_teams_as_shared_ownership() {
+        use super::MaintenanceConcern::{Archived, SingleOwner, Stale};
+        let owners = |logins: &[&str]| Some(logins.iter().map(|&l| l.to_owned()).collect());
+        let info = super::PackageInfo {
+            stale: true,
+            archived: Some(true),
+            owners: owners(&["alice"]),
+            ..Default::default()
+        };
+        assert_eq!(
+            info.maintenance_concerns(),
+            vec![Archived, Stale, SingleOwner]
+        );
+        let team = super::PackageInfo {
+            owners: owners(&["github:rust-lang:libs"]),
+            ..Default::default()
+        };
+        assert!(team.maintenance_concerns().is_empty());
+        let two = super::PackageInfo {
+            owners: owners(&["alice", "bob"]),
+            archived: Some(false),
+            ..Default::default()
+        };
+        assert!(two.maintenance_concerns().is_empty());
+        assert!(
+            super::PackageInfo::default()
+                .maintenance_concerns()
+                .is_empty()
+        );
     }
 }

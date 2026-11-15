@@ -1189,6 +1189,7 @@ mod tests {
                     compatible_published: Some("2026-10-01".to_owned()),
                     outdated: true,
                     yanked: Some(true),
+                    ..PackageInfo::default()
                 },
                 PackageInfo {
                     license: Some("MIT".to_owned()),

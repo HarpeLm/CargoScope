@@ -1189,6 +1189,7 @@ mod tests {
                 compatible_published: Some("2025-11-10".to_owned()),
                 yanked: Some(true),
                 outdated: true,
+                ..PackageInfo::default()
             },
             PackageInfo::default(),
             PackageInfo::default(),
