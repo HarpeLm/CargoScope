@@ -47,9 +47,9 @@ The rules behind CargoScope's misses were made narrower, each on a fact the scan
 - **Workspace macros**: a macro of a workspace crate can only explain a dependency if the package uses that crate.
 - Two new cautious rules found while labelling: a package without `tests/` that runs trybuild compiles test files from elsewhere against its dev-dependencies (deno's `compile_test_runner`), and `#[wasm_bindgen]` on an async function expands to `wasm-bindgen-futures`.
 
-| | Before | After `112740c` | After `b1b49a6` + follow-up |
+| | Before | After `112740c` | After `b1b49a6` / `5acaf7f` (`main`) |
 |---|---|---|---:|
-| Libraries (rustc judge): correct of reported, certain unused found | 10 of 10, 10 of 15 | **12 of 12, 12 of 15** | *(not re-run)* |
+| Libraries (rustc judge): correct of reported, certain unused found | 10 of 10, 10 of 15 | **12 of 12, 12 of 15** | **12 of 12 (100%), 12 of 15 (80.0%; 12 of 16 raw = 75.0%)** |
 | Applications (labelled corpus): correct of reported | 181 of 183 (98.9%) | **221 of 223** (99.1%) | **233 of 235** (99.1%) |
 
 The sharper rules in `112740c` brought 37 new application findings, all checked by reading the code: 35 really unused, and 2 wrong, which led to the two new rules above.
@@ -62,7 +62,7 @@ A second set of refinements tightened three checks to package scope and fixed tw
 - **Per-package reachability**: both transitive feature-selection (`sets_features`, now also ignoring empty `features = []`) and sibling workspace proc-macro reachability are scoped to packages reachable from the checked package rather than the entire workspace (`b1b49a6`, with traversal through reachable workspace members onto their external dependencies fixed afterwards so workspace `dev-dependencies` still do not leak in).
 - **Corpus validation additions**: raw module identifiers (`mod r#enum;`) resolve to `enum.rs` (preventing a false positive on `indexmap` in deno's `libs/ops`), and `strum` is recognized as required when `strum_macros` is used because derives such as `EnumIter` expand to `::strum::IntoEnumIterator` (protecting atuin's `atuin-common` and correcting `examples/function_memory_game`'s `strum` label in `yewstack/yew`).
 
-On the 70-repository corpus (`cargo run --release -p cargoscope-corpus --offline`), this surfaced **13 newly detected genuinely unused dependencies** with **0 new false positives** (**233 of 235** correct, **99.1%**: 20/20 development, 11/11 held-out, 134/134 held-out-2, 68/70 held-out-3). Both wrong findings that remain are the known, accepted ones of egui. cargo-shear still finds more on libraries (14 of 15 in the `rustc` run above, which has not been re-run since `112740c`), with errors CargoScope does not make.
+On the 70-repository corpus (`cargo run --release -p cargoscope-corpus --offline`), this surfaced **13 newly detected genuinely unused dependencies** with **0 new false positives** (**233 of 235** correct, **99.1%**: 20/20 development, 11/11 held-out, 134/134 held-out-2, 68/70 held-out-3). Both wrong findings that remain are the known, accepted ones of egui. On the 73-library compiler-judged benchmark re-run on `main` (`5acaf7f` with `rustc 1.99.1`, `cargo-shear 1.14.1`, `cargo-machete 0.9.2`), CargoScope confirms **12 of 12** judged right (`100.0%` precision, `0` errors) and **12 of 16** (`75.0%` recall; **12 of 15 = 80.0%** excluding `digest`'s `sha2`, which CargoScope intentionally keeps because `README.md` doctests use it — the remaining 3 misses are downgraded to `possibly-unused`: `strum_macros`, `rustc-std-workspace-alloc`/`alloc`, and `uuid`'s wasm-test `getrandom`). `cargo-shear` 1.14.1 finds more on libraries (**14 of 15** corrected, `15/16` raw), with 2 compiler-proven errors (`anstyle-syntect`'s `same-file` and `thiserror`) plus `digest`'s `sha2` (`16/18` raw = `88.9%`, `15/18` = `83.3%` corrected).
 
 ## Limits
 
