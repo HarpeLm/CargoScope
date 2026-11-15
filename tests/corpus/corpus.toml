@@ -71,6 +71,7 @@ labels = [
   { manifest = "crates/atuin-ai/Cargo.toml", section = "dependencies", dependency = "tracing-subscriber", truth = "unused", note = "no occurrence in the package" },
   { manifest = "crates/atuin-kv/Cargo.toml", section = "dependencies", dependency = "tracing-subscriber", truth = "unused", note = "no occurrence in the package" },
   { manifest = "crates/atuin-scripts/Cargo.toml", section = "dependencies", dependency = "tracing-subscriber", truth = "unused", note = "no occurrence in the package" },
+  { manifest = "crates/atuin-domain/Cargo.toml", section = "dev-dependencies", dependency = "proptest", truth = "unused", note = "never referenced; only a non-exported macro of a workspace crate names it, which no other crate can call (2026-11-15)" },
 ]
 
 [[repository]]
@@ -406,6 +407,7 @@ labels = [
   { manifest = "crates/bevy_ui/Cargo.toml", section = "dev-dependencies", dependency = "bevy_core_pipeline", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
   { manifest = "crates/bevy_render/Cargo.toml", section = "dependencies", dependency = "downcast-rs", truth = "unused", note = "no occurrence in the package" },
   { manifest = "crates/bevy_shader/Cargo.toml", section = "dependencies", dependency = "wgpu-types", truth = "unused", note = "no occurrence in the package" },
+  { manifest = "crates/bevy_extract/Cargo.toml", section = "dependencies", dependency = "bevy_platform", truth = "unused", note = "never referenced; only a non-exported macro of a workspace crate names it, which no other crate can call (2026-11-15)" },
 ]
 
 [[repository]]
@@ -463,6 +465,7 @@ labels = [
   { manifest = "examples/postgres/todos/Cargo.toml", section = "dependencies", dependency = "dotenvy", truth = "unused", note = "no occurrence in the package" },
   { manifest = "Cargo.toml", section = "dev-dependencies", dependency = "env_logger", truth = "unused", note = "never referenced in the package's code, library name checked (2026-11-15)" },
   { manifest = "sqlx-mysql/Cargo.toml", section = "dependencies", dependency = "generic-array", truth = "unused", note = "no occurrence in the package" },
+  { manifest = "sqlx-macros/Cargo.toml", section = "dependencies", dependency = "sqlx-core", truth = "unused", note = "never referenced; only a non-exported macro of a workspace crate names it, which no other crate can call (2026-11-15)" },
 ]
 
 [[repository]]
@@ -545,6 +548,9 @@ labels = [
   { manifest = "crates/polars-python/Cargo.toml", section = "dependencies", dependency = "polars-row", truth = "unused", note = "no occurrence in the package; was hidden by counting inner path segments as crates (labelled after the first-segment fix)" },
   { manifest = "crates/polars-core/Cargo.toml", section = "dev-dependencies", dependency = "bincode", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
   { manifest = "crates/polars-lazy/Cargo.toml", section = "dev-dependencies", dependency = "serde_json", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
+  { manifest = "crates/polars-python/Cargo.toml", section = "dependencies", dependency = "itoa", truth = "unused", note = "never referenced; only a non-exported macro of a workspace crate names it, which no other crate can call (2026-11-15)" },
+  { manifest = "crates/polars-row/Cargo.toml", section = "dependencies", dependency = "polars-error", truth = "unused", note = "never referenced; only a non-exported macro of a workspace crate names it, which no other crate can call (2026-11-15)" },
+  { manifest = "crates/polars-time/Cargo.toml", section = "dependencies", dependency = "polars-error", truth = "unused", note = "never referenced; only a non-exported macro of a workspace crate names it, which no other crate can call (2026-11-15)" },
 ]
 
 [[repository]]
@@ -588,6 +594,11 @@ labels = [
   { manifest = "crates/tauri-driver/Cargo.toml", section = "dependencies", dependency = "futures", truth = "unused", note = "no occurrence in the package" },
   { manifest = "examples/api/src-tauri/tauri-plugin-sample/Cargo.toml", section = "dependencies", dependency = "log", truth = "unused", note = "no occurrence in the package" },
   { manifest = "crates/tauri/Cargo.toml", section = "build-dependencies", dependency = "tauri-build", truth = "unused", note = "build.rs never uses it; only doc examples and the build feature mention it (labelled after the first-segment fix)" },
+  { manifest = "bench/tests/cpu_intensive/src-tauri/Cargo.toml", section = "dependencies", dependency = "serde_json", truth = "unused", note = "never referenced; only a non-exported macro of a workspace crate names it, which no other crate can call (2026-11-15)" },
+  { manifest = "bench/tests/files_transfer/src-tauri/Cargo.toml", section = "dependencies", dependency = "serde_json", truth = "unused", note = "never referenced; only a non-exported macro of a workspace crate names it, which no other crate can call (2026-11-15)" },
+  { manifest = "bench/tests/helloworld/src-tauri/Cargo.toml", section = "dependencies", dependency = "serde_json", truth = "unused", note = "never referenced; only a non-exported macro of a workspace crate names it, which no other crate can call (2026-11-15)" },
+  { manifest = "examples/file-associations/src-tauri/Cargo.toml", section = "dependencies", dependency = "serde_json", truth = "unused", note = "never referenced; only a non-exported macro of a workspace crate names it, which no other crate can call (2026-11-15)" },
+  { manifest = "examples/resources/src-tauri/Cargo.toml", section = "dependencies", dependency = "serde_json", truth = "unused", note = "never referenced; only a non-exported macro of a workspace crate names it, which no other crate can call (2026-11-15)" },
 ]
 
 [[repository]]
@@ -794,4 +805,5 @@ labels = [
   { manifest = "packages/yew-agent-macro/Cargo.toml", section = "dev-dependencies", dependency = "rustversion", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
   { manifest = "packages/yew-agent-macro/Cargo.toml", section = "dev-dependencies", dependency = "trybuild", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
   { manifest = "packages/yew-agent-macro/Cargo.toml", section = "dev-dependencies", dependency = "yew-agent", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
+  { manifest = "examples/inner_html/Cargo.toml", section = "dependencies", dependency = "gloo", truth = "unused", note = "never referenced; only a non-exported macro of a workspace crate names it, which no other crate can call (2026-11-15)" },
 ]
