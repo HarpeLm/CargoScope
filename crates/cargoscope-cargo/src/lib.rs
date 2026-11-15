@@ -10,6 +10,7 @@ use std::path::Path;
 use cargoscope_core::{Inventory, Package, UnusedFinding};
 
 pub mod config;
+pub mod fix;
 pub mod locations;
 pub mod precise;
 pub mod unused;
