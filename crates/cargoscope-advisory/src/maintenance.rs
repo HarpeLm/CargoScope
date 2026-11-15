@@ -128,7 +128,8 @@ fn parse_repository(text: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Repository declared in an unpacked registry copy of `name-version`.
+/// Repository declared in an unpacked registry copy of `name-version`
+/// (the newest version, whose repository is current).
 fn local_repository(sources: &[PathBuf], name: &str, version: &str) -> Option<String> {
     sources.iter().find_map(|source| {
         let manifest = source.join(format!("{name}-{version}")).join("Cargo.toml");
@@ -203,11 +204,11 @@ pub(crate) struct Refreshed {
     pub(crate) failures: Vec<String>,
 }
 
-/// Fetches maintenance data for `crates` (name, resolved version), skipping
+/// Fetches maintenance data for `crates` (name, newest version), skipping
 /// crates whose cached data is complete and recent.
 pub(crate) fn refresh(
     root: &Path,
-    crates: &[(&str, &str)],
+    crates: &[(&str, String)],
     api_agent: &ureq::Agent,
     clock: &mut ApiClock,
     local_sources: &[PathBuf],
@@ -225,7 +226,8 @@ pub(crate) fn refresh(
     let mut github_blocked = false;
     let mut refreshed = Refreshed::default();
 
-    for &(name, version) in crates {
+    for (name, newest) in crates {
+        let name = *name;
         let previous = read(root, name).unwrap_or_default();
         if previous.checked > 0 && now.saturating_sub(previous.checked) < MAX_AGE.as_secs() {
             continue;
@@ -250,7 +252,7 @@ pub(crate) fn refresh(
             }
         }
 
-        if let Some(repository) = local_repository(local_sources, name, version) {
+        if let Some(repository) = local_repository(local_sources, name, newest) {
             data.repository = Some(repository);
         } else {
             clock.wait();

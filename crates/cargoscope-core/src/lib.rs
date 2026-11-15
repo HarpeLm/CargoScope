@@ -522,6 +522,12 @@ pub struct PackageInfo {
     pub archived: Option<bool>,
 }
 
+/// Whether a crates.io owner stands for a group: a team (`github:org:team`)
+/// or the account of the Rust project's organisation.
+fn is_shared_account(login: &str) -> bool {
+    login.contains(':') || login == "rust-lang-owner"
+}
+
 /// A crate without a release for this many years counts as stale.
 pub const STALE_YEARS: u32 = 2;
 
@@ -562,7 +568,7 @@ impl PackageInfo {
         if self
             .owners
             .as_ref()
-            .is_some_and(|owners| owners.len() == 1 && !owners[0].contains(':'))
+            .is_some_and(|owners| owners.len() == 1 && !is_shared_account(&owners[0]))
         {
             concerns.push(MaintenanceConcern::SingleOwner);
         }
@@ -946,6 +952,11 @@ mod tests {
             ..Default::default()
         };
         assert!(team.maintenance_concerns().is_empty());
+        let rust_lang = super::PackageInfo {
+            owners: owners(&["rust-lang-owner"]),
+            ..Default::default()
+        };
+        assert!(rust_lang.maintenance_concerns().is_empty());
         let two = super::PackageInfo {
             owners: owners(&["alice", "bob"]),
             archived: Some(false),

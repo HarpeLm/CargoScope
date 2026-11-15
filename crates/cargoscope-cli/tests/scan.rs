@@ -276,7 +276,11 @@ fn text_report_lists_direct_dependencies_to_watch() {
         "{text}"
     );
     let html = stdout(&scan("simple", &["--format", "html", "--fail-on", "none"]));
-    assert!(html.contains("<span class=\"badge badge-warn\">single-owner</span> single owner (dtolnay)"));
+    assert!(
+        html.contains(
+            "<span class=\"badge badge-warn\">single-owner</span> single owner (dtolnay)"
+        )
+    );
 }
 
 #[test]
