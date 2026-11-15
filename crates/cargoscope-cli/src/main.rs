@@ -4,28 +4,33 @@
 //! `0` no finding at or above the threshold, `1` threshold reached,
 //! `2` execution error.
 
+mod compare;
+mod fix;
+mod scan;
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use cargoscope_advisory::crates_io::{self, RegistryCache};
-use cargoscope_advisory::{AdvisoryDatabase, DEFAULT_ARCHIVE_URL};
-use cargoscope_core::{AdvisoryFinding, AdvisoryKind, Checks, Report, Severity, VERSION};
-use cargoscope_report::sarif::SarifLocations;
+use cargoscope_advisory::DEFAULT_ARCHIVE_URL;
+use cargoscope_advisory::crates_io;
+use cargoscope_core::{AdvisoryFinding, AdvisoryKind, Inventory, Severity, UnusedFinding, VERSION};
 
-const USAGE: &str = "Usage:
-  cargoscope update [PATH]
+const UPDATE_USAGE: &str = "  cargoscope update [PATH]
       Download the RustSec advisory database and the crates.io data (versions,
-      licenses) of the project at PATH. The only command that uses the network.
-  cargoscope compare BASELINE CURRENT [--format text|json|markdown] [--fail-on THRESHOLD]
-      Compare two JSON reports (markdown: for a pull request comment). Exit code 1 when new advisories reach the threshold.
-  cargoscope fix [PATH] [--dry-run | --apply] [--only NAMES] [--precise]
+      licenses) of the project at PATH. The only command that uses the network.";
+
+const COMPARE_USAGE: &str = "  cargoscope compare BASELINE CURRENT [--format text|json|markdown] [--fail-on THRESHOLD]
+      Compare two JSON reports (markdown: for a pull request comment). Exit code 1 when new advisories reach the threshold.";
+
+const FIX_USAGE: &str = "  cargoscope fix [PATH] [--dry-run | --apply] [--only NAMES] [--precise]
       Remove likely-unused dependencies from the Cargo.toml files, and the
       [workspace.dependencies] entries no member uses anymore. Without
       --apply, only shows what would be removed (dry run). --only limits it
       to a comma-separated list of dependencies. Possibly-unused and ignored
       dependencies are never removed. Formatting and comments of the
-      manifests are kept; run cargo check afterwards.
-  cargoscope scan [PATH] [--format text|json|sarif] [--output FILE] [--fail-on THRESHOLD] [--show-uncertain] [--verbose] [--precise]
+      manifests are kept; run cargo check afterwards.";
+
+const SCAN_USAGE: &str = "  cargoscope scan [PATH] [--format text|json|sarif] [--output FILE] [--fail-on THRESHOLD] [--show-uncertain] [--verbose] [--precise]
       Report on a Cargo project, read-only and offline.
 
 Options for scan:
@@ -47,40 +52,68 @@ Options for scan:
                        fail the scan, so only new ones do.
   --checks LIST        Comma-separated checks to run (default: all):
                        inventory, advisories, unused, licenses, versions, policy.
-                       Without advisories, no advisory database is needed.
+                       Without advisories, no advisory database is needed.";
 
-Environment:
+const FOOTER: &str = "Environment:
   CARGOSCOPE_CACHE_DIR  Directory for downloaded data.
 
 Exit codes: 0 OK, 1 threshold reached, 2 execution error.";
 
+/// Help for one subcommand, or for all of them.
+fn usage(sections: &[&str]) -> String {
+    format!(
+        "CargoScope {VERSION}\n\nUsage:\n{}\n\n{FOOTER}",
+        sections.join("\n")
+    )
+}
+
 fn main() -> ExitCode {
     let mut arguments = std::env::args().skip(1);
+    let command = arguments.next();
+    let rest: Vec<String> = arguments.collect();
+    let section = match command.as_deref() {
+        Some("scan") => Some(SCAN_USAGE),
+        Some("compare") => Some(COMPARE_USAGE),
+        Some("fix") => Some(FIX_USAGE),
+        Some("update") => Some(UPDATE_USAGE),
+        _ => None,
+    };
+    if let Some(section) = section
+        && rest
+            .iter()
+            .any(|argument| argument == "--help" || argument == "-h")
+    {
+        println!("{}", usage(&[section]));
+        return ExitCode::SUCCESS;
+    }
 
-    match arguments.next().as_deref() {
-        Some("scan") => match parse_scan_options(arguments) {
-            Ok(options) => scan(&options),
+    match command.as_deref() {
+        Some("scan") => match scan::parse_scan_options(rest.into_iter()) {
+            Ok(options) => scan::scan(&options),
             Err(error) => {
-                eprintln!("{error}\nRun cargoscope --help for usage.");
+                eprintln!("{error}\nRun cargoscope scan --help for usage.");
                 ExitCode::from(2)
             }
         },
-        Some("compare") => compare_command(arguments),
-        Some("fix") => fix_command(arguments),
-        Some("update") => {
-            let path = arguments.next().unwrap_or_else(|| ".".to_owned());
-            if let Some(extra) = arguments.next() {
+        Some("compare") => compare::compare_command(rest.into_iter()),
+        Some("fix") => fix::fix_command(rest.into_iter()),
+        Some("update") => match rest.as_slice() {
+            [] => update(Path::new(".")),
+            [path] => update(Path::new(path)),
+            [_, extra, ..] => {
                 eprintln!("Unexpected argument for update: {extra}");
-                return ExitCode::from(2);
+                ExitCode::from(2)
             }
-            update(Path::new(&path))
-        }
+        },
         Some("--version" | "-V") => {
             println!("cargoscope {VERSION}");
             ExitCode::SUCCESS
         }
         Some("--help" | "-h") | None => {
-            println!("CargoScope {VERSION}\n\n{USAGE}");
+            println!(
+                "{}",
+                usage(&[UPDATE_USAGE, COMPARE_USAGE, FIX_USAGE, SCAN_USAGE])
+            );
             ExitCode::SUCCESS
         }
         Some(command) => {
@@ -90,16 +123,9 @@ fn main() -> ExitCode {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OutputFormat {
-    Text,
-    Json,
-    Sarif,
-}
-
 /// When advisory findings make the scan fail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FailOn {
+pub enum FailOn {
     /// Any vulnerability, whatever its severity (default).
     AnyVulnerability,
     /// Never fail on findings.
@@ -131,47 +157,6 @@ impl FailOn {
     }
 }
 
-/// Marks findings ignored by `[advisories] ignore`, matching the advisory ID
-/// or one of its aliases. Returns warnings for expired and unused entries.
-fn apply_advisory_ignores(
-    findings: &mut [AdvisoryFinding],
-    ignores: &[cargoscope_cargo::config::AdvisoryIgnore],
-    today: &str,
-) -> Vec<String> {
-    let mut warnings = Vec::new();
-    for ignore in ignores {
-        let matches = |finding: &AdvisoryFinding| {
-            finding.id.eq_ignore_ascii_case(&ignore.id)
-                || finding
-                    .aliases
-                    .iter()
-                    .any(|alias| alias.eq_ignore_ascii_case(&ignore.id))
-        };
-        if !findings.iter().any(&matches) {
-            warnings.push(format!(
-                "cargoscope.toml ignores {}, which matches no advisory of this project: remove it if it is no longer needed",
-                ignore.id
-            ));
-            continue;
-        }
-        if let Some(until) = ignore.until.as_deref().filter(|until| *until < today) {
-            warnings.push(format!(
-                "the ignore of {} expired on {until}: the advisory counts again",
-                ignore.id
-            ));
-            continue;
-        }
-        let reason = match &ignore.until {
-            Some(until) => format!("{} (until {until})", ignore.reason),
-            None => ignore.reason.clone(),
-        };
-        for finding in findings.iter_mut().filter(|finding| matches(finding)) {
-            finding.ignored = Some(reason.clone());
-        }
-    }
-    warnings
-}
-
 fn parse_severity(name: &str) -> Option<Severity> {
     Some(match name {
         "none" => Severity::None,
@@ -191,182 +176,6 @@ fn read_report(path: &Path) -> Result<serde_json::Value, String> {
     cargoscope_report::compare::check_report(&value)
         .map_err(|error| format!("{}: {error}", path.display()))?;
     Ok(value)
-}
-
-/// Output formats of `cargoscope compare`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CompareFormat {
-    Text,
-    Json,
-    Markdown,
-}
-
-/// `cargoscope compare BASELINE CURRENT [--format text|json|markdown] [--fail-on THRESHOLD]`.
-fn compare_command(arguments: impl Iterator<Item = String>) -> ExitCode {
-    let mut files = Vec::new();
-    let mut format = CompareFormat::Text;
-    let mut fail_on = FailOn::AnyVulnerability;
-    let mut arguments = arguments.peekable();
-    while let Some(argument) = arguments.next() {
-        let (flag, inline) = match argument.split_once('=') {
-            Some((flag, value)) if flag.starts_with("--") => {
-                (flag.to_owned(), Some(value.to_owned()))
-            }
-            _ => (argument.clone(), None),
-        };
-        let value = |arguments: &mut std::iter::Peekable<_>| {
-            inline.clone().or_else(|| Iterator::next(arguments))
-        };
-        let result = match flag.as_str() {
-            "--format" => value(&mut arguments)
-                .ok_or_else(|| "Missing value for --format.".to_owned())
-                .and_then(|value: String| match value.as_str() {
-                    "text" => Ok(CompareFormat::Text),
-                    "json" => Ok(CompareFormat::Json),
-                    "markdown" => Ok(CompareFormat::Markdown),
-                    other => Err(format!(
-                        "Unsupported comparison format: {other}. Use text, json or markdown."
-                    )),
-                })
-                .map(|parsed| format = parsed),
-            "--fail-on" => value(&mut arguments)
-                .ok_or_else(|| "Missing value for --fail-on.".to_owned())
-                .and_then(|value: String| parse_fail_on(&value))
-                .map(|parsed| fail_on = parsed),
-            other if other.starts_with('-') => Err(format!("Unknown option: {other}")),
-            _ => {
-                files.push(PathBuf::from(argument));
-                Ok(())
-            }
-        };
-        if let Err(error) = result {
-            eprintln!("{error}\nRun cargoscope --help for usage.");
-            return ExitCode::from(2);
-        }
-    }
-    let [baseline, current] = files.as_slice() else {
-        eprintln!("compare needs two JSON reports: BASELINE CURRENT");
-        return ExitCode::from(2);
-    };
-    let (baseline, current) = match (read_report(baseline), read_report(current)) {
-        (Ok(baseline), Ok(current)) => (baseline, current),
-        (Err(error), _) | (_, Err(error)) => {
-            eprintln!("CargoScope could not compare: {error}");
-            return ExitCode::from(2);
-        }
-    };
-    let comparison = cargoscope_report::compare::compare(&baseline, &current);
-    match format {
-        CompareFormat::Json => print!(
-            "{}",
-            cargoscope_report::compare::render_comparison_json(&comparison)
-        ),
-        CompareFormat::Markdown => print!(
-            "{}",
-            cargoscope_report::compare::render_comparison_markdown(&comparison)
-        ),
-        CompareFormat::Text => print!(
-            "{}",
-            cargoscope_report::compare::render_comparison_text(&comparison)
-        ),
-    }
-    let fails = comparison
-        .new_advisories
-        .iter()
-        .any(|(_, severity, kind, _)| {
-            fail_on.triggers(
-                kind == "vulnerability",
-                severity.as_deref().and_then(parse_severity),
-            )
-        });
-    if fails {
-        ExitCode::from(1)
-    } else {
-        ExitCode::SUCCESS
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct ScanOptions {
-    path: PathBuf,
-    format: OutputFormat,
-    output: Option<PathBuf>,
-    fail_on: FailOn,
-    show_uncertain: bool,
-    verbose: bool,
-    checks: Checks,
-    baseline: Option<PathBuf>,
-    precise: bool,
-}
-
-fn parse_scan_options(mut arguments: impl Iterator<Item = String>) -> Result<ScanOptions, String> {
-    let mut path = None;
-    let mut format = OutputFormat::Text;
-    let mut fail_on = FailOn::AnyVulnerability;
-    let mut show_uncertain = false;
-    let mut output = None;
-    let mut checks = Checks::ALL;
-    let mut verbose = false;
-    let mut baseline = None;
-    let mut precise = false;
-
-    while let Some(argument) = arguments.next() {
-        let (flag, inline_value) = match argument.split_once('=') {
-            Some((flag, value)) if flag.starts_with("--") => {
-                (flag.to_owned(), Some(value.to_owned()))
-            }
-            _ => (argument.clone(), None),
-        };
-        let mut value = || {
-            inline_value
-                .clone()
-                .or_else(|| arguments.next())
-                .ok_or_else(|| format!("Missing value for {flag}."))
-        };
-        match flag.as_str() {
-            "--format" => format = parse_output_format(&value()?)?,
-            "--output" | "-o" => output = Some(PathBuf::from(value()?)),
-            "--baseline" => baseline = Some(PathBuf::from(value()?)),
-            "--checks" => {
-                checks = Checks::parse(&value()?).map_err(|unknown| {
-                    format!(
-                        "Unknown check: {unknown}. Use {}.",
-                        Checks::NAMES.join(", ")
-                    )
-                })?;
-            }
-            "--fail-on" => fail_on = parse_fail_on(&value()?)?,
-            "--show-uncertain" if inline_value.is_none() => show_uncertain = true,
-            "--verbose" | "-v" if inline_value.is_none() => verbose = true,
-            "--precise" if inline_value.is_none() => precise = true,
-            other if other.starts_with('-') => return Err(format!("Unknown option: {other}")),
-            _ if path.is_some() => return Err("Only one scan path may be provided.".to_owned()),
-            _ => path = Some(PathBuf::from(argument)),
-        }
-    }
-
-    Ok(ScanOptions {
-        path: path.unwrap_or_else(|| PathBuf::from(".")),
-        format,
-        output,
-        fail_on,
-        show_uncertain,
-        verbose,
-        checks,
-        baseline,
-        precise,
-    })
-}
-
-fn parse_output_format(value: &str) -> Result<OutputFormat, String> {
-    match value {
-        "text" => Ok(OutputFormat::Text),
-        "json" => Ok(OutputFormat::Json),
-        "sarif" => Ok(OutputFormat::Sarif),
-        _ => Err(format!(
-            "Unsupported output format: {value}. Use text, json or sarif."
-        )),
-    }
 }
 
 fn parse_fail_on(value: &str) -> Result<FailOn, String> {
@@ -440,601 +249,35 @@ fn update(project_root: &Path) -> ExitCode {
     }
 }
 
-fn scan(options: &ScanOptions) -> ExitCode {
-    let root = options.path.as_path();
-    let inventory = match cargoscope_cargo::scan_cargo_project(root) {
-        Ok(inventory) => inventory,
-        Err(error) => return execution_error(root, &error),
-    };
-    let checks = options.checks;
-    let mut warnings = Vec::new();
-
-    let (advisories, advisory_db_date) = if checks.advisories {
-        let database =
-            match cargoscope_advisory::cache_dir().and_then(|dir| AdvisoryDatabase::open(&dir)) {
-                Ok(database) => database,
-                Err(error) => return execution_error(root, &error),
-            };
-        let check = database.check(&inventory);
-        if database.fetched_on.is_none() {
-            warnings.push(
-                "the advisory database has no download date; run `cargoscope update`".to_owned(),
-            );
-        }
-        if !check.unreadable.is_empty() {
-            warnings.push(format!(
-                "{} advisory file(s) could not be read; results may be incomplete",
-                check.unreadable.len()
-            ));
-        }
-        let mut findings = check.findings;
-        match cargoscope_cargo::config::load_advisory_ignores(root) {
-            Ok(ignores) => {
-                warnings.extend(apply_advisory_ignores(
-                    &mut findings,
-                    &ignores,
-                    &cargoscope_advisory::utc_today(),
-                ));
-            }
-            Err(error) => {
-                eprintln!("CargoScope could not read the advisory ignores: {error}");
-                return ExitCode::from(2);
-            }
-        }
-        (findings, database.fetched_on)
-    } else {
-        (Vec::new(), None)
-    };
-
-    let unused = if checks.unused {
-        match cargoscope_cargo::find_unused(root, &inventory) {
-            Ok((unused, unused_warnings)) => {
-                warnings.extend(unused_warnings);
-                unused
-            }
-            Err(error) => return execution_error(root, &error),
-        }
-    } else {
-        Vec::new()
-    };
-    let unused = if checks.unused && options.precise {
-        eprintln!(
-            "--precise: running cargo check with all targets and features. This compiles the project, so build scripts and proc macros of the project and its dependencies are executed."
-        );
-        let packages = match cargoscope_cargo::project_packages(root) {
-            Ok(packages) => packages,
-            Err(error) => return execution_error(root, &error),
-        };
-        match cargoscope_cargo::precise::run(root) {
-            Ok(compiler) => cargoscope_cargo::precise::refine(
-                unused,
-                &packages.packages,
-                packages.workspace_dependencies.as_ref(),
-                &compiler,
-            ),
-            Err(error) => return execution_error(root, &error),
-        }
-    } else {
-        unused
-    };
-
-    let policy = if checks.policy {
-        match cargoscope_cargo::config::load_policy(root) {
-            Ok(policy) => policy,
-            Err(error) => {
-                eprintln!("CargoScope could not read the policy: {error}");
-                return ExitCode::from(2);
-            }
-        }
-    } else {
-        None
-    };
-    let needs_licenses = policy.as_ref().is_some_and(|policy| policy.check_licenses);
-
-    let (mut package_info, mut registry_date) =
-        (vec![Default::default(); inventory.packages.len()], None);
-    if checks.licenses || checks.versions || needs_licenses {
-        if let Ok(dir) = cargoscope_advisory::cache_dir() {
-            let registry = RegistryCache::open(&dir);
-            package_info = registry.info(&inventory);
-            registry_date = registry.fetched_on;
-        }
-        if registry_date.is_none() {
-            warnings.push(format!(
-                "no crates.io data: licenses and latest versions are unknown; run `cargoscope update {}`",
-                root.display()
-            ));
-        } else {
-            let missing = package_info
-                .iter()
-                .zip(&inventory.packages)
-                .filter(|(info, package)| {
-                    info.latest_version.is_none()
-                        && crates_io::is_crates_io(package.source.as_deref())
-                })
-                .count();
-            if missing > 0 {
-                warnings.push(format!(
-                    "{missing} crates.io package(s) have no cached data (added since the last update?); run `cargoscope update {}`",
-                    root.display()
-                ));
-            }
-        }
-    }
-    let violations = policy.map(|policy| {
-        if policy.check_licenses && registry_date.is_none() {
-            warnings.push("license rules of the policy were skipped: no crates.io data".to_owned());
-        }
-        policy.check(&inventory, &package_info, registry_date.is_some())
-    });
-    {
-        for info in &mut package_info {
-            if !checks.licenses {
-                info.license = None;
-            }
-            if !checks.versions {
-                *info = cargoscope_core::PackageInfo {
-                    license: info.license.take(),
-                    ..Default::default()
-                };
-            }
-        }
-    }
-
-    // Only labels in the report: a failure leaves the dependencies unlabelled.
-    let direct_kinds = cargoscope_cargo::direct_dependency_kinds(root).unwrap_or_default();
-    let report = Report {
-        direct_kinds,
-        checks,
-        package_info,
-        registry_date,
-        inventory,
-        advisories,
-        unused,
-        policy: violations,
-        unused_precise: checks.unused && options.precise,
-        advisory_db_date,
-        warnings,
-    };
-    let rendered = match options.format {
-        OutputFormat::Text => cargoscope_report::render_text(
-            root,
-            &report,
-            cargoscope_report::TextOptions {
-                show_uncertain: options.show_uncertain,
-                verbose: options.verbose,
-            },
-        ),
-        OutputFormat::Json => cargoscope_report::render_json(root, &report),
-        OutputFormat::Sarif => cargoscope_report::sarif::render_sarif(
-            &report,
-            &sarif_locations(root, &report),
-            options.show_uncertain,
-        ),
-    };
-    match &options.output {
-        Some(path) => {
-            if let Err(error) = std::fs::write(path, rendered) {
-                eprintln!("CargoScope could not write {}: {error}", path.display());
-                return ExitCode::from(2);
-            }
-        }
-        None => print!("{rendered}"),
-    }
-
-    let known = match &options.baseline {
-        Some(path) => match read_report(path) {
-            Ok(baseline) => cargoscope_report::compare::advisory_keys(&baseline),
-            Err(error) => {
-                eprintln!("CargoScope could not read the baseline: {error}");
-                return ExitCode::from(2);
-            }
-        },
-        None => std::collections::BTreeSet::new(),
-    };
-    let is_new = |finding: &&AdvisoryFinding| {
-        let package = &report.inventory.packages[finding.package];
-        !known.contains(&cargoscope_report::compare::AdvisoryKey {
-            id: finding.id.clone(),
-            package: package.name.clone(),
-            version: package.version.clone(),
-        })
-    };
-    let in_baseline = report
-        .advisories
-        .iter()
-        .filter(|finding| !is_new(finding))
-        .count();
-    if in_baseline > 0 {
-        eprintln!(
-            "{in_baseline} advisory finding(s) are already in the baseline and do not fail the scan."
-        );
-    }
-    let policy_fails = options.fail_on != FailOn::Never
-        && report
-            .policy
-            .as_ref()
-            .is_some_and(|violations| !violations.is_empty());
-    if policy_fails
-        || report
-            .advisories
-            .iter()
-            .filter(is_new)
-            .any(|finding| options.fail_on.is_triggered_by(finding))
-    {
-        ExitCode::from(1)
-    } else {
-        ExitCode::SUCCESS
-    }
-}
-
-/// Repository-relative URI with forward slashes, as SARIF consumers expect.
-fn sarif_uri(path: &Path) -> String {
-    let text = path.to_string_lossy().replace('\\', "/");
-    let mut text = text.as_str();
-    while let Some(rest) = text.strip_prefix("./") {
-        text = rest;
-    }
-    if path.is_absolute() {
-        let text = text.trim_start_matches('/');
-        return format!("file:///{text}");
-    }
-    text.to_owned()
-}
-
-fn sarif_locations(root: &Path, report: &Report) -> SarifLocations {
-    use cargoscope_cargo::locations::{lockfile_lines, manifest_dependency_line};
-
-    let lockfile = root.join("Cargo.lock");
-    let lines = std::fs::read_to_string(&lockfile)
-        .map(|text| lockfile_lines(&text))
-        .unwrap_or_default();
-    let package_lines = report
-        .inventory
-        .packages
-        .iter()
-        .map(|package| {
-            lines
-                .iter()
-                .find(|((name, version), _)| *name == package.name && *version == package.version)
-                .map(|(_, line)| *line)
-        })
-        .collect();
-    let unused_locations = report
-        .unused
-        .iter()
-        .map(|finding| {
-            let manifest = root.join(&finding.manifest);
-            let line = std::fs::read_to_string(&manifest).ok().and_then(|text| {
-                manifest_dependency_line(&text, finding.kind.section(), &finding.dependency)
-            });
-            (sarif_uri(&manifest), line)
-        })
-        .collect();
-    SarifLocations {
-        lockfile_uri: sarif_uri(&lockfile),
-        package_lines,
-        unused_locations,
-    }
-}
-
-/// `cargoscope fix [PATH] [--dry-run | --apply] [--only NAMES] [--precise]`.
-fn fix_command(arguments: impl Iterator<Item = String>) -> ExitCode {
-    let mut path = None;
-    let (mut apply, mut dry_run, mut precise) = (false, false, false);
-    let mut only: Option<Vec<String>> = None;
-    let mut arguments = arguments.peekable();
-    while let Some(argument) = arguments.next() {
-        let only_value = if argument == "--only" {
-            arguments.next()
-        } else {
-            argument.strip_prefix("--only=").map(str::to_owned)
-        };
-        if argument == "--only" || argument.starts_with("--only=") {
-            let Some(list) = only_value.filter(|list| !list.trim().is_empty()) else {
-                eprintln!("Missing value for --only.");
-                return ExitCode::from(2);
-            };
-            only = Some(list.split(',').map(|name| name.trim().to_owned()).collect());
-            continue;
-        }
-        match argument.as_str() {
-            "--apply" => apply = true,
-            "--dry-run" => dry_run = true,
-            "--precise" => precise = true,
-            other if other.starts_with('-') => {
-                eprintln!("Unknown option for fix: {other}\nRun cargoscope --help for usage.");
-                return ExitCode::from(2);
-            }
-            _ if path.is_some() => {
-                eprintln!("fix takes a single PATH\nRun cargoscope --help for usage.");
-                return ExitCode::from(2);
-            }
-            _ => path = Some(PathBuf::from(argument)),
-        }
-    }
-    if apply && dry_run {
-        eprintln!("--apply and --dry-run cannot be combined");
-        return ExitCode::from(2);
-    }
-    let root = path.unwrap_or_else(|| PathBuf::from("."));
-    let root = root.as_path();
-
-    let inventory = match cargoscope_cargo::scan_cargo_project(root) {
-        Ok(inventory) => inventory,
-        Err(error) => return execution_error(root, &error),
-    };
-    let unused = match cargoscope_cargo::find_unused(root, &inventory) {
-        Ok((unused, _)) => unused,
-        Err(error) => return execution_error(root, &error),
-    };
-    let unused = if precise {
-        eprintln!(
-            "--precise: running cargo check with all targets and features. This compiles the project, so build scripts and proc macros of the project and its dependencies are executed."
-        );
-        let packages = match cargoscope_cargo::project_packages(root) {
-            Ok(packages) => packages,
-            Err(error) => return execution_error(root, &error),
-        };
-        match cargoscope_cargo::precise::run(root) {
-            Ok(compiler) => cargoscope_cargo::precise::refine(
-                unused,
-                &packages.packages,
-                packages.workspace_dependencies.as_ref(),
-                &compiler,
-            ),
-            Err(error) => return execution_error(root, &error),
-        }
-    } else {
-        unused
-    };
-
-    // Only likely-unused findings that are not ignored, grouped by manifest,
-    // restricted to `--only` names when given.
-    let mut by_manifest: std::collections::BTreeMap<&str, Vec<(&str, &str)>> =
-        std::collections::BTreeMap::new();
-    for finding in &unused {
-        if finding.confidence == cargoscope_core::UnusedConfidence::Likely
-            && finding.ignored.is_none()
-            && only
-                .as_ref()
-                .is_none_or(|names| names.contains(&finding.dependency))
-        {
-            by_manifest
-                .entry(finding.manifest.as_str())
-                .or_default()
-                .push((finding.kind.section(), finding.dependency.as_str()));
-        }
-    }
-    if let Some(names) = &only {
-        for name in names {
-            if !by_manifest.values().flatten().any(|(_, key)| key == name) {
-                println!("`{name}` is not a likely-unused dependency: left alone.");
-            }
-        }
-    }
-    if by_manifest.is_empty() {
-        println!("No likely-unused dependency to remove.");
-        return ExitCode::SUCCESS;
-    }
-
-    // Every manifest of the project, original and edited contents.
-    let packages = match cargoscope_cargo::project_packages(root) {
-        Ok(packages) => packages,
-        Err(error) => return execution_error(root, &error),
-    };
-    let mut files: std::collections::BTreeMap<PathBuf, (String, String)> =
-        std::collections::BTreeMap::new();
-    let mut manifest_paths: Vec<PathBuf> = packages
-        .packages
-        .iter()
-        .map(|(dir, _, _)| dir.join("Cargo.toml"))
-        .collect();
-    manifest_paths.push(root.join("Cargo.toml"));
-    manifest_paths.extend(by_manifest.keys().map(|manifest| root.join(manifest)));
-    for path in manifest_paths {
-        if files.contains_key(&path) {
-            continue;
-        }
-        match std::fs::read_to_string(&path) {
-            Ok(contents) => {
-                files.insert(path, (contents.clone(), contents));
-            }
-            Err(error) => {
-                eprintln!("CargoScope could not read {}: {error}", path.display());
-                return ExitCode::from(2);
-            }
-        }
-    }
-    let inherited_before: std::collections::BTreeSet<String> = files
-        .values()
-        .flat_map(|(original, _)| cargoscope_cargo::fix::workspace_references(original))
-        .collect();
-
-    let mut removed = 0;
-    for (manifest, removals) in &by_manifest {
-        let path = root.join(manifest);
-        let Some((_, current)) = files.get_mut(&path) else {
-            continue;
-        };
-        let (new_contents, outcomes) =
-            match cargoscope_cargo::fix::remove_dependencies(current, removals) {
-                Ok(result) => result,
-                Err(error) => {
-                    eprintln!("CargoScope could not edit {}: {error}", path.display());
-                    return ExitCode::from(2);
-                }
-            };
-        *current = new_contents;
-        println!("{manifest}");
-        for ((section, key), outcome) in removals.iter().zip(&outcomes) {
-            match outcome {
-                cargoscope_cargo::fix::Outcome::Removed(tables) => {
-                    removed += 1;
-                    println!("  - remove `{key}` from [{}]", tables.join("], ["));
-                }
-                cargoscope_cargo::fix::Outcome::Skipped(reason) => {
-                    println!("  = keep `{key}` [{section}]: {reason}");
-                }
-            }
-        }
-    }
-
-    // `[workspace.dependencies]` entries that only the removed lines used.
-    let inherited_after: std::collections::BTreeSet<String> = files
-        .values()
-        .flat_map(|(_, current)| cargoscope_cargo::fix::workspace_references(current))
-        .collect();
-    let orphans: Vec<&str> = inherited_before
-        .difference(&inherited_after)
-        .map(String::as_str)
-        .collect();
-    if !orphans.is_empty()
-        && let Some((_, current)) = files.get_mut(&root.join("Cargo.toml"))
-    {
-        match cargoscope_cargo::fix::remove_workspace_dependencies(current, &orphans) {
-            Ok((new_contents, gone)) if !gone.is_empty() => {
-                *current = new_contents;
-                println!("Cargo.toml");
-                for key in gone {
-                    removed += 1;
-                    println!(
-                        "  - remove `{key}` from [workspace.dependencies]: no member uses it anymore"
-                    );
-                }
-            }
-            Ok(_) => {}
-            Err(error) => {
-                eprintln!("CargoScope could not edit the workspace manifest: {error}");
-                return ExitCode::from(2);
-            }
-        }
-    }
-
-    let plural = if removed == 1 { "y" } else { "ies" };
-    if apply {
-        let mut edited = 0;
-        for (path, (original, current)) in &files {
-            if original != current {
-                if let Err(error) = std::fs::write(path, current) {
-                    eprintln!("CargoScope could not write {}: {error}", path.display());
-                    return ExitCode::from(2);
-                }
-                edited += 1;
-            }
-        }
-        println!(
-            "\nRemoved {removed} dependenc{plural} from {edited} manifest(s). Run `cargo check` to update Cargo.lock and confirm the build."
-        );
-    } else {
-        println!(
-            "\nDry run: nothing was written. Run `cargoscope fix --apply` to remove {removed} dependenc{plural}."
-        );
-    }
-    ExitCode::SUCCESS
-}
-
 fn execution_error(root: &Path, error: &dyn std::fmt::Display) -> ExitCode {
     eprintln!("CargoScope could not scan {}: {error}", root.display());
     ExitCode::from(2)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{FailOn, OutputFormat, parse_scan_options};
-    use cargoscope_core::{AdvisoryFinding, AdvisoryKind, Severity};
-    use std::path::PathBuf;
-
-    fn parse(arguments: &[&str]) -> Result<super::ScanOptions, String> {
-        parse_scan_options(arguments.iter().map(|argument| (*argument).to_owned()))
+/// Unused-dependency findings of the project and their warnings, confirmed
+/// with rustc when `precise` (which compiles the project).
+fn find_unused_dependencies(
+    root: &Path,
+    inventory: &Inventory,
+    precise: bool,
+) -> Result<(Vec<UnusedFinding>, Vec<String>), ExitCode> {
+    let (unused, warnings) = cargoscope_cargo::find_unused(root, inventory)
+        .map_err(|error| execution_error(root, &error))?;
+    if !precise {
+        return Ok((unused, warnings));
     }
-
-    #[test]
-    fn parses_options_before_or_after_path() {
-        let before = parse(&["--format", "json", "--fail-on", "high", "."]).expect("valid");
-        let after = parse(&[".", "--format=json", "--fail-on=high"]).expect("valid");
-        assert_eq!(before, after);
-        assert_eq!(before.path, PathBuf::from("."));
-        assert_eq!(before.format, OutputFormat::Json);
-        assert_eq!(before.fail_on, FailOn::AtLeast(Severity::High));
-    }
-
-    #[test]
-    fn defaults_to_text_and_failing_on_any_vulnerability() {
-        let options = parse(&[]).expect("valid");
-        assert_eq!(options.format, OutputFormat::Text);
-        assert_eq!(options.fail_on, FailOn::AnyVulnerability);
-    }
-
-    #[test]
-    fn rejects_unknown_values() {
-        assert!(parse(&["--fail-on", "severe"]).is_err());
-        assert!(parse(&["--format"]).is_err());
-        assert!(parse(&["a", "b"]).is_err());
-    }
-
-    fn finding(kind: AdvisoryKind, severity: Option<Severity>) -> AdvisoryFinding {
-        AdvisoryFinding {
-            package: 0,
-            id: "TEST".to_owned(),
-            aliases: Vec::new(),
-            title: String::new(),
-            date: String::new(),
-            url: None,
-            kind,
-            severity,
-            patched: Vec::new(),
-            ignored: None,
-        }
-    }
-
-    #[test]
-    fn applies_advisory_ignores_by_id_or_alias_with_expiry() {
-        use cargoscope_cargo::config::AdvisoryIgnore;
-        let mut findings = vec![
-            finding(AdvisoryKind::Vulnerability, Some(Severity::High)),
-            finding(AdvisoryKind::Vulnerability, None),
-        ];
-        findings[0].id = "RUSTSEC-1".to_owned();
-        findings[1].id = "RUSTSEC-2".to_owned();
-        findings[1].aliases = vec!["CVE-9".to_owned()];
-        let ignore = |id: &str, until: Option<&str>| AdvisoryIgnore {
-            id: id.to_owned(),
-            reason: "known".to_owned(),
-            until: until.map(str::to_owned),
-        };
-        let warnings = super::apply_advisory_ignores(
-            &mut findings,
-            &[
-                ignore("rustsec-1", None),
-                ignore("CVE-9", Some("2026-01-01")),
-                ignore("RUSTSEC-404", None),
-            ],
-            "2026-11-14",
-        );
-        assert_eq!(findings[0].ignored.as_deref(), Some("known"));
-        assert_eq!(
-            findings[1].ignored, None,
-            "expired ignore no longer applies"
-        );
-        assert_eq!(warnings.len(), 2);
-        assert!(warnings[0].contains("expired on 2026-01-01"));
-        assert!(warnings[1].contains("RUSTSEC-404, which matches no advisory"));
-        assert!(!FailOn::AnyVulnerability.is_triggered_by(&findings[0]));
-        assert!(FailOn::AnyVulnerability.is_triggered_by(&findings[1]));
-    }
-
-    #[test]
-    fn applies_failure_thresholds() {
-        let medium = finding(AdvisoryKind::Vulnerability, Some(Severity::Medium));
-        let unscored = finding(AdvisoryKind::Vulnerability, None);
-        let unmaintained = finding(AdvisoryKind::Informational("unmaintained".to_owned()), None);
-
-        assert!(FailOn::AnyVulnerability.is_triggered_by(&medium));
-        assert!(!FailOn::AnyVulnerability.is_triggered_by(&unmaintained));
-        assert!(!FailOn::Never.is_triggered_by(&medium));
-        assert!(FailOn::AtLeast(Severity::Medium).is_triggered_by(&medium));
-        assert!(!FailOn::AtLeast(Severity::High).is_triggered_by(&medium));
-        assert!(FailOn::AtLeast(Severity::Critical).is_triggered_by(&unscored));
-    }
+    eprintln!(
+        "--precise: running cargo check with all targets and features. This compiles the project, so build scripts and proc macros of the project and its dependencies are executed."
+    );
+    let packages =
+        cargoscope_cargo::project_packages(root).map_err(|error| execution_error(root, &error))?;
+    let compiler =
+        cargoscope_cargo::precise::run(root).map_err(|error| execution_error(root, &error))?;
+    let unused = cargoscope_cargo::precise::refine(
+        unused,
+        &packages.packages,
+        packages.workspace_dependencies.as_ref(),
+        &compiler,
+    );
+    Ok((unused, warnings))
 }
