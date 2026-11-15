@@ -22,8 +22,8 @@ struct FixOptions {
     only: Option<Vec<String>>,
     /// Update vulnerable packages instead of removing unused dependencies.
     advisories: bool,
-    /// `--format markdown`, with `--advisories`: a pull request body.
-    markdown: bool,
+    /// `--format markdown|json`, with `--advisories`.
+    format: crate::fix_advisories::Format,
 }
 
 fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptions, String> {
@@ -48,17 +48,23 @@ fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptio
             "--dry-run" => dry_run = true,
             "--precise" => options.precise = true,
             "--advisories" => options.advisories = true,
-            "--format=markdown" => options.markdown = true,
-            "--format" => match arguments.next().as_deref() {
-                Some("markdown") => options.markdown = true,
-                Some("text") => options.markdown = false,
-                other => {
-                    return Err(format!(
-                        "Unsupported format for fix: {}. Use text or markdown.",
-                        other.unwrap_or("(none)")
-                    ));
-                }
-            },
+            "--format" | "--format=text" | "--format=markdown" | "--format=json" => {
+                let value = match argument.strip_prefix("--format=") {
+                    Some(value) => Some(value.to_owned()),
+                    None => arguments.next(),
+                };
+                options.format = match value.as_deref() {
+                    Some("text") => crate::fix_advisories::Format::Text,
+                    Some("markdown") => crate::fix_advisories::Format::Markdown,
+                    Some("json") => crate::fix_advisories::Format::Json,
+                    other => {
+                        return Err(format!(
+                            "Unsupported format for fix: {}. Use text, markdown or json.",
+                            other.unwrap_or("(none)")
+                        ));
+                    }
+                };
+            }
             other if other.starts_with('-') => {
                 return Err(format!("Unknown option for fix: {other}"));
             }
@@ -69,11 +75,11 @@ fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptio
     if options.apply && dry_run {
         return Err("--apply and --dry-run cannot be combined".to_owned());
     }
-    if options.markdown && !options.advisories {
-        return Err("--format markdown needs --advisories".to_owned());
+    if options.format != crate::fix_advisories::Format::Text && !options.advisories {
+        return Err("--format markdown and json need --advisories".to_owned());
     }
-    if options.advisories && (options.precise || options.only.is_some()) {
-        return Err("--advisories cannot be combined with --precise or --only".to_owned());
+    if options.advisories && options.precise {
+        return Err("--advisories cannot be combined with --precise".to_owned());
     }
     Ok(options)
 }
@@ -101,7 +107,12 @@ pub fn fix_command(arguments: impl Iterator<Item = String>) -> ExitCode {
 fn run_fix(options: &FixOptions) -> Result<ExitCode, ExitCode> {
     let root = options.path.as_deref().unwrap_or(Path::new("."));
     if options.advisories {
-        return crate::fix_advisories::run(root, options.apply, options.markdown);
+        return crate::fix_advisories::run(
+            root,
+            options.apply,
+            options.format,
+            options.only.as_deref(),
+        );
     }
     let inventory = cargoscope_cargo::scan_cargo_project(root)
         .map_err(|error| execution_error(root, &error))?;
@@ -305,6 +316,11 @@ mod tests {
                 .expect("valid")
                 .advisories
         );
-        assert!(parse(&["--advisories", "--only", "log"]).is_err());
+        assert!(parse(&["--advisories", "--precise"]).is_err());
+        let advisories =
+            parse(&["--advisories", "--only", "chrono", "--format", "json"]).expect("valid");
+        assert_eq!(advisories.only, Some(vec!["chrono".to_owned()]));
+        assert_eq!(advisories.format, crate::fix_advisories::Format::Json);
+        assert!(parse(&["--format", "json"]).is_err());
     }
 }

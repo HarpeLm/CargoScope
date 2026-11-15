@@ -539,14 +539,61 @@ fn print_summary(apply: bool, rows: &[Row]) {
     }
 }
 
-/// `cargoscope fix --advisories [PATH] [--apply] [--format markdown]`. With
-/// `markdown`, only the Markdown report is printed (after the updates).
+/// Output of `fix --advisories`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Format {
+    /// Human-readable lines, printed as each package is planned.
+    #[default]
+    Text,
+    /// A pull request body, printed after the updates.
+    Markdown,
+    /// The plan as JSON, for scripts such as the GitHub Action.
+    Json,
+}
+
+/// The plan as JSON: `updates` (package, from, to, advisories, manifests)
+/// and `blocked` (package, from, advisories, reason).
+fn render_json(rows: &[Row]) -> String {
+    let mut updates = Vec::new();
+    let mut blocked = Vec::new();
+    for row in rows {
+        match &row.step {
+            Step::Update {
+                version, manifests, ..
+            } => updates.push(serde_json::json!({
+                "package": row.name, "from": row.from, "to": version,
+                "advisories": row.ids, "manifests": manifests,
+            })),
+            Step::Blocked(reason) => blocked.push(serde_json::json!({
+                "package": row.name, "from": row.from,
+                "advisories": row.ids, "reason": reason,
+            })),
+        }
+    }
+    let mut text = serde_json::to_string_pretty(&serde_json::json!({
+        "updates": updates,
+        "blocked": blocked,
+    }))
+    .unwrap_or_default();
+    text.push('\n');
+    text
+}
+
+/// `cargoscope fix --advisories [PATH] [--apply] [--format text|markdown|json]
+/// [--only NAMES]`. Markdown and JSON are printed after the updates; `only`
+/// restricts the run to those packages.
 ///
 /// # Errors
 ///
 /// Returns an execution error exit code (`2`) when the project cannot be
 /// scanned, manifests cannot be edited, or `cargo update` fails.
-pub fn run(root: &Path, apply: bool, markdown: bool) -> Result<ExitCode, ExitCode> {
+pub fn run(
+    root: &Path,
+    apply: bool,
+    format: Format,
+    only: Option<&[String]>,
+) -> Result<ExitCode, ExitCode> {
+    let markdown = format != Format::Text;
     let inventory: Inventory = cargoscope_cargo::scan_cargo_project(root)
         .map_err(|error| execution_error(root, &error))?;
     let mut warnings = Vec::new();
@@ -567,6 +614,9 @@ pub fn run(root: &Path, apply: bool, markdown: bool) -> Result<ExitCode, ExitCod
             continue;
         }
         let package = &inventory.packages[finding.package];
+        if only.is_some_and(|names| !names.contains(&package.name)) {
+            continue;
+        }
         let ids: Vec<&str> = findings
             .iter()
             .filter(|other| other.package == finding.package)
@@ -589,18 +639,20 @@ pub fn run(root: &Path, apply: bool, markdown: bool) -> Result<ExitCode, ExitCod
         });
     }
     if rows.is_empty() {
-        if !markdown {
-            println!("No vulnerable package to update.");
+        match format {
+            Format::Text => println!("No vulnerable package to update."),
+            Format::Json => print!("{}", render_json(&rows)),
+            Format::Markdown => {}
         }
         return Ok(ExitCode::SUCCESS);
     }
     if apply {
         apply_updates(root, &rows, &mut manifests)?;
     }
-    if markdown {
-        print!("{}", render_markdown(&rows));
-    } else {
-        print_summary(apply, &rows);
+    match format {
+        Format::Markdown => print!("{}", render_markdown(&rows)),
+        Format::Json => print!("{}", render_json(&rows)),
+        Format::Text => print_summary(apply, &rows),
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -633,6 +685,37 @@ mod tests {
         );
         assert!(versions(&[">= 1.0.0"], "2.0.0").is_empty());
         assert!(versions(&["not a range"], "1.0.0").is_empty());
+    }
+
+    #[test]
+    fn renders_the_plan_as_json() {
+        use super::{Row, Step, render_json};
+        let rows = vec![
+            Row {
+                name: "chrono".to_owned(),
+                from: "0.4.19".to_owned(),
+                ids: vec!["RUSTSEC-2020-0159".to_owned()],
+                step: Step::Update {
+                    spec: "chrono@0.4.19".to_owned(),
+                    version: "0.4.20".to_owned(),
+                    manifests: Vec::new(),
+                },
+            },
+            Row {
+                name: "time".to_owned(),
+                from: "0.1.45".to_owned(),
+                ids: vec!["RUSTSEC-2020-0071".to_owned()],
+                step: Step::Blocked("required by package `chrono v0.4.19`".to_owned()),
+            },
+        ];
+        let value: serde_json::Value = serde_json::from_str(&render_json(&rows)).expect("JSON");
+        assert_eq!(value["updates"][0]["package"], "chrono");
+        assert_eq!(value["updates"][0]["to"], "0.4.20");
+        assert_eq!(value["blocked"][0]["package"], "time");
+        assert_eq!(
+            value["blocked"][0]["reason"],
+            "required by package `chrono v0.4.19`"
+        );
     }
 
     #[test]
