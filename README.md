@@ -160,6 +160,12 @@ cargo run -p cargoscope -- scan .
 
 Unused-dependency detection is measured on a labelled corpus of 70 real repositories (about 91–94% precision on unseen code, above the 90% criterion of v0.1; on the same packages, cargo-machete's default mode has about 41% precision, see [the comparison](tests/corpus/cargo-machete.md), a [blind benchmark](tests/corpus/blind-benchmark.md) against cargo-machete, cargo-audit and cargo-deny, and a [benchmark judged by rustc](tests/corpus/compiler-benchmark.md) on 73 popular crates: 91.7% precision and twice cargo-machete's recall there): see [tests/corpus](tests/corpus/README.md) for the method and the honest numbers.
 
+## Crates in Several Versions
+
+The report lists crates resolved in more than one version (for example `syn` 1 and 2), which Cargo compiles once per version. Every version but the newest shows the chain that pulls it in: that is the dependency to update to remove the duplicate. The JSON report has them in `duplicates`, and `compare` and the pull request comment list new ones.
+
+The list comes from `Cargo.lock`, which covers every platform and also optional dependencies that may never be enabled: on [uv](https://github.com/astral-sh/uv), it finds the 35 crates that `cargo tree --duplicates --target all --all-features` reports, plus one only present in the lockfile.
+
 ## Comparing Reports and Baselines
 
 ```sh
@@ -168,7 +174,7 @@ cargoscope scan . --baseline baseline.json                     # later: only new
 cargoscope compare baseline.json current.json                  # what changed between two reports
 ```
 
-`compare` lists new and resolved advisories, new yanked versions, new and resolved likely-unused dependencies, and version changes, as text, JSON (`--format json`) or Markdown for a pull request comment (`--format markdown`). It exits with 1 when new advisories reach `--fail-on`.
+`compare` lists new and resolved advisories, new yanked versions, new and resolved likely-unused dependencies, new and resolved crates in several versions, and version changes, as text, JSON (`--format json`) or Markdown for a pull request comment (`--format markdown`). It exits with 1 when new advisories reach `--fail-on`.
 
 ## Ignoring an Advisory
 
