@@ -8,11 +8,11 @@ use std::fmt::Write;
 use std::path::Path;
 
 use cargoscope_core::policy::ViolationLevel;
-use cargoscope_core::{AdvisoryKind, Report, UnusedConfidence, VERSION};
+use cargoscope_core::{AdvisoryKind, OutdatedKind, Report, UnusedConfidence, VERSION};
 
 use crate::{
-    chain, kind_names, kind_note, label, registry_packages, scope, sorted_heavy_weights,
-    sorted_license_counts, summary,
+    chain, format_outdated_targets, kind_names, kind_note, label, registry_packages, scope,
+    sorted_heavy_weights, sorted_license_counts, summary,
 };
 
 /// Escapes HTML special characters for safe interpolation into text nodes and
@@ -733,16 +733,26 @@ fn render_versions_licenses_section(out: &mut String, report: &Report, counts: &
                 counts.outdated_total
             );
             out.push_str(
-                "<div class=\"table-wrap\"><table>\n<thead><tr><th>Package</th><th>Current</th><th>Latest</th><th>Published</th></tr></thead>\n<tbody>\n",
+                "<div class=\"table-wrap\"><table>\n<thead><tr><th>Package</th><th>Current</th><th>Compatible</th><th>Latest</th><th>Kind</th><th>Published</th></tr></thead>\n<tbody>\n",
             );
             for (index, info) in direct_outdated {
                 let pkg = &report.inventory.packages[index];
+                let kind = info.outdated_kind(&pkg.version);
+                let kind_class = match kind {
+                    OutdatedKind::Compatible => "badge-ok",
+                    OutdatedKind::Breaking => "badge-danger",
+                    OutdatedKind::Both => "badge-warn",
+                    OutdatedKind::None => "badge-muted",
+                };
+                let compat_text = info.compatible_upgrade(&pkg.version).unwrap_or("-");
                 let _ = writeln!(
                     out,
-                    "<tr class=\"filter-row\"><td><code>{}</code></td><td>{}</td><td><code>{}</code></td><td>{}</td></tr>",
+                    "<tr class=\"filter-row\"><td><code>{}</code></td><td>{}</td><td><code>{}</code></td><td><code>{}</code></td><td><span class=\"badge {kind_class}\">{}</span></td><td>{}</td></tr>",
                     escape_html(&pkg.name),
                     escape_html(&pkg.version),
+                    escape_html(compat_text),
                     escape_html(info.latest_version.as_deref().unwrap_or("?")),
+                    escape_html(kind.as_str()),
                     escape_html(info.latest_published.as_deref().unwrap_or("-"))
                 );
             }
@@ -858,10 +868,9 @@ fn render_inventory_section(out: &mut String, report: &Report) {
             status_parts.push("<span class=\"badge badge-danger\">YANKED</span>".to_owned());
         }
         if let Some(info) = info
-            && info.outdated
-            && let Some(latest) = &info.latest_version
+            && let Some(targets) = format_outdated_targets(&pkg.version, info)
         {
-            status_parts.push(format!("&rarr; <code>{}</code>", escape_html(latest)));
+            status_parts.push(format!("&rarr; <code>{}</code>", escape_html(&targets)));
         }
         let status_html = if status_parts.is_empty() {
             "<span class=\"muted\">-</span>".to_owned()
@@ -1176,15 +1185,14 @@ mod tests {
                     license: Some("MIT OR Apache-2.0".to_owned()),
                     latest_version: Some("1.0.130".to_owned()),
                     latest_published: Some("2026-10-01".to_owned()),
+                    latest_compatible: Some("1.0.130".to_owned()),
+                    compatible_published: Some("2026-10-01".to_owned()),
                     outdated: true,
                     yanked: Some(true),
                 },
                 PackageInfo {
                     license: Some("MIT".to_owned()),
-                    latest_version: None,
-                    latest_published: None,
-                    outdated: false,
-                    yanked: Some(false),
+                    ..PackageInfo::default()
                 },
             ],
             registry_date: Some("2026-11-15".to_owned()),

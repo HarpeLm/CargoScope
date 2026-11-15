@@ -138,7 +138,8 @@
       "additionalProperties": false,
       "required": [
         "name", "version", "scope", "direct", "source", "path", "license",
-        "latest_version", "latest_published", "outdated", "yanked"
+        "latest_version", "latest_published", "latest_compatible",
+        "compatible_published", "outdated", "outdated_kind", "yanked"
       ],
       "properties": {
         "name": { "type": "string" },
@@ -150,7 +151,10 @@
         "license": { "$ref": "#/$defs/nullable_string" },
         "latest_version": { "$ref": "#/$defs/nullable_string" },
         "latest_published": { "$ref": "#/$defs/nullable_date" },
+        "latest_compatible": { "$ref": "#/$defs/nullable_string" },
+        "compatible_published": { "$ref": "#/$defs/nullable_date" },
         "outdated": { "type": "boolean" },
+        "outdated_kind": { "enum": ["none", "compatible", "breaking", "both"] },
         "yanked": { "type": ["boolean", "null"], "description": "null when no registry data is cached." }
       }
     },

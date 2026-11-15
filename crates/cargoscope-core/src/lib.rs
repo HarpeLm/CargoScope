@@ -448,6 +448,46 @@ pub struct UnusedFinding {
     pub ignored: Option<String>,
 }
 
+/// Whether an available update stays within SemVer compatibility or breaks it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OutdatedKind {
+    /// No newer non-yanked version is known.
+    #[default]
+    None,
+    /// Only a SemVer-compatible update (`^current`) is available.
+    Compatible,
+    /// Only a SemVer-breaking update is available.
+    Breaking,
+    /// Both a newer SemVer-compatible update and a newer breaking version exist.
+    Both,
+}
+
+impl OutdatedKind {
+    /// Machine-readable name (`"none"`, `"compatible"`, `"breaking"`, `"both"`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Compatible => "compatible",
+            Self::Breaking => "breaking",
+            Self::Both => "both",
+        }
+    }
+}
+
+/// Returns whether `candidate` stays within Cargo's SemVer-compatible caret
+/// range (`^current`).
+#[must_use]
+pub fn is_semver_compatible(current: &semver::Version, candidate: &semver::Version) -> bool {
+    if current.major > 0 {
+        candidate.major == current.major
+    } else if current.minor > 0 {
+        candidate.major == 0 && candidate.minor == current.minor
+    } else {
+        candidate.major == 0 && candidate.minor == 0 && candidate.patch == current.patch
+    }
+}
+
 /// Registry data about one resolved package, from the local crates.io cache.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PackageInfo {
@@ -458,10 +498,73 @@ pub struct PackageInfo {
     pub latest_version: Option<String>,
     /// Publication date (`YYYY-MM-DD`) of `latest_version`, when known.
     pub latest_published: Option<String>,
+    /// Latest published non-yanked version that is SemVer-compatible with the
+    /// resolved version (`^current`), when known.
+    pub latest_compatible: Option<String>,
+    /// Publication date (`YYYY-MM-DD`) of `latest_compatible`, when known.
+    pub compatible_published: Option<String>,
     /// Whether the resolved version has been yanked. `None` when unknown.
     pub yanked: Option<bool>,
     /// Whether `latest_version` is newer than the resolved version.
     pub outdated: bool,
+}
+
+impl PackageInfo {
+    /// Classifies whether newer cached versions for `current_version` are
+    /// SemVer-compatible, SemVer-breaking, or both.
+    #[must_use]
+    pub fn outdated_kind(&self, current_version: &str) -> OutdatedKind {
+        if !self.outdated {
+            return OutdatedKind::None;
+        }
+        let Ok(current) = semver::Version::parse(current_version) else {
+            return OutdatedKind::None;
+        };
+        let has_compat = self
+            .latest_compatible
+            .as_deref()
+            .and_then(|v| semver::Version::parse(v).ok())
+            .is_some_and(|compat| compat > current && is_semver_compatible(&current, &compat));
+        let latest_parsed = self
+            .latest_version
+            .as_deref()
+            .and_then(|v| semver::Version::parse(v).ok())
+            .filter(|latest| *latest > current);
+        let has_breaking = latest_parsed
+            .as_ref()
+            .is_some_and(|latest| !is_semver_compatible(&current, latest));
+        let latest_is_compat = latest_parsed
+            .as_ref()
+            .is_some_and(|latest| is_semver_compatible(&current, latest));
+        match (has_compat || latest_is_compat, has_breaking) {
+            (true, true) => OutdatedKind::Both,
+            (true, false) => OutdatedKind::Compatible,
+            (false, true) => OutdatedKind::Breaking,
+            (false, false) => OutdatedKind::None,
+        }
+    }
+
+    /// Returns the newest SemVer-compatible upgrade if strictly newer than
+    /// `current_version`.
+    #[must_use]
+    pub fn compatible_upgrade(&self, current_version: &str) -> Option<&str> {
+        let current = semver::Version::parse(current_version).ok()?;
+        if let Some(compat) = self.latest_compatible.as_deref() {
+            let parsed = semver::Version::parse(compat).ok()?;
+            if parsed > current && is_semver_compatible(&current, &parsed) {
+                return Some(compat);
+            }
+        }
+        if self.outdated
+            && let Some(latest) = self.latest_version.as_deref()
+        {
+            let parsed = semver::Version::parse(latest).ok()?;
+            if parsed > current && is_semver_compatible(&current, &parsed) {
+                return Some(latest);
+            }
+        }
+        None
+    }
 }
 
 /// Which checks a scan runs. The inventory is always built.
@@ -727,5 +830,41 @@ mod tests {
         assert_eq!(inventory.package_weight(3), (1, 2));
         // Removing `d` drops `d` only (since `app` also depends on `a`): exclusive = 1, tree = 4 ({d, a, target, c}).
         assert_eq!(inventory.package_weight(5), (1, 4));
+    }
+
+    #[test]
+    fn classifies_semver_compatible_and_breaking_updates() {
+        let compat = super::PackageInfo {
+            latest_version: Some("1.4.0".to_owned()),
+            latest_compatible: Some("1.4.0".to_owned()),
+            outdated: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            compat.outdated_kind("1.2.0"),
+            super::OutdatedKind::Compatible
+        );
+        assert_eq!(compat.compatible_upgrade("1.2.0"), Some("1.4.0"));
+
+        let both = super::PackageInfo {
+            latest_version: Some("0.9.0".to_owned()),
+            latest_compatible: Some("0.8.5".to_owned()),
+            outdated: true,
+            ..Default::default()
+        };
+        assert_eq!(both.outdated_kind("0.8.1"), super::OutdatedKind::Both);
+        assert_eq!(both.compatible_upgrade("0.8.1"), Some("0.8.5"));
+
+        let breaking = super::PackageInfo {
+            latest_version: Some("0.0.4".to_owned()),
+            latest_compatible: Some("0.0.3".to_owned()),
+            outdated: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            breaking.outdated_kind("0.0.3"),
+            super::OutdatedKind::Breaking
+        );
+        assert_eq!(breaking.compatible_upgrade("0.0.3"), None);
     }
 }

@@ -249,11 +249,11 @@ fn reports_licenses_versions_and_yanked_packages() {
     assert!(text.contains(
         "Yanked versions in use: 1\n- itoa 1.0.11\n    via simple -> serde_json -> itoa\n"
     ));
-    // 1.0.300 is yanked and 2.0.0-alpha.1 is a pre-release: the latest is 1.0.200.
+    // 1.0.300 is yanked and 2.0.0-alpha.1 is a pre-release: the latest is 1.0.200 (compatible).
     assert!(text.contains(
-        "Outdated packages: 1 (1 direct)\n- serde_json 1.0.128 -> 1.0.200, published 2025-12-01\n"
+        "Outdated packages: 1 (1 direct)\n- serde_json 1.0.128 -> 1.0.200 (compatible), published 2025-12-01\n"
     ));
-    assert!(text.contains("- serde_json 1.0.128 [direct] (registry+https://github.com/rust-lang/crates.io-index) MIT OR Apache-2.0 -> 1.0.200 available\n"));
+    assert!(text.contains("- serde_json 1.0.128 [direct] (registry+https://github.com/rust-lang/crates.io-index) MIT OR Apache-2.0 -> 1.0.200 (compatible) available\n"));
     assert!(text.contains("- itoa 1.0.11 [transitive] (registry+https://github.com/rust-lang/crates.io-index) YANKED\n"));
     assert!(!text.contains("no crates.io data"));
 }
@@ -264,7 +264,94 @@ fn json_output_includes_registry_data() {
     assert!(
         json.contains("\"registry\":{\"source\":\"crates.io\",\"downloaded_on\":\"2026-01-01\"}")
     );
-    assert!(json.contains("\"license\":\"MIT OR Apache-2.0\",\"latest_version\":\"1.0.200\",\"latest_published\":\"2025-12-01\",\"outdated\":true,\"yanked\":false}"));
+    assert!(json.contains("\"license\":\"MIT OR Apache-2.0\",\"latest_version\":\"1.0.200\",\"latest_published\":\"2025-12-01\",\"latest_compatible\":\"1.0.200\",\"compatible_published\":\"2025-12-01\",\"outdated\":true,\"outdated_kind\":\"compatible\",\"yanked\":false}"));
+}
+
+#[test]
+fn distinguishes_semver_compatible_and_breaking_updates() {
+    let cache = std::env::temp_dir().join(format!("cargoscope-semver-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&cache);
+    let versions_dir = cache.join("crates-io/versions");
+    std::fs::create_dir_all(&versions_dir).expect("create versions cache");
+    std::fs::write(cache.join("crates-io/fetched-at"), "1767225600\n").expect("fetched-at");
+    // serde_json is 1.0.128: has both compatible 1.0.200 and breaking 2.0.0.
+    std::fs::write(
+        versions_dir.join("serde_json"),
+        "1.0.128\tfalse\t2024-09-01\n1.0.200\tfalse\t2025-12-01\n2.0.0\tfalse\t2026-01-01\n",
+    )
+    .expect("serde_json versions");
+    // serde is 1.0.210: only breaking 2.0.0 exists.
+    std::fs::write(
+        versions_dir.join("serde"),
+        "1.0.210\tfalse\t2024-09-01\n2.0.0\tfalse\t2026-01-01\n",
+    )
+    .expect("serde versions");
+
+    let text = stdout(&scan_with_cache(
+        "simple",
+        &[
+            "--checks",
+            "inventory,versions,licenses",
+            "--fail-on",
+            "none",
+        ],
+        &cache,
+    ));
+    assert!(text.contains(
+        "- serde_json 1.0.128 -> 1.0.200 (compatible), 2.0.0 (breaking), published 2026-01-01\n"
+    ));
+    assert!(text.contains("serde 1.0.210 [transitive]"));
+    assert!(text.contains("-> 2.0.0 (breaking) available\n"));
+
+    let json: serde_json::Value = serde_json::from_slice(
+        &scan_with_cache(
+            "simple",
+            &[
+                "--checks",
+                "inventory,versions,licenses",
+                "--format",
+                "json",
+                "--fail-on",
+                "none",
+            ],
+            &cache,
+        )
+        .stdout,
+    )
+    .expect("json parses");
+    let packages = json["packages"].as_array().expect("packages");
+    let serde_json = packages
+        .iter()
+        .find(|p| p["name"] == "serde_json")
+        .expect("serde_json");
+    assert_eq!(serde_json["latest_compatible"], "1.0.200");
+    assert_eq!(serde_json["latest_version"], "2.0.0");
+    assert_eq!(serde_json["outdated_kind"], "both");
+    let serde = packages
+        .iter()
+        .find(|p| p["name"] == "serde")
+        .expect("serde");
+    assert_eq!(serde["latest_compatible"], "1.0.210");
+    assert_eq!(serde["latest_version"], "2.0.0");
+    assert_eq!(serde["outdated_kind"], "breaking");
+
+    let html = stdout(&scan_with_cache(
+        "simple",
+        &[
+            "--checks",
+            "inventory,versions,licenses",
+            "--format",
+            "html",
+            "--fail-on",
+            "none",
+        ],
+        &cache,
+    ));
+    assert!(html.contains(">both<"));
+    assert!(html.contains("1.0.200"));
+    assert!(html.contains("2.0.0 (breaking)"));
+
+    let _ = std::fs::remove_dir_all(&cache);
 }
 
 #[test]

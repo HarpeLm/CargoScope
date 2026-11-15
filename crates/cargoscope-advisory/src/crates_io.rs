@@ -126,14 +126,40 @@ fn read_versions(text: &str) -> Vec<PublishedVersion> {
         .collect()
 }
 
-/// Latest non-yanked version: stable first, pre-release only if nothing else.
-fn latest(versions: &[PublishedVersion]) -> Option<&PublishedVersion> {
+/// Latest non-yanked version from `candidates`: stable first, pre-release only
+/// if nothing else.
+fn pick_latest<'a, I>(candidates: I) -> Option<&'a PublishedVersion>
+where
+    I: Iterator<Item = &'a PublishedVersion> + Clone,
+{
     let parse = |version: &PublishedVersion| semver::Version::parse(&version.version).ok();
-    let candidates = || versions.iter().filter(|version| !version.yanked);
-    candidates()
+    candidates
+        .clone()
+        .filter(|version| !version.yanked)
         .filter(|version| parse(version).is_some_and(|parsed| parsed.pre.is_empty()))
         .max_by_key(|version| parse(version))
-        .or_else(|| candidates().max_by_key(|version| parse(version)))
+        .or_else(|| {
+            candidates
+                .filter(|version| !version.yanked)
+                .max_by_key(|version| parse(version))
+        })
+}
+
+/// Latest non-yanked version overall.
+fn latest(versions: &[PublishedVersion]) -> Option<&PublishedVersion> {
+    pick_latest(versions.iter())
+}
+
+/// Latest non-yanked version that is SemVer-compatible with `current`.
+fn latest_compatible<'a>(
+    versions: &'a [PublishedVersion],
+    current: &str,
+) -> Option<&'a PublishedVersion> {
+    let current = semver::Version::parse(current).ok()?;
+    pick_latest(versions.iter().filter(|version| {
+        semver::Version::parse(&version.version)
+            .is_ok_and(|parsed| cargoscope_core::is_semver_compatible(&current, &parsed))
+    }))
 }
 
 /// Summary of a registry refresh.
@@ -352,6 +378,7 @@ impl RegistryCache {
                     .find(|version| version.version == package.version)
                     .map(|version| version.yanked);
                 let newest = latest(&versions);
+                let compat = latest_compatible(&versions, &package.version);
                 let outdated = newest.is_some_and(|newest| {
                     match (
                         semver::Version::parse(&newest.version),
@@ -365,6 +392,8 @@ impl RegistryCache {
                     license,
                     latest_version: newest.map(|version| version.version.clone()),
                     latest_published: newest.and_then(|version| version.published.clone()),
+                    latest_compatible: compat.map(|version| version.version.clone()),
+                    compatible_published: compat.and_then(|version| version.published.clone()),
                     yanked,
                     outdated,
                 }
@@ -376,8 +405,8 @@ impl RegistryCache {
 #[cfg(test)]
 mod tests {
     use super::{
-        PublishedVersion, format_versions, index_path, is_valid_name, latest, parse_index,
-        read_versions,
+        PublishedVersion, format_versions, index_path, is_valid_name, latest, latest_compatible,
+        parse_index, read_versions,
     };
 
     fn version(text: &str, yanked: bool) -> PublishedVersion {
@@ -430,6 +459,40 @@ not json
         assert_eq!(
             latest(&only_pre).map(|v| v.version.as_str()),
             Some("0.1.0-beta")
+        );
+    }
+
+    #[test]
+    fn latest_compatible_respects_cargo_semver_caret_ranges() {
+        let v1 = vec![
+            version("1.0.0", false),
+            version("1.3.2", false),
+            version("1.4.0", true),
+            version("2.0.0", false),
+        ];
+        assert_eq!(
+            latest_compatible(&v1, "1.0.0").map(|v| v.version.as_str()),
+            Some("1.3.2")
+        );
+
+        let v0 = vec![
+            version("0.8.1", false),
+            version("0.8.9", false),
+            version("0.9.0", false),
+        ];
+        assert_eq!(
+            latest_compatible(&v0, "0.8.1").map(|v| v.version.as_str()),
+            Some("0.8.9")
+        );
+        assert_eq!(
+            latest_compatible(&v0, "0.9.0").map(|v| v.version.as_str()),
+            Some("0.9.0")
+        );
+
+        let v00 = vec![version("0.0.2", false), version("0.0.3", false)];
+        assert_eq!(
+            latest_compatible(&v00, "0.0.2").map(|v| v.version.as_str()),
+            Some("0.0.2")
         );
     }
 }

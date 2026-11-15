@@ -293,10 +293,8 @@ fn render_inventory_text(out: &mut String, report: &Report) {
             if info.yanked == Some(true) {
                 out.push_str(" YANKED");
             }
-            if info.outdated
-                && let Some(latest) = &info.latest_version
-            {
-                let _ = write!(out, " -> {latest} available");
+            if let Some(targets) = format_outdated_targets(&package.version, info) {
+                let _ = write!(out, " -> {targets} available");
             }
         }
         out.push('\n');
@@ -553,6 +551,28 @@ fn render_licenses_text(out: &mut String, registry_packages: &RegistryPackages<'
     }
 }
 
+pub(crate) fn format_outdated_targets(
+    current_version: &str,
+    info: &cargoscope_core::PackageInfo,
+) -> Option<String> {
+    if !info.outdated {
+        return None;
+    }
+    let latest = info.latest_version.as_deref().unwrap_or("?");
+    match info.outdated_kind(current_version) {
+        cargoscope_core::OutdatedKind::None => Some(latest.to_owned()),
+        cargoscope_core::OutdatedKind::Compatible => {
+            let compat = info.compatible_upgrade(current_version).unwrap_or(latest);
+            Some(format!("{compat} (compatible)"))
+        }
+        cargoscope_core::OutdatedKind::Breaking => Some(format!("{latest} (breaking)")),
+        cargoscope_core::OutdatedKind::Both => {
+            let compat = info.compatible_upgrade(current_version).unwrap_or(latest);
+            Some(format!("{compat} (compatible), {latest} (breaking)"))
+        }
+    }
+}
+
 fn render_versions_text(
     out: &mut String,
     report: &Report,
@@ -595,12 +615,12 @@ fn render_versions_text(
             .as_deref()
             .map(|date| format!(", published {date}"))
             .unwrap_or_default();
+        let targets = format_outdated_targets(&package.version, info)
+            .unwrap_or_else(|| info.latest_version.as_deref().unwrap_or("?").to_owned());
         let _ = writeln!(
             out,
-            "- {} {} -> {}{published}",
-            package.name,
-            package.version,
-            info.latest_version.as_deref().unwrap_or("?")
+            "- {} {} -> {targets}{published}",
+            package.name, package.version,
         );
     }
 }
@@ -691,13 +711,17 @@ pub fn render_json(project_root: &Path, report: &Report) -> String {
         );
         write_path(&mut out, inventory, index);
         let info = report.package_info.get(index).cloned().unwrap_or_default();
+        let outdated_kind = info.outdated_kind(&package.version);
         let _ = write!(
             out,
-            ",\"license\":{},\"latest_version\":{},\"latest_published\":{},\"outdated\":{},\"yanked\":{}}}",
+            ",\"license\":{},\"latest_version\":{},\"latest_published\":{},\"latest_compatible\":{},\"compatible_published\":{},\"outdated\":{},\"outdated_kind\":\"{}\",\"yanked\":{}}}",
             json_string_or_null(info.license.as_deref()),
             json_string_or_null(info.latest_version.as_deref()),
             json_string_or_null(info.latest_published.as_deref()),
+            json_string_or_null(info.latest_compatible.as_deref()),
+            json_string_or_null(info.compatible_published.as_deref()),
             info.outdated,
+            outdated_kind.as_str(),
             info.yanked
                 .map_or("null", |yanked| if yanked { "true" } else { "false" }),
         );
@@ -1063,7 +1087,7 @@ mod tests {
             "{\"id\":\"TEST-0001\",\"aliases\":[\"CVE-TEST\"],\"title\":\"Beta is broken\",\"date\":\"2025-05-05\",\"url\":\"https://example.test/report\",\"kind\":\"vulnerability\",\"informational\":null,\"severity\":\"high\",\"package\":{\"name\":\"beta\",\"version\":\"1.0.0\"},\"patched\":[\">= 1.2.0\"],\"path\":[{\"name\":\"app\",\"version\":\"1.0.0\"},{\"name\":\"alpha\",\"version\":\"1.0.0\"},{\"name\":\"beta\",\"version\":\"1.0.0\"}],\"ignored_reason\":null}"
         ));
         assert!(json.contains(
-            "{\"name\":\"orphan\",\"version\":\"1.0.0\",\"scope\":\"transitive\",\"direct\":false,\"source\":null,\"path\":null,\"license\":null,\"latest_version\":null,\"latest_published\":null,\"outdated\":false,\"yanked\":null}"
+            "{\"name\":\"orphan\",\"version\":\"1.0.0\",\"scope\":\"transitive\",\"direct\":false,\"source\":null,\"path\":null,\"license\":null,\"latest_version\":null,\"latest_published\":null,\"latest_compatible\":null,\"compatible_published\":null,\"outdated\":false,\"outdated_kind\":\"none\",\"yanked\":null}"
         ));
         assert!(json.ends_with("\"unused\":[],\"warnings\":[]}\n"));
     }
@@ -1161,6 +1185,8 @@ mod tests {
                 license: Some("MIT".to_owned()),
                 latest_version: Some("2.0.0".to_owned()),
                 latest_published: Some("2026-01-01".to_owned()),
+                latest_compatible: Some("1.4.0".to_owned()),
+                compatible_published: Some("2025-11-10".to_owned()),
                 yanked: Some(true),
                 outdated: true,
             },
@@ -1173,10 +1199,10 @@ mod tests {
         ));
         assert!(text.contains("Yanked versions in use: 1\n- alpha 1.0.0\n    via app -> alpha\n"));
         assert!(text.contains(
-            "Outdated packages: 1 (1 direct)\n- alpha 1.0.0 -> 2.0.0, published 2026-01-01\n"
+            "Outdated packages: 1 (1 direct)\n- alpha 1.0.0 -> 1.4.0 (compatible), 2.0.0 (breaking), published 2026-01-01\n"
         ));
         assert!(text.contains(
-            "- alpha 1.0.0 [direct] (registry+https://example.test) MIT YANKED -> 2.0.0 available\n"
+            "- alpha 1.0.0 [direct] (registry+https://example.test) MIT YANKED -> 1.4.0 (compatible), 2.0.0 (breaking) available\n"
         ));
 
         let json = render_json(Path::new("."), &report);
@@ -1185,7 +1211,7 @@ mod tests {
                 "\"registry\":{\"source\":\"crates.io\",\"downloaded_on\":\"2026-02-03\"}"
             )
         );
-        assert!(json.contains("\"license\":\"MIT\",\"latest_version\":\"2.0.0\",\"latest_published\":\"2026-01-01\",\"outdated\":true,\"yanked\":true}"));
+        assert!(json.contains("\"license\":\"MIT\",\"latest_version\":\"2.0.0\",\"latest_published\":\"2026-01-01\",\"latest_compatible\":\"1.4.0\",\"compatible_published\":\"2025-11-10\",\"outdated\":true,\"outdated_kind\":\"both\",\"yanked\":true}"));
     }
 
     #[test]
