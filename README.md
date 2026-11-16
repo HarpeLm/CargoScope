@@ -82,25 +82,40 @@ cargoscope scan .
 
 ### Example Output
 
+On an older command-line DNS client (colors on a terminal, trimmed):
+
 ```
-CargoScope 0.1.0
-Target: .
+CargoScope 0.8.0  . · 106 packages · data from 2026-11-15
 
-Advisories: 1 (RustSec database downloaded 2026-11-12)
-- RUSTSEC-2020-0071 [medium] time 0.1.45: Potential segfault in the time crate
-    via my-app -> chrono -> time
-    fix: upgrade to >= 0.2.23
-    https://github.com/time-rs/time/issues/293
+  ✖ 7 vulnerable crates   ⚠ 22 notices   ✔ no unused dependency   ↑ 14 outdated   ◆ 10 to watch
 
-Resolved packages: 22
-- cargoscope-cargo 0.1.0 [root]
-- indexmap 2.14.2 [transitive] (registry+https://github.com/rust-lang/crates.io-index)
-    via cargoscope-cargo -> toml -> toml_edit -> indexmap
-- toml 0.8.23 [direct] (registry+https://github.com/rust-lang/crates.io-index)
-...
+Vulnerabilities
+  ✖ openssl-src 111.15.0+1.1.1k  8 advisories, up to critical  fix: 111.25.0 fixes all
+      via dns-transport › native-tls › openssl-sys › openssl-src
+  ✖ rustls 0.19.1                2 advisories, up to high  fix: 0.23.46 fixes all
+      via dns-transport › rustls
+  ✖ webpki 0.21.4                high: webpki: CPU denial of service in certificat…  fix: 0.22.2
+      via dns-transport › webpki
+  ...
+
+Notices (not vulnerabilities)
+  unmaintained  adler, ansi_term, atty, failure, json, ring +11
+  unsound       atty, bumpalo, failure, openssl, rand
+
+Licenses: 100 registry packages, 16 license expressions (MIT/Apache-2.0 47, MIT OR Apache-2.0 22, MIT 12), 2 unknown
+
+Outdated packages: 80 (14 direct)
+- base64 0.13.0 -> 0.13.1 (compatible), 0.23.1 (breaking), published 2026-08-04
+- byteorder 1.4.3 -> 1.5.0 (compatible), published 2023-10-06
+  ...
+
+Next steps
+  › cargoscope fix --advisories  update 7 vulnerable crates, dry run first
+  › cargoscope fix --updates     update 14 outdated direct dependencies
+  › cargoscope scan --verbose    every advisory and package in full
 ```
 
-Every transitive package shows the shortest dependency chain that pulls it in. The JSON report carries the same chain in a `path` field.
+Each vulnerable crate takes one line, with the smallest version that fixes all its advisories and the shortest chain that pulls it in; informational advisories (unmaintained, unsound, yanked) are grouped by kind. `--verbose` gives the full report instead: every advisory with its ID, link and fix, every resolved package with its chain, and the lists the short report cuts. Colors are used only on a terminal; `--color never`, `--color always` or the `NO_COLOR` variable change that, and a report written with `--output` has none. The JSON report carries the same chains in a `path` field.
 
 ### Behind a Proxy
 
@@ -118,7 +133,7 @@ cargoscope scan . --fail-on high                    # fail only on high or criti
 cargoscope scan . --fail-on none                    # never fail CI on findings
 cargoscope scan . --checks inventory,unused          # run only some checks (no download needed)
 cargoscope scan . --show-uncertain                  # also list possibly-unused dependencies
-cargoscope scan . --verbose                         # also list every resolved package
+cargoscope scan . --verbose                         # full report: every advisory and resolved package
 ```
 
 By default, any security vulnerability fails the scan (exit code 1); vulnerabilities without a CVSS score count at every threshold, and informational advisories never fail. Set `CARGOSCOPE_CACHE_DIR` to choose where downloaded data is stored. Use `--fail-on none` to add CargoScope to CI alongside your existing tools without blocking builds. Exit codes: `0` OK, `1` threshold reached, `2` execution error.
@@ -185,7 +200,7 @@ Heaviest direct dependencies: packages that would leave the tree without each on
 - jsonschema 0.61.2 (dev): 57 of the 79 packages it pulls in
 ```
 
-Dependencies declared only under `[dev-dependencies]` or `[build-dependencies]` are labelled `(dev)` or `(build)` and listed after the others, since they do not ship with the project; the same label marks a duplicate pulled in through them. For each direct dependency, the report counts the packages that would leave the dependency tree if no member depended on it directly (itself included), and the size of its own tree: the first number is what removing or replacing it saves. The ten heaviest are shown (all with `--verbose`), and the JSON report has every direct dependency in `direct_weights`. Like the rest of the report, it comes from `Cargo.lock`.
+Dependencies declared only under `[dev-dependencies]` or `[build-dependencies]` are labelled `(dev)` or `(build)` and listed after the others, since they do not ship with the project; the same label marks a duplicate pulled in through them. For each direct dependency, the report counts the packages that would leave the dependency tree if no member depended on it directly (itself included), and the size of its own tree: the first number is what removing or replacing it saves. The five heaviest are shown (all with `--verbose`), and the JSON report has every direct dependency in `direct_weights`. Like the rest of the report, it comes from `Cargo.lock`.
 
 ## Maintenance Indicators
 

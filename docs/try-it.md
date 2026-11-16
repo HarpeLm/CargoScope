@@ -48,7 +48,7 @@ By default, a security vulnerability makes the command exit with code 1, as carg
 
 ```sh
 cargoscope scan . --show-uncertain     # also list dependencies that are only possibly unused, with the reason
-cargoscope scan . --verbose            # list every resolved package with its dependency chain
+cargoscope scan . --verbose            # full report: every advisory and resolved package with its chain
 cargoscope scan . --format json        # machine-readable report
 cargoscope scan . --format sarif --output results.sarif          # for GitHub code scanning
 cargoscope scan . --format cyclonedx --output sbom.cdx.json      # CycloneDX 1.5 SBOM (on main / 0.6)
