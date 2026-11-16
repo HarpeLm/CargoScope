@@ -52,3 +52,22 @@ The license check now gathers licenses as cargo-deny does: license texts recogni
 - `wgpu` had 2 extra duplicate errors (`petgraph`, `fixedbitset`): the unpublished `wgpu-test` member enables `parking_lot/deadlock_detection`, which pulls in `petgraph` 0.6. cargo-deny (krates) gives the kept members the features the whole workspace unifies on them, but does not apply what only excluded members ask of other crates. CargoScope now does the same with a second `cargo tree` rooted at the published members with exactly those features: `wgpu` matches, and `tower-http` keeps its `zstd-sys` license error (cargo-deny reports it too).
 - The re-run found two bugs, now fixed: a loop between path dependencies that point at each other made scans of `axum`, `bevy`, `diesel` and `tower` run for more than 10 minutes (1 s now), and with a root `[package]`, the other `default-members` were checked (`ring-cavp` in ring).
 
+
+## Executables and scripts in build-time crates (2026-11-16, commit `7401522`)
+
+`[bans.build]` now inspects the files of the crates that run code at build time (build scripts, proc-macros), as cargo-deny 0.20.2 does: native executables (ELF, PE, Mach-O, archives with `include-archives`), `#!` scripts (`interpreted`), `script-extensions` and the built-in globs, `bypass` (paths with SHA-256, `allow-globs`, build-script checksums with `required-features`).
+
+- On the 28 repositories with their own `deny.toml`, errors stay identical (12 shared, 0 on either side only). Only 2 of them have a `[bans.build]` table, and cargo-deny finds no executable there: the evidence is thin, so a stress test followed.
+- **Stress test:** in 6 repositories, `[bans.build]` was temporarily set to `executables = "deny"`, `interpreted = "deny"`, `enable-builtin-globs = true`, `include-dependencies = true`, `include-archives = true`, then both tools were run (`cargo deny check bans` and `cargoscope scan`), and the reported files compared by crate and path.
+
+| Repository | Files reported by both | cargo-deny only | CargoScope only |
+|---|---|---|---|
+| `briansmith/ring` | 7 | 0 | 0 |
+| `clap-rs/clap` | 8 | 0 | 0 |
+| `gfx-rs/wgpu` | 18 | 0 | 0 |
+| `tokio-rs/axum` | 32 | 0 | 0 |
+| `diesel-rs/diesel` | 358 | 0 | 0 |
+| `actix/actix-web` (without `include-dependencies`, see below) | 2,929 | 0 | 0 |
+| **Total** | **3,352** | **0** | **0** |
+
+With `include-dependencies = true`, cargo-deny 0.20.2 crashes on `actix-web` (stack overflow in its recursive dependency walk); CargoScope completes. The run without that setting is the one compared.

@@ -79,6 +79,17 @@ skip-multiple-versions = ["windows-sys"]
 allow-build-scripts = ["cc", "ring@^0.17"]
 # Whether workspace members with build scripts are checked too (default: false).
 include-workspace = false
+# Files inside the crates that run code at build time (see below).
+executables = "deny"            # "allow" turns the inspection off
+interpreted = "warn"            # #! scripts (default: "allow")
+script-extensions = ["sh"]      # extra extensions that are errors
+enable-builtin-globs = false    # also deny *.py, *.sh, *.bat, *.js...
+include-dependencies = false    # also inspect what build-time crates depend on
+include-archives = false        # count static archives (.a) as executables
+bypass = [
+  { crate = "ring", allow-globs = ["crypto/**"], allow = [{ path = "pregenerated/x.o", checksum = "<sha-256>" }] },
+  { crate = "openssl-src", build-script = "<sha-256 of build.rs>", required-features = ["vendored"] },
+]
 ```
 
 ## Limiting the policy to a build: targets, features, dev-dependencies
@@ -96,6 +107,17 @@ How it works:
 - Targets are plain triples such as `x86_64-pc-windows-msvc`; anything else is an error.
 - Advisories, unused dependencies, the package list and the "crates in several versions" listing still cover the whole lockfile. `[graph]` alone sets no rule.
 - On the 15 repositories of the [first blind benchmark](../tests/corpus/blind-benchmark.md), `[graph] exclude-dev = true` gives exactly the 4 license findings cargo-deny gives, against 8 for the whole lockfile.
+
+## Executables and scripts inside crates
+
+A build script or a proc-macro runs on your machine (and in CI) at build time: a prebuilt binary or a script shipped next to it can run too. With a `[bans.build]` table, CargoScope inspects, as cargo-deny 0.20 does, every file of the crates that have a build script or a proc-macro (and, with `include-dependencies`, of what they depend on):
+
+- a native executable (ELF, PE, Mach-O; static archives with `include-archives`), recognised by its first bytes whatever its name, is an error;
+- a script recognised by its `#!` line follows `interpreted` (allowed by default);
+- a file whose extension is in `script-extensions` (and cargo-deny's built-in list with `enable-builtin-globs`) is an error;
+- `bypass` allows files of one crate by exact path (with an optional SHA-256 that must still match) or by `allow-globs`, or skips a whole crate whose build script still has the given SHA-256, unless one of its `required-features` is enabled. Entries that match nothing are reported, so they do not linger.
+
+Workspace members are inspected only with `include-workspace`, git dependencies never (as in cargo-deny), and a crate whose build script is not in `allow-build-scripts` is reported for that alone. The sources must be on disk (`cargo fetch`). `executables = "allow"` turns the inspection off.
 
 ## Where licenses come from
 
@@ -115,11 +137,11 @@ A project that already uses cargo-deny needs no `cargoscope.toml`: when there is
 |---|---|
 | `[graph] targets` (strings or `{ triple }`), `features`, `all-features`, `no-default-features`, `exclude-dev`, `exclude-unpublished` (default: default features, as cargo-deny) | the same `[graph]` keys |
 | `[licenses] allow`, `exceptions`, `clarify`, `include-dev`, `confidence-threshold`, `unused-allowed-license`, `private` (`ignore`, `registries`, `ignore-sources`) | the same (`include-dev` defaults to `false`, leaving dev-only dependencies out of license checks unless `true`), including `license-files` 32-bit xxHash checksums, with `crate = "name"`, `"name@version"` or `name`/`version`; a missing reason becomes "from deny.toml". As in cargo-deny, the project's own packages are checked too (`include-workspace = true`), `unused-allowed-license` defaults to `"warn"`, and an empty `allow` list rejects every license |
-| `[bans] deny` (with `wrappers`; `deny-multiple-versions` on a crate), `features`, `build` (`allow-build-scripts`, `include-workspace`), `multiple-versions` (`"deny"` / `"warn"`), `skip`, `skip-tree`, `multiple-versions-include-dev` | bans with wrappers, feature rules (`allow`, `deny`, `exact`), build-script allowlists, duplicate rules per crate (ignoring `semver-trick` self-dependencies), `skip-multiple-versions`, skipped trees; duplicates of dev-dependencies left out unless `multiple-versions-include-dev = true` |
+| `[bans] deny` (with `wrappers`; `deny-multiple-versions` on a crate), `features`, `build` (`allow-build-scripts`, `include-workspace`, `executables`, `interpreted`, `script-extensions`, `enable-builtin-globs`, `include-dependencies`, `include-archives`, `bypass`), `multiple-versions` (`"deny"` / `"warn"`), `skip`, `skip-tree`, `multiple-versions-include-dev` | bans with wrappers, feature rules (`allow`, `deny`, `exact`), build-script allowlists, duplicate rules per crate (ignoring `semver-trick` self-dependencies), `skip-multiple-versions`, skipped trees; duplicates of dev-dependencies left out unless `multiple-versions-include-dev = true` |
 | `[sources] unknown-registry`/`unknown-git` (`"deny"` / `"warn"` / `"allow"`), `allow-registry`, `allow-git`, `allow-org` | `allow-registries`, `allow-git` with per-source `"deny"` / `"warn"` / `"allow"` levels (an organisation becomes its URL prefix) |
 | `[advisories] ignore` (IDs or `{ id, reason }`) | `[advisories] ignore` |
 
-When reading `deny.toml` on a manifest with a root `[package]`, CargoScope also follows cargo-deny's default of rooting the dependency graph at that root package instead of adding `--workspace` (unless exclusions are configured). What has no equivalent is listed in the report's warnings, never dropped in silence: for example `[bans.build]` executable/interpreter/bypass rules and advisory settings such as `unmaintained`. The reading is tolerant: an unknown key is a note, not an error, unlike in `cargoscope.toml`.
+When reading `deny.toml` on a manifest with a root `[package]`, CargoScope also follows cargo-deny's default of rooting the dependency graph at that root package instead of adding `--workspace` (unless exclusions are configured). What has no equivalent is listed in the report's warnings, never dropped in silence: for example advisory settings such as `unmaintained`. The reading is tolerant: an unknown key is a note, not an error, unlike in `cargoscope.toml`.
 
 On the original 28-repository comparison against cargo-deny 0.20.2, CargoScope now matches **28 of 28 repositories** (12 crates reported by both, 0 by cargo-deny only, 0 by CargoScope only), and **32 of 34 valid repositories** across the expanded corpora (31 crates reported by both, 1 by cargo-deny only in `tower-http`, 2 by CargoScope only in `portable-atomic` from workspace feature unification): see [tests/corpus/deny-toml.md](../tests/corpus/deny-toml.md).
 
@@ -156,4 +178,4 @@ A file with only `[advisories]` defines no policy.
 
 ## Compared with cargo-deny
 
-This covers the license, source, build-script and ban checks projects use (including `license-files` xxHash32 verification, `[bans.build] allow-build-scripts`, and `"warn"` lint levels), limited to the build you care about with `[graph]` (targets, features, dev-dependencies). The license check now does what cargo-deny's does: license texts recognised from `LICENSE`/`COPYING` files with `confidence-threshold`, the project's own packages, `[licenses.private]` and `unused-allowed-license`. cargo-deny still has a few extra checks: binary/script/bypass scanning inside crates, and advisory checks like `unmaintained` or `unsound`. Use it when you need those; CargoScope reads your `deny.toml` meanwhile.
+This covers the license, source, build-script and ban checks projects use (including `license-files` xxHash32 verification, `[bans.build] allow-build-scripts`, and `"warn"` lint levels), limited to the build you care about with `[graph]` (targets, features, dev-dependencies). The license check now does what cargo-deny's does: license texts recognised from `LICENSE`/`COPYING` files with `confidence-threshold`, the project's own packages, `[licenses.private]` and `unused-allowed-license`. Executables and scripts inside build-time crates are inspected as well. cargo-deny still has advisory settings such as `unmaintained` or `unsound` levels. Use it when you need those; CargoScope reads your `deny.toml` meanwhile.
