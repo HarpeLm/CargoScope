@@ -55,9 +55,11 @@ impl Paint {
     }
 }
 
-fn plural(count: usize, word: &str) -> String {
+pub(crate) fn plural(count: usize, word: &str) -> String {
     if count == 1 {
         format!("{count} {word}")
+    } else if let Some(stem) = word.strip_suffix('y') {
+        format!("{count} {stem}ies")
     } else {
         format!("{count} {word}s")
     }
@@ -480,7 +482,7 @@ pub(crate) fn style_sections(text: &str, paint: Paint) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Paint, crate_fix, style_sections, truncate};
+    use super::{Paint, crate_fix, plural, style_sections, truncate};
     use cargoscope_core::{AdvisoryFinding, AdvisoryKind};
 
     fn finding(patched: &[&str]) -> AdvisoryFinding {
@@ -511,6 +513,16 @@ mod tests {
         let old_line = finding(&["^1.1.4"]);
         let new_line = finding(&[">= 2.0.0"]);
         assert_eq!(crate_fix(&[&old_line, &new_line], "1.1.0").0, None);
+    }
+
+    #[test]
+    fn plurals_of_words_ending_in_y() {
+        assert_eq!(
+            plural(2, "outdated direct dependency"),
+            "2 outdated direct dependencies"
+        );
+        assert_eq!(plural(1, "dependency"), "1 dependency");
+        assert_eq!(plural(3, "notice"), "3 notices");
     }
 
     #[test]

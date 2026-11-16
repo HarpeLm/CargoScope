@@ -1582,6 +1582,7 @@ clarify = [
             "inventory,licenses,policy",
             "--fail-on",
             "none",
+            "--verbose",
         ])
         .arg(&dir)
         .output()

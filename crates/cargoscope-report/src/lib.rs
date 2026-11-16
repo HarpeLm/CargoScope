@@ -99,7 +99,7 @@ pub fn render_text(project_root: &Path, report: &Report, options: TextOptions) -
         not_checked(&mut out, "Unused dependencies", verbose);
     }
     render_registry_text(&mut out, report, options.verbose);
-    render_duplicates_text(&mut out, report);
+    render_duplicates_text(&mut out, report, verbose);
     render_weights_text(&mut out, report, options.verbose);
     render_policy_text(&mut out, report, options.verbose);
 
@@ -211,6 +211,18 @@ pub fn summary(report: &Report) -> String {
     }
     parts.push(plural(report.inventory.packages.len(), "package"));
     parts.join(", ")
+}
+
+/// How many of `len` rows the short report shows (all of them with `verbose`).
+fn shown_rows(len: usize, verbose: bool, short_limit: usize) -> usize {
+    if verbose { len } else { len.min(short_limit) }
+}
+
+/// The line that says how many rows the short report left out.
+fn more_rows(out: &mut String, len: usize, shown: usize) {
+    if shown < len {
+        let _ = writeln!(out, "  ... {} more (use --verbose)", len - shown);
+    }
 }
 
 /// A check that did not run: said only in the full report, since the short
@@ -438,7 +450,7 @@ pub(crate) fn kind_names(report: &Report, name: &str) -> Vec<String> {
 /// Crates resolved in several versions: every version but the newest shows
 /// the chain that pulls it in, since that is what keeps it in the build,
 /// labelled when the chain starts with a dev- or build-dependency.
-fn render_duplicates_text(out: &mut String, report: &Report) {
+fn render_duplicates_text(out: &mut String, report: &Report, verbose: bool) {
     let inventory = &report.inventory;
     let duplicates = inventory.duplicates();
     if duplicates.is_empty() {
@@ -449,7 +461,8 @@ fn render_duplicates_text(out: &mut String, report: &Report) {
         "\nCrates in several versions: {} (each version is compiled separately)",
         duplicates.len()
     );
-    for (name, indices) in &duplicates {
+    let shown = shown_rows(duplicates.len(), verbose, 5);
+    for (name, indices) in duplicates.iter().take(shown) {
         let versions: Vec<&str> = indices
             .iter()
             .map(|&index| inventory.packages[index].version.as_str())
@@ -471,6 +484,7 @@ fn render_duplicates_text(out: &mut String, report: &Report) {
             }
         }
     }
+    more_rows(out, duplicates.len(), shown);
 }
 
 /// Direct dependencies with `exclusive > 1`, normal dependencies first.
@@ -489,7 +503,7 @@ pub(crate) fn sorted_heavy_weights(report: &Report) -> Vec<(usize, usize, usize)
 
 /// Direct dependencies that pull in packages nothing else needs, heaviest
 /// first, the ones that ship with the project (normal dependencies) before
-/// dev- and build-only ones: the ten first, or all of them with `verbose`.
+/// dev- and build-only ones: the five first, or all of them with `verbose`.
 fn render_weights_text(out: &mut String, report: &Report, verbose: bool) {
     let inventory = &report.inventory;
     let heavy = sorted_heavy_weights(report);
@@ -500,11 +514,7 @@ fn render_weights_text(out: &mut String, report: &Report, verbose: bool) {
         out,
         "\nHeaviest direct dependencies: packages that would leave the tree without each one"
     );
-    let shown = if verbose {
-        heavy.len()
-    } else {
-        heavy.len().min(10)
-    };
+    let shown = shown_rows(heavy.len(), verbose, 5);
     for &(index, exclusive, tree) in &heavy[..shown] {
         let package = &inventory.packages[index];
         let _ = writeln!(
@@ -515,9 +525,7 @@ fn render_weights_text(out: &mut String, report: &Report, verbose: bool) {
             kind_note(report, &package.name)
         );
     }
-    if shown < heavy.len() {
-        let _ = writeln!(out, "  ... {} more (use --verbose)", heavy.len() - shown);
-    }
+    more_rows(out, heavy.len(), shown);
 }
 
 pub(crate) fn registry_packages(report: &Report) -> Vec<(usize, &cargoscope_core::PackageInfo)> {
@@ -541,13 +549,13 @@ fn render_registry_text(out: &mut String, report: &Report, verbose: bool) {
     let registry_packages = registry_packages(report);
 
     if report.checks.licenses {
-        render_licenses_text(out, &registry_packages, date);
+        render_licenses_text(out, &registry_packages, date, verbose);
     } else {
         not_checked(out, "Licenses", verbose);
     }
     if report.checks.versions {
-        render_versions_text(out, report, &registry_packages);
-        render_maintenance_text(out, report);
+        render_versions_text(out, report, &registry_packages, verbose);
+        render_maintenance_text(out, report, verbose);
     } else {
         not_checked(out, "Versions", verbose);
     }
@@ -593,7 +601,7 @@ pub(crate) fn describe_concern(
     }
 }
 
-fn render_maintenance_text(out: &mut String, report: &Report) {
+fn render_maintenance_text(out: &mut String, report: &Report, verbose: bool) {
     let direct: Vec<&cargoscope_core::PackageInfo> = registry_packages(report)
         .into_iter()
         .filter(|(index, _)| {
@@ -612,7 +620,8 @@ fn render_maintenance_text(out: &mut String, report: &Report) {
         rows.len(),
         direct.len()
     );
-    for (index, concerns) in &rows {
+    let shown = shown_rows(rows.len(), verbose, 8);
+    for (index, concerns) in rows.iter().take(shown) {
         let package = &report.inventory.packages[*index];
         let info = &report.package_info[*index];
         let reasons: Vec<String> = concerns
@@ -627,6 +636,7 @@ fn render_maintenance_text(out: &mut String, report: &Report) {
             reasons.join("; ")
         );
     }
+    more_rows(out, rows.len(), shown);
     if direct.iter().all(|info| info.owners.is_none()) {
         out.push_str("  (owners and archived status not downloaded: run `cargoscope update`)\n");
     }
@@ -649,8 +659,34 @@ pub(crate) fn sorted_license_counts<'a>(
     by_count
 }
 
-fn render_licenses_text(out: &mut String, registry_packages: &RegistryPackages<'_>, date: &str) {
+fn render_licenses_text(
+    out: &mut String,
+    registry_packages: &RegistryPackages<'_>,
+    date: &str,
+    verbose: bool,
+) {
     let by_count = sorted_license_counts(registry_packages);
+    if !verbose {
+        // One line: the most common expressions, and the unknown ones.
+        let top: Vec<String> = by_count
+            .iter()
+            .filter(|(license, _)| *license != "unknown")
+            .take(3)
+            .map(|(license, count)| format!("{license} {count}"))
+            .collect();
+        let unknown = by_count
+            .iter()
+            .find(|(license, _)| *license == "unknown")
+            .map_or(String::new(), |(_, count)| format!(", {count} unknown"));
+        let _ = writeln!(
+            out,
+            "\nLicenses: {} registry packages, {} ({}){unknown}",
+            registry_packages.len(),
+            terminal::plural(by_count.len(), "license expression"),
+            top.join(", ")
+        );
+        return;
+    }
     let _ = writeln!(
         out,
         "\nLicenses of {} registry packages (crates.io data downloaded {date}):",
@@ -687,6 +723,7 @@ fn render_versions_text(
     out: &mut String,
     report: &Report,
     registry_packages: &RegistryPackages<'_>,
+    verbose: bool,
 ) {
     let yanked: Vec<usize> = registry_packages
         .iter()
@@ -695,13 +732,15 @@ fn render_versions_text(
         .collect();
     if !yanked.is_empty() {
         let _ = writeln!(out, "\nYanked versions in use: {}", yanked.len());
-        for index in yanked {
+        let shown = shown_rows(yanked.len(), verbose, 5);
+        for &index in yanked.iter().take(shown) {
             let package = &report.inventory.packages[index];
             let _ = writeln!(out, "- {} {}", package.name, package.version);
             if let Some(chain) = chain(&report.inventory, index) {
                 let _ = writeln!(out, "    via {chain}");
             }
         }
+        more_rows(out, yanked.len(), shown);
     }
 
     let outdated = registry_packages
@@ -718,7 +757,8 @@ fn render_versions_text(
         "\nOutdated packages: {outdated} ({} direct)",
         direct_outdated.len()
     );
-    for (index, info) in direct_outdated {
+    let shown = shown_rows(direct_outdated.len(), verbose, 8);
+    for &(index, info) in direct_outdated.iter().take(shown) {
         let package = &report.inventory.packages[index];
         let published = info
             .latest_published
@@ -733,6 +773,7 @@ fn render_versions_text(
             package.name, package.version,
         );
     }
+    more_rows(out, direct_outdated.len(), shown);
 }
 
 /// Renders a versioned JSON report, terminated by a newline.
