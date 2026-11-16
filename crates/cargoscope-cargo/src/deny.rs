@@ -499,11 +499,27 @@ pub fn translate(text: &str) -> Result<Translated, String> {
                         .collect(),
                 );
             }
+            match crate::config::build_inspection(build) {
+                Ok(inspection) => policy.build_inspection = Some(inspection),
+                Err(error) => notes.push(format!(
+                    "deny.toml: {error}; executables and scripts in crates are not inspected"
+                )),
+            }
             unsupported(
                 &mut notes,
                 "bans.build",
                 build,
-                &["allow-build-scripts", "include-workspace"],
+                &[
+                    "allow-build-scripts",
+                    "include-workspace",
+                    "executables",
+                    "interpreted",
+                    "script-extensions",
+                    "enable-builtin-globs",
+                    "include-dependencies",
+                    "include-archives",
+                    "bypass",
+                ],
             );
         }
         unsupported(
@@ -816,10 +832,25 @@ github = ["myorg"]
         assert!(policy.build_include_workspace);
         assert_eq!(policy.allow_build_scripts.as_ref().map(Vec::len), Some(2));
         assert!(
-            notes
-                .iter()
-                .any(|note| note.contains("[bans.build] executables not supported"))
+            !notes.iter().any(|note| note.contains("bans.build")),
+            "{notes:?}"
         );
+        let inspection = policy.build_inspection.as_ref().expect("[bans.build]");
+        assert_eq!(inspection.executables, LintLevel::Deny);
+        assert_eq!(inspection.interpreted, LintLevel::Allow);
+        let (bypass, _, _) = translate(
+            "[bans.build]\ninterpreted = \"warn\"\nscript-extensions = [\"sh\"]\nbypass = [{ crate = \"ring\", allow-globs = [\"tests/**\"], allow = [{ path = \"x.bin\", checksum = \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\" }] }]\n",
+        )
+        .expect("valid");
+        let inspection = bypass
+            .expect("rules")
+            .build_inspection
+            .expect("[bans.build]");
+        assert_eq!(inspection.interpreted, LintLevel::Warn);
+        assert_eq!(inspection.script_extensions, vec!["sh"]);
+        assert_eq!(inspection.bypass[0].name, "ring");
+        assert_eq!(inspection.bypass[0].allow_globs, vec!["tests/**"]);
+        assert_eq!(inspection.bypass[0].allow[0].0, "x.bin");
         let (none, ignores, _) =
             translate("[advisories]\nignore = [\"RUSTSEC-1\"]\n").expect("valid");
         assert!(none.is_none());

@@ -24,7 +24,9 @@ pub enum LintLevel {
 }
 
 impl LintLevel {
-    fn to_violation_level(self) -> Option<ViolationLevel> {
+    /// The violation level of this lint level; `None` for `Allow`.
+    #[must_use]
+    pub fn to_violation_level(self) -> Option<ViolationLevel> {
         match self {
             Self::Allow => None,
             Self::Warn => Some(ViolationLevel::Warning),
@@ -71,6 +73,61 @@ pub struct BuildScriptAllow {
     pub name: String,
     /// Optional version requirement; without one, every version is allowed.
     pub version: Option<String>,
+}
+
+/// What `[bans.build]` inspects in the sources of the crates that run code
+/// at build time (build scripts and proc-macros), as cargo-deny does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildInspection {
+    /// `executables`: `Allow` turns the inspection off; otherwise a native
+    /// executable (ELF, PE, Mach-O) is an error, as in cargo-deny.
+    pub executables: LintLevel,
+    /// `interpreted`: level for scripts recognised by their `#!` line.
+    pub interpreted: LintLevel,
+    /// `script-extensions`: file extensions (without the dot) that are errors.
+    pub script_extensions: Vec<String>,
+    /// `enable-builtin-globs`: also deny cargo-deny's list of script
+    /// extensions (`*.sh`, `*.py`, `*.bat`...).
+    pub enable_builtin_globs: bool,
+    /// `include-dependencies`: also inspect what build-time crates depend on.
+    pub include_dependencies: bool,
+    /// `include-archives`: count static archives (`.a`) as executables.
+    pub include_archives: bool,
+    /// `bypass`: files or crates allowed anyway.
+    pub bypass: Vec<BuildBypass>,
+}
+
+impl Default for BuildInspection {
+    fn default() -> Self {
+        Self {
+            executables: LintLevel::Deny,
+            interpreted: LintLevel::Allow,
+            script_extensions: Vec::new(),
+            enable_builtin_globs: false,
+            include_dependencies: false,
+            include_archives: false,
+            bypass: Vec::new(),
+        }
+    }
+}
+
+/// A `[bans.build] bypass` entry.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BuildBypass {
+    /// Crate name.
+    pub name: String,
+    /// Optional version requirement.
+    pub version: Option<String>,
+    /// SHA-256 (hexadecimal) of the build script: when it matches and none
+    /// of `required_features` is enabled, the crate is not inspected.
+    pub build_script: Option<String>,
+    /// Features under which the build script still counts.
+    pub required_features: Vec<String>,
+    /// Glob patterns of files allowed anyway (relative to the crate root).
+    pub allow_globs: Vec<String>,
+    /// Files allowed anyway (relative path), with an optional SHA-256 that
+    /// must match.
+    pub allow: Vec<(String, Option<String>)>,
 }
 
 /// Expected file path and optional 32-bit xxHash checksum under a crate's
@@ -192,6 +249,9 @@ pub struct Policy {
     pub allow_build_scripts: Option<Vec<BuildScriptAllow>>,
     /// Whether `[bans.build]` also checks workspace members (off by default).
     pub build_include_workspace: bool,
+    /// `[bans.build]` inspection of build-time crates; `None` without a
+    /// `[bans.build]` table.
+    pub build_inspection: Option<BuildInspection>,
     /// Licenses allowed for one crate only.
     pub license_exceptions: Vec<LicenseException>,
     /// Licenses declared for crates whose metadata is wrong or missing.
@@ -269,6 +329,7 @@ impl Default for Policy {
             bans: Vec::new(),
             allow_build_scripts: None,
             build_include_workspace: false,
+            build_inspection: None,
             license_exceptions: Vec::new(),
             license_clarifications: Vec::new(),
             multiple_versions: LintLevel::Allow,

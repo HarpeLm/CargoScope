@@ -2115,6 +2115,70 @@ fn licenses_are_detected_from_license_files_when_the_field_is_missing() {
 }
 
 #[test]
+fn executables_in_build_time_crates_are_reported() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-exes-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    copy_dir(&fixture("policy"), &dir);
+    std::fs::remove_file(dir.join("cargoscope.toml")).expect("rm cargoscope.toml");
+    // itoa gets a build script, a prebuilt ELF and a shell script.
+    let cargo_home = dir.join("cargo-home");
+    let itoa_dir = cargo_home.join("registry/src/index.crates.io-test/itoa-1.0.11");
+    std::fs::create_dir_all(itoa_dir.join("bin")).expect("mkdir itoa");
+    std::fs::write(
+        itoa_dir.join("Cargo.toml"),
+        "[package]\nname = \"itoa\"\nversion = \"1.0.11\"\nlicense = \"MIT\"\n",
+    )
+    .expect("itoa manifest");
+    std::fs::write(itoa_dir.join("build.rs"), "fn main() {}\n").expect("build.rs");
+    let mut elf = b"\x7fELF\x02\x01\x01".to_vec();
+    elf.resize(64, 0);
+    std::fs::write(itoa_dir.join("bin/tool"), elf).expect("elf");
+    std::fs::write(itoa_dir.join("gen.sh"), "#!/bin/sh\necho generating code\n").expect("script");
+    let fake_bin = compile_fake_cargo_tree(
+        &dir,
+        "policy-demo v0.1.0 (/work)\nserde_json v1.0.128\nserde v1.0.210\nitoa v1.0.11\n",
+    );
+    let run = |build: &str| {
+        std::fs::write(dir.join("deny.toml"), format!("[bans.build]\n{build}")).expect("deny.toml");
+        Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+            .env("CARGO_HOME", &cargo_home)
+            .env("CARGO", &fake_bin)
+            .args(["scan", "--checks", "inventory,policy"])
+            .arg(&dir)
+            .output()
+            .expect("cargoscope binary runs")
+    };
+    let out = run("");
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(
+        text.contains("- [ban] itoa 1.0.11: `bin/tool` in `itoa` is an executable (elf), and `itoa` runs code at build time"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("gen.sh"),
+        "scripts are allowed by default: {text}"
+    );
+
+    let text = stdout(&run(
+        "interpreted = \"warn\"\nbypass = [{ crate = \"itoa\", allow = [{ path = \"bin/tool\" }] }]\n",
+    ));
+    assert!(!text.contains("bin/tool"), "{text}");
+    assert!(
+        text.contains("- [ban] [warning] itoa 1.0.11: `gen.sh` in `itoa` is a sh script"),
+        "{text}"
+    );
+
+    let text = stdout(&run("script-extensions = [\"sh\"]\n"));
+    assert!(
+        text.contains("`gen.sh` in `itoa` matches the script extension `*.sh`"),
+        "{text}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn warn_level_policies_emit_warnings_without_failing_scan() {
     let dir = std::env::temp_dir().join(format!("cargoscope-warn-level-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

@@ -3,7 +3,8 @@
 use std::path::Path;
 
 use cargoscope_core::policy::{
-    Ban, BuildScriptAllow, FeatureBan, LicenseFileHash, LintLevel, Policy, UnknownLicense,
+    Ban, BuildBypass, BuildInspection, BuildScriptAllow, FeatureBan, LicenseFileHash, LintLevel,
+    Policy, UnknownLicense,
 };
 
 /// File name, looked up in the scanned directory.
@@ -345,6 +346,9 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
         }
         policy.feature_bans = parse_feature_bans(bans)?;
         (policy.allow_build_scripts, policy.build_include_workspace) = parse_build_config(bans)?;
+        if let Some(build) = bans.get("build").and_then(toml::Value::as_table) {
+            policy.build_inspection = Some(build_inspection(build)?);
+        }
     }
 
     Ok(Some(policy))
@@ -428,7 +432,17 @@ fn parse_build_config(bans: &toml::Table) -> Result<(Option<Vec<BuildScriptAllow
     check_keys(
         build,
         "bans.build",
-        &["allow-build-scripts", "include-workspace"],
+        &[
+            "allow-build-scripts",
+            "include-workspace",
+            "executables",
+            "interpreted",
+            "script-extensions",
+            "enable-builtin-globs",
+            "include-dependencies",
+            "include-archives",
+            "bypass",
+        ],
     )?;
     let include_workspace = match build.get("include-workspace") {
         None => false,
@@ -477,6 +491,128 @@ fn parse_build_config(bans: &toml::Table) -> Result<(Option<Vec<BuildScriptAllow
         parsed.push(BuildScriptAllow { name, version });
     }
     Ok((Some(parsed), include_workspace))
+}
+
+/// Reads the inspection settings of a `[bans.build]` table (shared by
+/// `cargoscope.toml` and `deny.toml`).
+///
+/// # Errors
+///
+/// Returns a message for a wrong type, an invalid level, extension, version
+/// requirement or SHA-256 checksum.
+pub fn build_inspection(build: &toml::Table) -> Result<BuildInspection, String> {
+    let level = |key: &str, default: LintLevel| -> Result<LintLevel, String> {
+        match build.get(key).map(toml::Value::as_str) {
+            None => Ok(default),
+            Some(Some("allow")) => Ok(LintLevel::Allow),
+            Some(Some("warn")) => Ok(LintLevel::Warn),
+            Some(Some("deny")) => Ok(LintLevel::Deny),
+            _ => Err(format!(
+                "[bans.build] {key} must be \"allow\", \"warn\" or \"deny\""
+            )),
+        }
+    };
+    let flag = |key: &str| -> Result<bool, String> {
+        match build.get(key) {
+            None => Ok(false),
+            Some(toml::Value::Boolean(value)) => Ok(*value),
+            Some(_) => Err(format!("[bans.build] {key} must be true or false")),
+        }
+    };
+    let list = |table: &toml::Table, key: &str, context: &str| -> Result<Vec<String>, String> {
+        match table.get(key) {
+            None => Ok(Vec::new()),
+            Some(toml::Value::Array(items)) => items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| format!("[{context}] {key} must be a list of strings"))
+                })
+                .collect(),
+            Some(_) => Err(format!("[{context}] {key} must be a list of strings")),
+        }
+    };
+    let checksum = |value: &toml::Value, what: &str| -> Result<String, String> {
+        value
+            .as_str()
+            .filter(|hex| hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit()))
+            .map(str::to_ascii_lowercase)
+            .ok_or_else(|| {
+                format!("[bans.build] {what} must be a SHA-256 checksum (64 hexadecimal digits)")
+            })
+    };
+    let script_extensions = list(build, "script-extensions", "bans.build")?;
+    if let Some(bad) = script_extensions.iter().find(|extension| {
+        extension.is_empty() || !extension.chars().all(|c| c.is_ascii_alphanumeric())
+    }) {
+        return Err(format!(
+            "[bans.build] script-extensions: `{bad}` is not a file extension (letters and digits, no dot)"
+        ));
+    }
+    let mut bypass = Vec::new();
+    match build.get("bypass") {
+        None => {}
+        Some(toml::Value::Array(entries)) => {
+            for entry in entries {
+                let table = entry
+                    .as_table()
+                    .ok_or("[bans.build] bypass entries must be tables")?;
+                let (name, version) = crate::deny::crate_spec(entry)
+                    .ok_or("[bans.build] bypass entries need a crate (`crate = \"name@version\"` or `name`)")?;
+                if let Some(req) = &version {
+                    semver::VersionReq::parse(req).map_err(|error| {
+                        format!("[bans.build] bypass `{name}` version `{req}`: {error}")
+                    })?;
+                }
+                let build_script = table
+                    .get("build-script")
+                    .map(|value| checksum(value, &format!("bypass `{name}` build-script")))
+                    .transpose()?;
+                let mut allow = Vec::new();
+                for file in table
+                    .get("allow")
+                    .and_then(toml::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    let path = file
+                        .get("path")
+                        .and_then(toml::Value::as_str)
+                        .ok_or_else(|| {
+                            format!("[bans.build] bypass `{name}` allow entries need a `path`")
+                        })?
+                        .to_owned();
+                    let sum = file
+                        .get("checksum")
+                        .map(|value| {
+                            checksum(value, &format!("bypass `{name}` checksum of `{path}`"))
+                        })
+                        .transpose()?;
+                    allow.push((path, sum));
+                }
+                allow.sort();
+                bypass.push(BuildBypass {
+                    name,
+                    version,
+                    build_script,
+                    required_features: list(table, "required-features", "bans.build.bypass")?,
+                    allow_globs: list(table, "allow-globs", "bans.build.bypass")?,
+                    allow,
+                });
+            }
+        }
+        Some(_) => return Err("[bans.build] bypass must be an array of tables".to_owned()),
+    }
+    Ok(BuildInspection {
+        executables: level("executables", LintLevel::Deny)?,
+        interpreted: level("interpreted", LintLevel::Allow)?,
+        script_extensions,
+        enable_builtin_globs: flag("enable-builtin-globs")?,
+        include_dependencies: flag("include-dependencies")?,
+        include_archives: flag("include-archives")?,
+        bypass,
+    })
 }
 
 fn parse_feature_bans(bans: &toml::Table) -> Result<Vec<FeatureBan>, String> {

@@ -356,7 +356,13 @@ fn check_policy(
     let needs_non_dev = ((policy.duplicates_exclude_dev && checks_duplicates)
         || (policy.licenses_exclude_dev && policy.check_licenses))
         && !policy.exclude_dev;
-    let needs_features = !policy.feature_bans.is_empty();
+    let needs_features = !policy.feature_bans.is_empty()
+        || policy.build_inspection.as_ref().is_some_and(|inspection| {
+            inspection
+                .bypass
+                .iter()
+                .any(|bypass| !bypass.required_features.is_empty())
+        });
     let failed = |error: String| {
         eprintln!(
             "CargoScope could not limit the policy to its [graph]: {error}. Check the target and feature names and run `cargo fetch` first, or remove them from [graph]."
@@ -413,7 +419,19 @@ fn check_policy(
         verified_clarifications: Some(verified_clarifications),
         license_facts: Some(license_facts),
     };
-    Ok(policy.check_with_context(inventory, package_info, registry_date.is_some(), &context))
+    let mut violations =
+        policy.check_with_context(inventory, package_info, registry_date.is_some(), &context);
+    // Executables and scripts inside the crates that run code at build time.
+    let inspected = cargoscope_cargo::build_inspect::inspect(
+        root,
+        inventory,
+        policy,
+        active.as_ref(),
+        enabled_features.as_ref(),
+    );
+    violations.extend(inspected.violations);
+    warnings.extend(inspected.warnings);
+    Ok(violations)
 }
 
 /// Clears the registry data of checks that did not run, so the report only
