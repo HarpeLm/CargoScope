@@ -205,6 +205,94 @@ pub fn tree_args(
     args
 }
 
+/// The packages a build uses without dev-dependencies, as cargo-deny's
+/// `krates_filtered` computes them when the graph is rooted at the root
+/// package: every workspace member the full graph reaches (through the root
+/// package's dev-dependencies too) is a starting point, and from there only
+/// normal and build dependencies are followed. Without `root_package_only`,
+/// this is [`active_packages`] without dev-dependencies.
+///
+/// # Errors
+///
+/// Returns Cargo's explanation when it cannot build the tree.
+pub fn non_dev_packages(
+    root: &Path,
+    targets: &[String],
+    features: Option<&Features>,
+    excluded_members: &[String],
+    root_package_only: bool,
+) -> Result<ActivePackages, String> {
+    let (only_root, _) = active_packages(
+        root,
+        targets,
+        features,
+        true,
+        excluded_members,
+        root_package_only,
+    )?;
+    if !root_package_only {
+        return Ok(only_root);
+    }
+    let (full, _) = active_packages(root, targets, features, false, excluded_members, true)?;
+    let members = workspace_members(root)?;
+    let reached: Vec<&(String, String)> = full
+        .iter()
+        .filter(|(name, _)| members.contains(name))
+        .collect();
+    if reached.len() <= 1 {
+        return Ok(only_root);
+    }
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut args = tree_args(targets, features, true, true);
+    for (name, version) in &reached {
+        args.extend(["--package".to_owned(), format!("{name}@{version}")]);
+    }
+    let output = run_tree(&cargo, root, &args)?;
+    let dead = if targets.is_empty() {
+        dead_edges(&cargo, root, true)
+    } else {
+        BTreeSet::new()
+    };
+    let (saw_any, mut packages, _) = filter_depth_tree(&output, &[], &dead, None);
+    if !saw_any {
+        return Ok(only_root);
+    }
+    packages.extend(only_root);
+    Ok(packages)
+}
+
+/// Names of the workspace members, from `cargo metadata --no-deps`.
+fn workspace_members(root: &Path) -> Result<BTreeSet<String>, String> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let output = Command::new(&cargo)
+        .current_dir(root)
+        .args([
+            "metadata",
+            "--no-deps",
+            "--format-version",
+            "1",
+            "--locked",
+            "--color",
+            "never",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("could not run cargo: {error}"))?;
+    if !output.status.success() {
+        return Err("`cargo metadata --no-deps` failed".to_owned());
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("cargo metadata did not return JSON: {error}"))?;
+    Ok(value
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|package| package.get("name").and_then(serde_json::Value::as_str))
+        .map(str::to_owned)
+        .collect())
+}
+
 /// Workspace members with `publish = false` (or an empty `publish` list),
 /// from `cargo metadata --no-deps`.
 ///

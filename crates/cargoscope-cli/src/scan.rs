@@ -395,7 +395,16 @@ fn check_policy(
     };
     // Duplicates and licenses may leave out dev-dependencies (as cargo-deny does).
     let non_dev_active = if needs_non_dev {
-        Some(graph(true).map_err(failed)?.0)
+        Some(
+            cargoscope_cargo::targets::non_dev_packages(
+                root,
+                &policy.targets,
+                policy.features.as_ref(),
+                &excluded,
+                policy.root_package_only,
+            )
+            .map_err(failed)?,
+        )
     } else {
         active.clone()
     };
