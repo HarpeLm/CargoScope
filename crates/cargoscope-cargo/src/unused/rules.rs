@@ -1,6 +1,10 @@
 //! The facts about a package and an unreferenced dependency, the rules that
 //! find a reason to keep it (each a pure function in `RULES`), and the one
 //! place that turns those reasons into likely or possibly unused.
+//!
+//! To add a rule: write `fn rule_x(&PackageFacts, &DependencyFacts) ->
+//! Option<String>`, add it to `RULES` with a name, test it here, and check that
+//! the benchmark sets (tests/corpus) do not lose precision.
 
 use super::*;
 
@@ -397,4 +401,213 @@ pub(super) fn rule_nothing_searched(
     candidate: &DependencyFacts<'_>,
 ) -> Option<String> {
     (candidate.searched == 0).then(|| format!("no {} file found", candidate.searched_label))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use cargoscope_core::DependencyKind;
+
+    use super::{DependencyFacts, PackageFacts, RULES, reasons_to_keep};
+    use crate::unused::references::References;
+    use crate::unused::sources::Sources;
+    use crate::unused::{DeclaredDependency, WorkspaceMacros};
+
+    fn dependency(key: &str) -> DeclaredDependency {
+        DeclaredDependency {
+            key: key.to_owned(),
+            package: key.to_owned(),
+            kind: DependencyKind::Normal,
+            optional: false,
+            target_specific: false,
+            sets_features: false,
+            path: None,
+        }
+    }
+
+    /// Runs the rules on `dependency` with the given package context, and
+    /// returns the names of the rules that keep it.
+    fn kept_by(
+        dependency: &DeclaredDependency,
+        sources: &Sources,
+        code: &References,
+        transitive: &BTreeSet<&str>,
+        build_tree: &BTreeSet<String>,
+    ) -> Vec<&'static str> {
+        let macros = WorkspaceMacros::default();
+        let reachable = BTreeSet::new();
+        let package = PackageFacts {
+            sources,
+            code_refs: code,
+            transitive_names: transitive,
+            build_tree,
+            build_reads_files: false,
+            reachable_idents: &reachable,
+            declared_idents: vec![dependency.key.replace('-', "_")],
+            forwarded_features: BTreeSet::new(),
+            workspace_macros: &macros,
+        };
+        let ident = dependency.key.replace('-', "_");
+        let candidate = DependencyFacts {
+            dependency,
+            ident: &ident,
+            renamed: false,
+            library_known: true,
+            references: code,
+            searched: sources.code.len(),
+            searched_label: "src/",
+        };
+        reasons_to_keep(&package, &candidate)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    fn with_code() -> Sources {
+        Sources {
+            code: vec!["src/lib.rs".into()],
+            has_test_files: true,
+            git_checkout: true,
+            ..Sources::default()
+        }
+    }
+
+    #[test]
+    fn rule_names_are_unique() {
+        let names: BTreeSet<&str> = RULES.iter().map(|(name, _)| *name).collect();
+        assert_eq!(names.len(), RULES.len());
+    }
+
+    #[test]
+    fn a_plain_unreferenced_dependency_has_no_reason_to_be_kept() {
+        let none = BTreeSet::new();
+        let kept = kept_by(
+            &dependency("log"),
+            &with_code(),
+            &References::default(),
+            &none,
+            &BTreeSet::new(),
+        );
+        assert!(kept.is_empty(), "{kept:?}");
+    }
+
+    #[test]
+    fn each_declaration_rule_fires_on_its_own_case_only() {
+        let none = BTreeSet::new();
+        let tree = BTreeSet::new();
+        let code = References::default();
+        let sources = with_code();
+        let check =
+            |dependency: DeclaredDependency, transitive: &BTreeSet<&str>, expected: &[&str]| {
+                assert_eq!(
+                    kept_by(&dependency, &sources, &code, transitive, &tree),
+                    expected,
+                    "{}",
+                    dependency.key
+                );
+            };
+        check(dependency("openssl-sys"), &none, &["sys-crate"]);
+        check(
+            DeclaredDependency {
+                optional: true,
+                ..dependency("chrono")
+            },
+            &none,
+            &["optional"],
+        );
+        check(
+            DeclaredDependency {
+                target_specific: true,
+                ..dependency("winapi")
+            },
+            &none,
+            &["platform-specific"],
+        );
+        // Selecting features matters only for a crate others also use.
+        let getrandom = DeclaredDependency {
+            sets_features: true,
+            ..dependency("getrandom")
+        };
+        check(getrandom.clone(), &none, &[]);
+        check(
+            getrandom,
+            &BTreeSet::from(["getrandom"]),
+            &["selects-features"],
+        );
+        // Missing test files only matter for dev-dependencies of a copy.
+        let dev = DeclaredDependency {
+            kind: DependencyKind::Dev,
+            ..dependency("tempfile")
+        };
+        assert_eq!(
+            kept_by(
+                &dev,
+                &Sources {
+                    code: vec!["src/lib.rs".into()],
+                    ..Sources::default()
+                },
+                &code,
+                &none,
+                &tree
+            ),
+            ["test-files-missing"]
+        );
+        check(dev, &none, &[]);
+    }
+
+    #[test]
+    fn generated_code_keeps_only_crates_the_build_script_can_produce_code_for() {
+        let none = BTreeSet::new();
+        let sources = Sources {
+            has_build_script: true,
+            ..with_code()
+        };
+        let code = References {
+            includes_generated_code: true,
+            ..References::default()
+        };
+        let tree = BTreeSet::from(["prost".to_owned()]);
+        assert_eq!(
+            kept_by(&dependency("prost"), &sources, &code, &none, &tree),
+            ["generated-code"]
+        );
+        assert!(kept_by(&dependency("sha2"), &sources, &code, &none, &tree).is_empty());
+    }
+
+    #[test]
+    fn incomplete_searches_keep_every_dependency() {
+        let none = BTreeSet::new();
+        let tree = BTreeSet::new();
+        let skipped = Sources {
+            skipped: 2,
+            ..with_code()
+        };
+        assert_eq!(
+            kept_by(
+                &dependency("log"),
+                &skipped,
+                &References::default(),
+                &none,
+                &tree
+            ),
+            ["skipped-files"]
+        );
+        let empty = Sources {
+            code: Vec::new(),
+            has_test_files: true,
+            git_checkout: true,
+            ..Sources::default()
+        };
+        assert_eq!(
+            kept_by(
+                &dependency("log"),
+                &empty,
+                &References::default(),
+                &none,
+                &tree
+            ),
+            ["nothing-searched"]
+        );
+    }
 }
