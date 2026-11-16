@@ -180,10 +180,11 @@ fn local_package_dirs(project_root: &Path) -> BTreeMap<(String, String), PathBuf
         return map;
     };
 
-    let mut dirs = vec![project_root.to_path_buf()];
+    let canonical = |dir: PathBuf| fs::canonicalize(&dir).unwrap_or(dir);
+    let mut dirs = vec![canonical(project_root.to_path_buf())];
     let (members, _) = workspace::members(project_root, &root_manifest);
     for member in members {
-        dirs.push(project_root.join(member));
+        dirs.push(canonical(project_root.join(member)));
     }
 
     let mut visited = BTreeSet::new();
@@ -230,8 +231,13 @@ fn collect_path_dep_dirs(base: &Path, manifest: &toml::Value, queue: &mut Vec<Pa
     let mut inspect_table = |deps: &toml::Table| {
         for value in deps.values() {
             if let Some(path) = value.get("path").and_then(toml::Value::as_str) {
+                // Canonical, so that `a/../b` and `b` are visited once:
+                // path dependencies that point back at each other would
+                // otherwise grow the queue without end.
                 let candidate = base.join(path);
-                if candidate.join("Cargo.toml").is_file() {
+                if candidate.join("Cargo.toml").is_file()
+                    && let Ok(candidate) = fs::canonicalize(&candidate)
+                {
                     queue.push(candidate);
                 }
             }
@@ -566,6 +572,24 @@ mod tests {
     use super::{
         detect_build_scripts, has_build_script, hash_license_reader, verify_clarifications,
     };
+
+    #[test]
+    fn path_dependencies_that_point_at_each_other_are_visited_once() {
+        let dir = std::env::temp_dir().join(format!("cargoscope-cycle-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        for (name, other) in [("a", "b"), ("b", "a")] {
+            fs::create_dir_all(dir.join(name)).expect("dir");
+            fs::write(
+                dir.join(name).join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n[dev-dependencies]\n{other} = {{ path = \"../{other}\" }}\n"),
+            )
+            .expect("manifest");
+        }
+        fs::write(dir.join("Cargo.toml"), "[workspace]\nmembers = [\"a\"]\n").expect("root");
+        let dirs = super::local_package_dirs(&dir);
+        assert_eq!(dirs.len(), 2, "{dirs:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn xxhash32_matches_cargo_deny_line_normalization() {

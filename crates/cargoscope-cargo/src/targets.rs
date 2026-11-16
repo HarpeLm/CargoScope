@@ -89,6 +89,7 @@ fn filter_depth_tree(
     output: &str,
     excluded_members: &[String],
     dead_edges: &DeadEdges,
+    only_root: Option<&str>,
 ) -> (bool, ActivePackages, EnabledFeatures) {
     let excluded: BTreeSet<&str> = excluded_members.iter().map(String::as_str).collect();
     let mut roots = BTreeSet::new();
@@ -103,7 +104,10 @@ fn filter_depth_tree(
         };
         saw_depth_line = true;
         all_features.entry(key.clone()).or_default().extend(feats);
-        if depth == 0 && !excluded.contains(key.0.as_str()) {
+        if depth == 0
+            && !excluded.contains(key.0.as_str())
+            && only_root.is_none_or(|root| root == key.0)
+        {
             roots.insert(key.clone());
         }
         while stack.len() > depth {
@@ -389,10 +393,27 @@ pub fn active_packages(
     } else {
         BTreeSet::new()
     };
+    // Without `--workspace`, `cargo tree` starts from every default member;
+    // cargo-deny starts from the root package alone.
+    let root_name = if root_package_only {
+        std::fs::read_to_string(root.join("Cargo.toml"))
+            .ok()
+            .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+            .and_then(|manifest| {
+                manifest
+                    .get("package")?
+                    .get("name")?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+    } else {
+        None
+    };
     let (saw_any, packages, enabled_features) = filter_depth_tree(
         &String::from_utf8_lossy(&output.stdout),
         excluded_members,
         &dead,
+        root_name.as_deref(),
     );
     if !saw_any {
         return Err("`cargo tree` listed no package".to_owned());
@@ -513,11 +534,16 @@ mod tests {
         )));
 
         let (saw_any, packages, features) =
-            filter_depth_tree(tree, &["example-app".to_owned()], &dead);
+            filter_depth_tree(tree, &["example-app".to_owned()], &dead, None);
         assert!(saw_any);
         let names: Vec<&str> = packages.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, vec!["async-compression", "tower-http", "zstd-sys"]);
         assert!(features[&("tower-http".to_owned(), "0.7.1".to_owned())].contains("full"));
         assert!(!features.contains_key(&("example-only".to_owned(), "1.0.0".to_owned())));
+
+        // Rooted at the root package alone, other default members drop out
+        // the same way.
+        let (_, rooted, _) = filter_depth_tree(tree, &[], &dead, Some("tower-http"));
+        assert_eq!(rooted, packages);
     }
 }
