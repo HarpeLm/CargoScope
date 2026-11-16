@@ -122,8 +122,8 @@ pub fn apply_advisory_ignores(
         };
         if !findings.iter().any(&matches) {
             warnings.push(format!(
-                "cargoscope.toml ignores {}, which matches no advisory of this project: remove it if it is no longer needed",
-                ignore.id
+                "{} ignores {}, which matches no advisory of this project: remove it if it is no longer needed",
+                ignore.source, ignore.id
             ));
             continue;
         }
@@ -651,6 +651,7 @@ mod tests {
             id: id.to_owned(),
             reason: "known".to_owned(),
             until: until.map(str::to_owned),
+            source: "cargoscope.toml",
         };
         let warnings = super::apply_advisory_ignores(
             &mut findings,

@@ -615,6 +615,7 @@ pub fn translate(text: &str) -> Result<Translated, String> {
                     id: id.to_owned(),
                     reason: reason(entry),
                     until: None,
+                    source: "deny.toml",
                 }),
                 None => notes.push("deny.toml: an advisory ignore that names a crate instead of an advisory ID is not supported, ignored".to_owned()),
             }

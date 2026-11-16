@@ -740,6 +740,9 @@ pub struct AdvisoryIgnore {
     pub reason: String,
     /// Last day (`YYYY-MM-DD`) the ignore applies, if limited.
     pub until: Option<String>,
+    /// File the ignore comes from (`cargoscope.toml`, `deny.toml`,
+    /// `.cargo/audit.toml`), for messages.
+    pub source: &'static str,
 }
 
 fn is_date(text: &str) -> bool {
@@ -797,7 +800,12 @@ pub fn parse_advisory_ignores(text: &str) -> Result<Vec<AdvisoryIgnore>, String>
                 "[advisories] `{id}` until must be a YYYY-MM-DD date, not `{date}`"
             ));
         }
-        ignores.push(AdvisoryIgnore { id, reason, until });
+        ignores.push(AdvisoryIgnore {
+            id,
+            reason,
+            until,
+            source: FILE_NAME,
+        });
     }
     Ok(ignores)
 }
@@ -819,19 +827,54 @@ fn read_config(project_root: &Path) -> Result<Option<String>, String> {
 }
 
 /// Reads `[advisories] ignore` from `project_root/cargoscope.toml`, or,
-/// without one, from cargo-deny's `deny.toml`.
+/// without one, from cargo-deny's `deny.toml` and cargo-audit's
+/// `.cargo/audit.toml`.
 ///
 /// # Errors
 ///
 /// Returns a message naming the file for unreadable or invalid content.
 pub fn load_advisory_ignores(project_root: &Path) -> Result<Vec<AdvisoryIgnore>, String> {
     match read_config(project_root)? {
-        None => Ok(crate::deny::load(project_root)?
-            .map(|translation| translation.ignores)
-            .unwrap_or_default()),
+        None => {
+            let mut ignores = crate::deny::load(project_root)?
+                .map(|translation| translation.ignores)
+                .unwrap_or_default();
+            for ignore in audit_toml_ignores(project_root) {
+                if !ignores.iter().any(|known| known.id == ignore.id) {
+                    ignores.push(ignore);
+                }
+            }
+            Ok(ignores)
+        }
         Some(text) => parse_advisory_ignores(&text)
             .map_err(|error| format!("{}: {error}", project_root.join(FILE_NAME).display())),
     }
+}
+
+/// `[advisories] ignore = ["RUSTSEC-..."]` of cargo-audit's
+/// `.cargo/audit.toml`, so that a project moving from cargo-audit keeps its
+/// decisions. An unreadable file is skipped: cargo-audit is not required.
+fn audit_toml_ignores(project_root: &Path) -> Vec<AdvisoryIgnore> {
+    let path = project_root.join(".cargo").join("audit.toml");
+    let readable = std::fs::symlink_metadata(&path)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() <= 1024 * 1024);
+    if !readable {
+        return Vec::new();
+    }
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+        .and_then(|value| value.get("advisories")?.get("ignore")?.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(toml::Value::as_str)
+        .map(|id| AdvisoryIgnore {
+            id: id.to_owned(),
+            reason: "from .cargo/audit.toml".to_owned(),
+            until: None,
+            source: ".cargo/audit.toml",
+        })
+        .collect()
 }
 
 /// Reads `cargoscope.toml` from `project_root`, or, without one, the rules
@@ -1094,6 +1137,44 @@ mod tests {
         );
         assert!(parse_policy("[licenses]\nallow = [\"MIT OR\"]\n").is_err());
         assert_eq!(parse_policy(""), Ok(None));
+    }
+
+    #[test]
+    fn reads_the_ignores_of_cargo_audit_without_a_cargoscope_toml() {
+        let dir =
+            std::env::temp_dir().join(format!("cargoscope-audit-toml-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".cargo")).expect("dir");
+        std::fs::write(
+            dir.join(".cargo/audit.toml"),
+            "[advisories]\nignore = [\"RUSTSEC-2024-0436\", \"RUSTSEC-2025-0141\"]\n",
+        )
+        .expect("audit.toml");
+        std::fs::write(
+            dir.join("deny.toml"),
+            "[advisories]\nignore = [{ id = \"RUSTSEC-2025-0141\", reason = \"bincode is fine here\" }]\n",
+        )
+        .expect("deny.toml");
+        let ignores = super::load_advisory_ignores(&dir).expect("valid");
+        let found: Vec<(&str, &str)> = ignores
+            .iter()
+            .map(|ignore| (ignore.id.as_str(), ignore.reason.as_str()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                ("RUSTSEC-2025-0141", "bincode is fine here"),
+                ("RUSTSEC-2024-0436", "from .cargo/audit.toml"),
+            ]
+        );
+        // A cargoscope.toml is the only file read.
+        std::fs::write(dir.join("cargoscope.toml"), "[advisories]\nignore = []\n").expect("write");
+        assert!(
+            super::load_advisory_ignores(&dir)
+                .expect("valid")
+                .is_empty()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

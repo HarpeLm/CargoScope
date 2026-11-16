@@ -388,7 +388,7 @@ impl Advisory {
         let matches = |requirements: &[semver::VersionReq]| {
             requirements
                 .iter()
-                .any(|requirement| requirement.matches(version))
+                .any(|requirement| in_advisory_range(requirement, version))
         };
         !matches(&self.patched) && !matches(&self.unaffected)
     }
@@ -451,6 +451,55 @@ pub(crate) fn utc_date(seconds: u64) -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
+/// Whether `version` is inside a `patched` or `unaffected` range, read as
+/// RustSec's own tools (cargo-audit) read it: the requirement becomes an
+/// interval compared with full SemVer precedence, so a pre-release such as
+/// `0.11.0-rc.6` is inside `>= 0.8.1`. (Cargo's `VersionReq::matches` never
+/// lets a pre-release match, which flagged fixed pre-releases.) Caret and
+/// tilde ranges end just before the next line's first pre-release (`-0`).
+fn in_advisory_range(requirement: &semver::VersionReq, version: &semver::Version) -> bool {
+    use semver::{Op, Prerelease, Version};
+    use std::cmp::Ordering;
+    let at = |comparator: &semver::Comparator| Version {
+        major: comparator.major,
+        minor: comparator.minor.unwrap_or(0),
+        patch: comparator.patch.unwrap_or(0),
+        pre: comparator.pre.clone(),
+        build: semver::BuildMetadata::EMPTY,
+    };
+    let cmp = |other: &Version| version.cmp_precedence(other);
+    requirement.comparators.iter().all(|comparator| {
+        let bound = at(comparator);
+        match comparator.op {
+            Op::Greater => cmp(&bound) == Ordering::Greater,
+            Op::GreaterEq => cmp(&bound) != Ordering::Less,
+            Op::Less => cmp(&bound) == Ordering::Less,
+            Op::LessEq => cmp(&bound) != Ordering::Greater,
+            Op::Exact => cmp(&bound) == Ordering::Equal,
+            Op::Caret | Op::Tilde => {
+                let mut end = if comparator.op == Op::Tilde {
+                    match comparator.minor {
+                        None => Version::new(comparator.major + 1, 0, 0),
+                        Some(minor) => Version::new(comparator.major, minor + 1, 0),
+                    }
+                } else if comparator.major == 0 {
+                    match (comparator.minor, comparator.patch) {
+                        (Some(0), Some(patch)) => Version::new(0, 0, patch + 1),
+                        (Some(minor), _) => Version::new(0, minor + 1, 0),
+                        (None, _) => Version::new(1, 0, 0),
+                    }
+                } else {
+                    Version::new(comparator.major + 1, 0, 0)
+                };
+                end.pre = Prerelease::new("0").expect("valid pre-release");
+                cmp(&bound) != Ordering::Less && cmp(&end) == Ordering::Less
+            }
+            // Wildcards and future operators: Cargo's own reading.
+            _ => comparator.matches(version),
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Advisory, AdvisoryDatabase, advisory_entry, install_archive, utc_date};
@@ -489,6 +538,29 @@ Details.
         assert_eq!(advisory.aliases, vec!["CVE-0000-0001"]);
         assert_eq!(advisory.severity, Some(Severity::Critical));
         assert!(!advisory.withdrawn);
+    }
+
+    #[test]
+    fn reads_advisory_ranges_with_pre_releases_as_rustsec_does() {
+        let inside = |requirement: &str, version: &str| {
+            super::in_advisory_range(
+                &semver::VersionReq::parse(requirement).expect("requirement"),
+                &semver::Version::parse(version).expect("version"),
+            )
+        };
+        // A later pre-release is fixed (cargo-audit agrees).
+        assert!(inside(">= 0.8.1", "0.11.0-rc.6"));
+        assert!(inside(">= 0.24.3", "0.26.0-beta.3"));
+        // A pre-release of the fixed version itself is not.
+        assert!(!inside(">= 0.26.0", "0.26.0-beta.3"));
+        assert!(inside("^1.2.3", "1.9.0"));
+        assert!(!inside("^1.2.3", "2.0.0-alpha.1"));
+        assert!(inside("^0.2.3", "0.2.9"));
+        assert!(!inside("^0.2.3", "0.3.0"));
+        assert!(inside("~1.2", "1.2.7"));
+        assert!(!inside("~1.2", "1.3.0-rc.1"));
+        assert!(inside(">= 0.5.0, < 0.6.0", "0.5.3"));
+        assert!(!inside("< 0.1.5", "0.1.5"));
     }
 
     #[test]
