@@ -18,6 +18,134 @@ on:
         type: boolean
         default: false
       updates-pr:
+        description: Also open test version update pull requests from tests/fixtures/security-update
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  action:
+    if: ${{ github.event_name != 'pull_request' && !inputs.security-pr && !inputs.updates-pr }}
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: cargoscope
+        uses: ./
+        with:
+          version: ${{ inputs.version || 'latest' }}
+          fail-on: none
+          upload-sarif: ${{ matrix.os == 'ubuntu-latest' }}
+      - name: Check the outputs
+        shell: bash
+        run: |
+          test -s "${{ steps.cargoscope.outputs.sarif }}"
+          test "${{ steps.cargoscope.outputs.exit-code }}" = 0
+
+  pull-request:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build CargoScope from this pull request
+        run: |
+          cargo build --release --locked -p cargoscope
+          echo "$PWD/target/release" >> "$GITHUB_PATH"
+      - id: cargoscope
+        uses: ./
+        with:
+          version: installed
+          fail-on: none
+          upload-sarif: "false"
+      - name: Check the outputs
+        run: |
+          test -s "${{ steps.cargoscope.outputs.sarif }}"
+          test "${{ steps.cargoscope.outputs.exit-code }}" = 0
+          grep -q "cargoscope-pr-comment" "$RUNNER_TEMP/cargoscope-comment.md"
+
+  security-pr:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.security-pr }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build CargoScope from this commit
+        run: |
+          cargo build --release --locked -p cargoscope
+          echo "$PWD/target/release" >> "$GITHUB_PATH"
+      - name: One pull request for all updates
+        id: grouped
+        uses: ./
+        with:
+          version: installed
+          path: tests/fixtures/security-update
+          fail-on: none
+          upload-sarif: "false"
+          open-pr: "true"
+          pr-branch: cargoscope/security-updates-test
+          ci-workflow: ci.yml
+      - name: One pull request per package, which closes the grouped one
+        id: per-package
+        uses: ./
+        with:
+          version: installed
+          path: tests/fixtures/security-update
+          fail-on: none
+          upload-sarif: "false"
+          open-pr: "true"
+          pr-per-package: "true"
+          pr-branch: cargoscope/security-updates-test
+      - name: Check the pull requests
+        env:
+          GROUPED: ${{ steps.grouped.outputs.pr-url }}
+          PER_PACKAGE: ${{ steps.per-package.outputs.pr-url }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test -n "$GROUPED" && test -n "$PER_PACKAGE"
+          gh pr view "$GROUPED" --json state --jq .state | grep -qx CLOSED
+          gh pr view "$PER_PACKAGE" --json state,headRefName --jq '.state + " " + .headRefName' | grep -qx "OPEN cargoscope/security-updates-test-chrono"
+          gh pr diff "$PER_PACKAGE" | grep -q '^+version = "0.4.20"'
+      - name: Nothing left to update closes it
+        uses: ./
+        with:
+          version: installed
+          path: tests/fixtures/simple
+          checks: inventory
+          fail-on: none
+          upload-sarif: "false"
+          open-pr: "true"
+          pr-branch: cargoscope/security-updates-test
+      - name: Check that no test pull request is left open
+        env:
+          PER_PACKAGE: ${{ steps.per-package.outputs.pr-url }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr view "$PER_PACKAGE" --json state --jq .state | grep -qx CLOSED
+          test -z "$(gh pr list --state open --json headRefName --jq '.[].headRefName' | grep '^cargoscope/security-updates-test' || true)"
+
+  updates-pr:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.updates-pr }}
     runs-on: ubuntu-latest
     permissions:
