@@ -229,6 +229,26 @@ pub struct Policy {
     pub root_package_only: bool,
     /// Per-crate feature bans and allowlists (`[bans] features`).
     pub feature_bans: Vec<FeatureBan>,
+    /// Whether the licenses of the project's own packages (workspace members
+    /// and path dependencies) are checked too, as cargo-deny does.
+    pub licenses_include_workspace: bool,
+    /// `[licenses.private] ignore`: skip the licenses of unpublished packages
+    /// (`publish = false`, or published only to `private_registries`).
+    pub private_ignore: bool,
+    /// `[licenses.private] registries`: registries counted as private.
+    pub private_registries: Vec<String>,
+    /// `[licenses.private] ignore-sources`: registry URLs whose packages'
+    /// licenses are not checked (with `private_ignore`).
+    pub private_ignore_sources: Vec<String>,
+    /// Minimum score (in thousandths) for a license text found in a
+    /// `LICENSE*`/`COPYING*` file to count, when a package declares no
+    /// usable license expression (`confidence-threshold`, 0.8 by default).
+    pub confidence_threshold: u16,
+    /// Level of the finding for allowed licenses no checked package uses.
+    pub unused_allowed_license: LintLevel,
+    /// Whether an empty `allow_licenses` rejects every license (cargo-deny)
+    /// instead of accepting any license that is not denied.
+    pub empty_allow_denies_all: bool,
     /// Features of the project (`[graph] features`, `all-features`,
     /// `no-default-features`) the rules are limited to; `None` checks the
     /// packages of every feature.
@@ -263,6 +283,13 @@ impl Default for Policy {
             root_package_only: false,
             feature_bans: Vec::new(),
             features: None,
+            licenses_include_workspace: false,
+            private_ignore: false,
+            private_registries: Vec::new(),
+            private_ignore_sources: Vec::new(),
+            confidence_threshold: 800,
+            unused_allowed_license: LintLevel::Allow,
+            empty_allow_denies_all: false,
         }
     }
 }
@@ -343,6 +370,22 @@ pub struct GraphContext<'a> {
     /// Verified clarification index (into [`Policy::license_clarifications`])
     /// per package in `inventory` order.
     pub verified_clarifications: Option<&'a [Option<usize>]>,
+    /// License facts gathered from disk, per package in `inventory` order.
+    pub license_facts: Option<&'a [LicenseFacts]>,
+}
+
+/// What the scan found on disk about the license of one package.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LicenseFacts {
+    /// The license in [`PackageInfo::license`] comes from the package itself
+    /// (its manifest or its license files): check it even without crates.io
+    /// data. With no license, the package is unlicensed.
+    pub known: bool,
+    /// Leave the package's license unchecked (`[licenses.private] ignore`).
+    pub skip: bool,
+    /// Where the license was found, when it was not the `license` field
+    /// (for example "detected in LICENSE-MIT").
+    pub origin: Option<String>,
 }
 
 /// A package that breaks the policy.
@@ -579,6 +622,7 @@ impl Policy {
                 enabled_features,
                 build_scripts: None,
                 verified_clarifications: None,
+                license_facts: None,
             },
         )
     }
@@ -612,6 +656,7 @@ impl Policy {
         };
         let empty_features = BTreeSet::new();
         let mut violations = Vec::new();
+        let mut used_licenses: BTreeSet<String> = BTreeSet::new();
         for (index, package) in inventory.packages.iter().enumerate() {
             if !is_active(index) {
                 continue;
@@ -643,6 +688,109 @@ impl Policy {
                             package.name
                         ),
                     );
+                }
+            }
+
+            let clarified = match context.verified_clarifications {
+                Some(verified) => verified
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .and_then(|clarify_idx| self.license_clarifications.get(clarify_idx)),
+                None => self.clarification(&package.name, &package.version),
+            };
+            let facts = context.license_facts.and_then(|facts| facts.get(index));
+            let local = package.source.is_none();
+            let has_data = clarified.is_some()
+                || facts.is_some_and(|facts| facts.known)
+                || (licenses_known
+                    && package
+                        .source
+                        .as_deref()
+                        .is_some_and(|source| CRATES_IO.contains(&source)));
+            if self.check_licenses
+                && in_set(licenses_set, index)
+                && (!local || self.licenses_include_workspace)
+                && !facts.is_some_and(|facts| facts.skip)
+                && has_data
+            {
+                // A clarification replaces the crate's license; exceptions
+                // allow more licenses for this crate only.
+                let license = clarified
+                    .map(|clarification| clarification.expression.as_str())
+                    .or_else(|| info.get(index).and_then(|info| info.license.as_deref()));
+                let excepted: Vec<&String> = self
+                    .license_exceptions
+                    .iter()
+                    .filter(|exception| {
+                        exception.name == package.name
+                            && version_matches(exception.version.as_deref(), &package.version)
+                    })
+                    .flat_map(|exception| exception.allow.iter())
+                    .collect();
+                let mut allow = self.allow_licenses.clone();
+                if !allow.is_empty() || self.empty_allow_denies_all {
+                    allow.extend(excepted.iter().map(|license| (*license).clone()));
+                }
+                let rejects_all = allow.is_empty() && self.empty_allow_denies_all;
+                let deny: Vec<String> = self
+                    .deny_licenses
+                    .iter()
+                    .filter(|denied| {
+                        !excepted
+                            .iter()
+                            .any(|license| license.eq_ignore_ascii_case(denied))
+                    })
+                    .cloned()
+                    .collect();
+                let note = if clarified.is_some() {
+                    " (clarified in cargoscope.toml)".to_owned()
+                } else {
+                    facts
+                        .and_then(|facts| facts.origin.as_deref())
+                        .map(|origin| format!(" ({origin})"))
+                        .unwrap_or_default()
+                };
+                match license {
+                    None => {
+                        if self.unknown_license == UnknownLicense::Deny {
+                            push(
+                                Rule::License,
+                                ViolationLevel::Error,
+                                "license is unknown (set `unknown = \"allow\"` to accept)"
+                                    .to_owned(),
+                            );
+                        }
+                    }
+                    Some(expression) => {
+                        // An allowed license counts as used when it appears in
+                        // a checked expression, unless the crate's own
+                        // exception covers it (as in cargo-deny).
+                        for id in license::ids(expression) {
+                            let base = id.strip_suffix('+').unwrap_or(&id);
+                            if !excepted
+                                .iter()
+                                .any(|license| license.eq_ignore_ascii_case(base))
+                            {
+                                used_licenses.insert(base.to_ascii_lowercase());
+                            }
+                        }
+                        match license::is_allowed(expression, &allow, &deny) {
+                            Ok(true) if !rejects_all => {}
+                            Ok(_) => push(
+                                Rule::License,
+                                ViolationLevel::Error,
+                                format!(
+                                    "license `{expression}`{note} is not allowed by the policy"
+                                ),
+                            ),
+                            Err(error) => push(
+                                Rule::License,
+                                ViolationLevel::Error,
+                                format!("license `{expression}` cannot be read: {error}"),
+                            ),
+                        }
+                    }
                 }
             }
 
@@ -712,76 +860,29 @@ impl Policy {
                     );
                 }
             }
-
-            let clarified = match context.verified_clarifications {
-                Some(verified) => verified
-                    .get(index)
-                    .copied()
-                    .flatten()
-                    .and_then(|clarify_idx| self.license_clarifications.get(clarify_idx)),
-                None => self.clarification(&package.name, &package.version),
-            };
-            if self.check_licenses
-                && in_set(licenses_set, index)
-                && (clarified.is_some() || (licenses_known && CRATES_IO.contains(&source)))
-            {
-                // A clarification replaces the crate's license; exceptions
-                // allow more licenses for this crate only.
-                let license = clarified
-                    .map(|clarification| clarification.expression.as_str())
-                    .or_else(|| info.get(index).and_then(|info| info.license.as_deref()));
-                let excepted: Vec<&String> = self
-                    .license_exceptions
-                    .iter()
-                    .filter(|exception| {
-                        exception.name == package.name
-                            && version_matches(exception.version.as_deref(), &package.version)
-                    })
-                    .flat_map(|exception| exception.allow.iter())
-                    .collect();
-                let mut allow = self.allow_licenses.clone();
-                if !allow.is_empty() {
-                    allow.extend(excepted.iter().map(|license| (*license).clone()));
-                }
-                let deny: Vec<String> = self
-                    .deny_licenses
-                    .iter()
-                    .filter(|denied| {
-                        !excepted
-                            .iter()
-                            .any(|license| license.eq_ignore_ascii_case(denied))
-                    })
-                    .cloned()
-                    .collect();
-                let note = if clarified.is_some() {
-                    " (clarified in cargoscope.toml)"
-                } else {
-                    ""
-                };
-                match license {
-                    None => {
-                        if self.unknown_license == UnknownLicense::Deny {
-                            push(
-                                Rule::License,
-                                ViolationLevel::Error,
-                                "license is unknown (set `unknown = \"allow\"` to accept)"
-                                    .to_owned(),
-                            );
-                        }
-                    }
-                    Some(expression) => match license::is_allowed(expression, &allow, &deny) {
-                        Ok(true) => {}
-                        Ok(false) => push(
-                            Rule::License,
-                            ViolationLevel::Error,
-                            format!("license `{expression}`{note} is not allowed by the policy"),
+        }
+        if self.check_licenses
+            && licenses_known
+            && let Some(level) = self.unused_allowed_license.to_violation_level()
+        {
+            // Attached to the project itself: no package is at fault.
+            let project = inventory
+                .packages
+                .iter()
+                .position(|package| package.root)
+                .unwrap_or(0);
+            for allowed in &self.allow_licenses {
+                if !used_licenses.contains(&allowed.to_ascii_lowercase())
+                    && project < inventory.packages.len()
+                {
+                    violations.push(Violation {
+                        package: project,
+                        rule: Rule::License,
+                        level,
+                        message: format!(
+                            "license `{allowed}` is allowed but no checked package uses it (unused-allowed-license)"
                         ),
-                        Err(error) => push(
-                            Rule::License,
-                            ViolationLevel::Error,
-                            format!("license `{expression}` cannot be read: {error}"),
-                        ),
-                    },
+                    });
                 }
             }
         }
@@ -1055,6 +1156,67 @@ mod tests {
                 .message
                 .contains("https://github.com/someone/forked is not in")
         );
+    }
+
+    #[test]
+    fn workspace_licenses_private_crates_facts_and_unused_allowed_licenses() {
+        use super::{GraphContext, LicenseFacts, LintLevel, Violation, ViolationLevel};
+        let (inventory, mut info) = sample();
+        let mut policy = policy();
+        policy.bans.clear();
+        policy.allow_registries = None;
+        policy.allow_licenses.push("ISC".to_owned());
+        policy.unknown_license = UnknownLicense::Allow;
+        info[2] = PackageInfo::default();
+        // `app` (the project) is unlicensed: checked only with include-workspace.
+        let names = |violations: &[Violation]| -> Vec<String> {
+            violations
+                .iter()
+                .map(|v| format!("{}: {}", inventory.packages[v.package].name, v.message))
+                .collect()
+        };
+        let mut facts = vec![LicenseFacts::default(); inventory.packages.len()];
+        facts[0] = LicenseFacts {
+            known: true,
+            ..LicenseFacts::default()
+        };
+        // `forked` comes from git: its license was read from its manifest.
+        info[5].license = Some("GPL-2.0-only".to_owned());
+        facts[5] = LicenseFacts {
+            known: true,
+            skip: false,
+            origin: Some("detected in LICENSE".to_owned()),
+        };
+        let context = GraphContext {
+            license_facts: Some(&facts),
+            ..GraphContext::default()
+        };
+        assert_eq!(
+            names(&policy.check_with_context(&inventory, &info, true, &context)),
+            vec![
+                "forked: license `GPL-2.0-only` (detected in LICENSE) is not allowed by the policy"
+            ]
+        );
+
+        policy.unknown_license = UnknownLicense::Deny;
+        policy.licenses_include_workspace = true;
+        policy.unused_allowed_license = LintLevel::Warn;
+        facts[5].skip = true;
+        let context = GraphContext {
+            license_facts: Some(&facts),
+            ..GraphContext::default()
+        };
+        let violations = policy.check_with_context(&inventory, &info, true, &context);
+        assert_eq!(
+            names(&violations),
+            vec![
+                "app: license is unknown (set `unknown = \"allow\"` to accept)",
+                "copyleft: license is unknown (set `unknown = \"allow\"` to accept)",
+                "mystery: license is unknown (set `unknown = \"allow\"` to accept)",
+                "app: license `ISC` is allowed but no checked package uses it (unused-allowed-license)",
+            ]
+        );
+        assert_eq!(violations[3].level, ViolationLevel::Warning);
     }
 
     #[test]

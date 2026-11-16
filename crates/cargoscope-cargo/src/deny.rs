@@ -232,6 +232,33 @@ pub fn translate(text: &str) -> Result<Translated, String> {
         // cargo-deny leaves licenses of dev-dependencies out by default.
         policy.licenses_exclude_dev =
             licenses.get("include-dev").and_then(toml::Value::as_bool) != Some(true);
+        // cargo-deny checks every crate of the graph, the project's own too.
+        policy.licenses_include_workspace = true;
+        policy.empty_allow_denies_all = true;
+        if let Some(value) = licenses.get("confidence-threshold") {
+            match crate::config::confidence_threshold(value) {
+                Some(threshold) => policy.confidence_threshold = threshold,
+                None => notes.push(
+                    "deny.toml: [licenses] confidence-threshold is not a number from 0.0 to 1.0, 0.8 used"
+                        .to_owned(),
+                ),
+            }
+        }
+        // cargo-deny warns about allowed licenses no crate uses by default.
+        policy.unused_allowed_license = match licenses
+            .get("unused-allowed-license")
+            .and_then(toml::Value::as_str)
+        {
+            Some("allow") => LintLevel::Allow,
+            Some("deny") => LintLevel::Deny,
+            _ => LintLevel::Warn,
+        };
+        if let Some(private) = licenses.get("private").and_then(toml::Value::as_table) {
+            policy.private_ignore =
+                private.get("ignore").and_then(toml::Value::as_bool) == Some(true);
+            policy.private_registries = strings(private, "registries");
+            policy.private_ignore_sources = strings(private, "ignore-sources");
+        }
         let valid = |license: &String, notes: &mut Vec<String>| {
             let ok = cargoscope_core::license::parse(license).is_ok();
             if !ok {
@@ -250,7 +277,10 @@ pub fn translate(text: &str) -> Result<Translated, String> {
             .filter(|license| valid(license, &mut notes))
             .collect();
         if policy.allow_licenses.is_empty() {
-            notes.push("deny.toml: [licenses] allow is empty: cargo-deny then rejects every license, CargoScope accepts any license not denied".to_owned());
+            notes.push(
+                "deny.toml: [licenses] allow is empty: every license is rejected, as in cargo-deny"
+                    .to_owned(),
+            );
         }
         for entry in licenses
             .get("exceptions")
@@ -353,6 +383,8 @@ pub fn translate(text: &str) -> Result<Translated, String> {
                 "version",
                 "include-dev",
                 "unused-allowed-license",
+                "confidence-threshold",
+                "private",
             ],
         );
     }
@@ -696,9 +728,12 @@ github = ["myorg"]
         assert_eq!(ignores[1].reason, "only on Windows");
 
         let notes = notes.join("\n");
-        assert!(
-            notes.contains("[licenses] confidence-threshold not supported"),
-            "{notes}"
+        assert!(!notes.contains("confidence-threshold"), "{notes}");
+        assert_eq!(policy.confidence_threshold, 800);
+        assert!(policy.licenses_include_workspace);
+        assert_eq!(
+            policy.unused_allowed_license,
+            cargoscope_core::policy::LintLevel::Warn
         );
         assert!(!notes.contains("license-files hashes"), "{notes}");
         assert_eq!(policy.bans[1].wrappers, vec!["tool"]);

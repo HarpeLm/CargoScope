@@ -14,6 +14,7 @@ pub mod config;
 pub mod crate_sources;
 pub mod deny;
 pub mod fix;
+pub mod licenses;
 pub mod locations;
 pub mod precise;
 pub mod targets;

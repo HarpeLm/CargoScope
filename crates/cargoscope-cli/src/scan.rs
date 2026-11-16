@@ -199,6 +199,25 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
                 );
             warnings.extend(clarify_warnings);
             policy.clarify_verified(&inventory, &mut package_info, &verified_clarifications);
+            // Licenses of the project's own packages, git and other registries,
+            // and of crates without a usable `license` field (from LICENSE files).
+            let gathered = cargoscope_cargo::licenses::gather(
+                root,
+                &inventory,
+                &policy,
+                &package_info,
+                &verified_clarifications,
+            );
+            for ((info, facts), license) in package_info
+                .iter_mut()
+                .zip(&gathered.facts)
+                .zip(gathered.licenses)
+            {
+                if facts.known {
+                    info.license = license;
+                }
+            }
+            warnings.extend(gathered.warnings);
             Some(check_policy(
                 root,
                 &policy,
@@ -206,6 +225,7 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
                 &package_info,
                 registry_date.as_deref(),
                 &verified_clarifications,
+                &gathered.facts,
                 &mut warnings,
             )?)
         }
@@ -310,6 +330,7 @@ fn registry_data(
     (package_info, registry_date)
 }
 
+#[allow(clippy::too_many_arguments)] // each argument is a separate input of the policy
 fn check_policy(
     root: &Path,
     policy: &Policy,
@@ -317,6 +338,7 @@ fn check_policy(
     package_info: &[PackageInfo],
     registry_date: Option<&str>,
     verified_clarifications: &[Option<usize>],
+    license_facts: &[cargoscope_core::policy::LicenseFacts],
     warnings: &mut Vec<String>,
 ) -> Result<Vec<Violation>, ExitCode> {
     if policy.check_licenses && registry_date.is_none() {
@@ -389,6 +411,7 @@ fn check_policy(
         enabled_features: enabled_features.as_ref(),
         build_scripts: build_scripts.as_ref(),
         verified_clarifications: Some(verified_clarifications),
+        license_facts: Some(license_facts),
     };
     Ok(policy.check_with_context(inventory, package_info, registry_date.is_some(), &context))
 }

@@ -1709,10 +1709,12 @@ allow-git = ["https://github.com/myorg/"]
         text.contains("no cargoscope.toml: the rules of deny.toml (cargo-deny) are used"),
         "{text}"
     );
+    // As in cargo-deny: an allowed license no package uses is a warning.
     assert!(
-        text.contains("[licenses] confidence-threshold not supported"),
+        text.contains("- [license] [warning] policy-demo 0.1.0: license `BSD-3-Clause` is allowed but no checked package uses it (unused-allowed-license)"),
         "{text}"
     );
+    assert!(!text.contains("confidence-threshold"), "{text}");
 
     // Without the wrapper, the ban applies.
     let deny = std::fs::read_to_string(dir.join("deny.toml")).expect("read");
@@ -2004,7 +2006,7 @@ fn clarify_license_files_hash_accepts_match_and_rejects_mismatch() {
     );
     let deny_for_hash = |hash: u32| {
         format!(
-            "[licenses]\nallow = [\"MIT\", \"Apache-2.0\", \"ISC\"]\n[[licenses.clarify]]\ncrate = \"itoa\"\nexpression = \"MIT\"\nlicense-files = [{{ path = \"LICENSE\", hash = {hash} }}]\n"
+            "[licenses]\nallow = [\"MIT\", \"Apache-2.0\"]\n[[licenses.clarify]]\ncrate = \"itoa\"\nexpression = \"MIT\"\nlicense-files = [{{ path = \"LICENSE\", hash = {hash} }}]\n"
         )
     };
 
@@ -2048,6 +2050,67 @@ fn clarify_license_files_hash_accepts_match_and_rejects_mismatch() {
         "{bad_text}"
     );
 
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn licenses_are_detected_from_license_files_when_the_field_is_missing() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-detect-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    copy_dir(&fixture("policy"), &dir);
+    std::fs::remove_file(dir.join("cargoscope.toml")).expect("rm cargoscope.toml");
+    // itoa has no license in the crates.io data, only a LICENSE file.
+    let cargo_home = dir.join("cargo-home");
+    let itoa_dir = cargo_home.join("registry/src/index.crates.io-test/itoa-1.0.11");
+    std::fs::create_dir_all(&itoa_dir).expect("mkdir itoa");
+    std::fs::write(
+        itoa_dir.join("Cargo.toml"),
+        "[package]\nname = \"itoa\"\nversion = \"1.0.11\"\n",
+    )
+    .expect("itoa manifest");
+    let mit =
+        std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../LICENSE"))
+            .expect("the repository's MIT license");
+    std::fs::write(itoa_dir.join("LICENSE-MIT"), mit).expect("itoa LICENSE");
+    let fake_bin = compile_fake_cargo_tree(
+        &dir,
+        "policy-demo v0.1.0 (/work)\nserde_json v1.0.128\nserde v1.0.210\nitoa v1.0.11\n",
+    );
+    let run = |allow: &str| {
+        std::fs::write(
+            dir.join("deny.toml"),
+            format!("[licenses]\nallow = [{allow}]\n"),
+        )
+        .expect("write deny.toml");
+        Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+            .env("CARGO_HOME", &cargo_home)
+            .env("CARGO", &fake_bin)
+            .args(["scan", "--checks", "inventory,licenses,policy"])
+            .arg(&dir)
+            .output()
+            .expect("cargoscope binary runs")
+    };
+    let ok = run("\"MIT\", \"Apache-2.0\"");
+    assert_eq!(ok.status.code(), Some(0), "{}", stdout(&ok));
+    assert!(
+        stdout(&ok).contains("Policy violations: 0"),
+        "{}",
+        stdout(&ok)
+    );
+
+    let bad = run("\"Apache-2.0\"");
+    let text = stdout(&bad);
+    assert_eq!(bad.status.code(), Some(1), "{text}");
+    assert!(
+        text.contains("- [license] itoa 1.0.11: license `MIT` (detected in LICENSE-MIT) is not allowed by the policy"),
+        "{text}"
+    );
+    // The project's own license is checked too, as in cargo-deny.
+    assert!(
+        text.contains("- [license] policy-demo 0.1.0: license `MIT` is not allowed by the policy"),
+        "{text}"
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 

@@ -143,9 +143,55 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
         check_keys(
             licenses,
             "licenses",
-            &["allow", "deny", "unknown", "exceptions", "clarify"],
+            &[
+                "allow",
+                "deny",
+                "unknown",
+                "exceptions",
+                "clarify",
+                "include-workspace",
+                "private",
+                "confidence-threshold",
+                "unused-allowed-license",
+            ],
         )?;
         policy.check_licenses = true;
+        policy.licenses_include_workspace = match licenses.get("include-workspace") {
+            None => false,
+            Some(toml::Value::Boolean(value)) => *value,
+            Some(_) => return Err("[licenses] include-workspace must be true or false".to_owned()),
+        };
+        if let Some(threshold) = licenses.get("confidence-threshold") {
+            policy.confidence_threshold = confidence_threshold(threshold)
+                .ok_or("[licenses] confidence-threshold must be a number from 0.0 to 1.0")?;
+        }
+        policy.unused_allowed_license = parse_lint_level(
+            licenses,
+            "unused-allowed-license",
+            "licenses",
+            LintLevel::Allow,
+        )?;
+        match licenses.get("private") {
+            None => {}
+            Some(toml::Value::Table(private)) => {
+                check_keys(
+                    private,
+                    "licenses.private",
+                    &["ignore", "registries", "ignore-sources"],
+                )?;
+                policy.private_ignore = match private.get("ignore") {
+                    None => false,
+                    Some(toml::Value::Boolean(value)) => *value,
+                    Some(_) => {
+                        return Err("[licenses.private] ignore must be true or false".to_owned());
+                    }
+                };
+                policy.private_registries = strings(private, "registries", "licenses.private")?;
+                policy.private_ignore_sources =
+                    strings(private, "ignore-sources", "licenses.private")?;
+            }
+            Some(_) => return Err("[licenses] private must be a table".to_owned()),
+        }
         policy.allow_licenses = strings(licenses, "allow", "licenses")?;
         policy.deny_licenses = strings(licenses, "deny", "licenses")?;
         policy.unknown_license = match licenses.get("unknown").map(|value| value.as_str()) {
@@ -499,6 +545,18 @@ struct CrateEntry<'a> {
     version: Option<String>,
     reason: String,
     table: &'a toml::Table,
+}
+
+/// A `confidence-threshold` value (0.0 to 1.0), in thousandths.
+#[must_use]
+pub fn confidence_threshold(value: &toml::Value) -> Option<u16> {
+    let number = value
+        .as_float()
+        .or_else(|| value.as_integer().map(|integer| integer as f64))?;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    (0.0..=1.0)
+        .contains(&number)
+        .then(|| (number * 1000.0).round() as u16)
 }
 
 /// Reads `[licenses] KEY = [{ name = "...", reason = "...", ... }]`: every

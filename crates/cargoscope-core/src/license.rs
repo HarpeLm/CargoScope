@@ -173,6 +173,27 @@ impl Expression {
     }
 }
 
+/// License identifiers of an expression, in order (exceptions left out).
+/// An unreadable expression has none.
+#[must_use]
+pub fn ids(expression: &str) -> Vec<String> {
+    fn collect(expression: &Expression, out: &mut Vec<String>) {
+        match expression {
+            Expression::License { id, .. } => out.push(id.clone()),
+            Expression::Or(parts) | Expression::And(parts) => {
+                for part in parts {
+                    collect(part, out);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if let Ok(parsed) = parse(expression) {
+        collect(&parsed, &mut out);
+    }
+    out
+}
+
 /// Checks `expression` against an allow list (empty: every license that is
 /// not denied) and a deny list. Comparison ignores case; an exception
 /// (`WITH ...`) never makes a license unacceptable.
