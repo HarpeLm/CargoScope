@@ -17,13 +17,17 @@ on:
         description: Also open a test security pull request from tests/fixtures/security-update
         type: boolean
         default: false
+      updates-pr:
+        description: Also open test version update pull requests from tests/fixtures/security-update
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   action:
-    if: ${{ github.event_name != 'pull_request' && !inputs.security-pr }}
+    if: ${{ github.event_name != 'pull_request' && !inputs.security-pr && !inputs.updates-pr }}
     permissions:
       contents: read
       security-events: write
@@ -140,3 +144,57 @@ jobs:
         run: |
           gh pr view "$PER_PACKAGE" --json state --jq .state | grep -qx CLOSED
           test -z "$(gh pr list --state open --json headRefName --jq '.[].headRefName' | grep '^cargoscope/security-updates-test' || true)"
+
+  updates-pr:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.updates-pr }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build CargoScope from this commit
+        run: |
+          cargo build --release --locked -p cargoscope
+          echo "$PWD/target/release" >> "$GITHUB_PATH"
+      - name: One pull request for every update
+        id: grouped
+        uses: ./
+        with:
+          version: installed
+          path: tests/fixtures/security-update
+          fail-on: none
+          upload-sarif: "false"
+          updates: compatible
+          updates-grouped: "true"
+          updates-branch: cargoscope/updates-test
+      - name: One pull request per dependency, which closes the grouped one
+        id: per-package
+        uses: ./
+        with:
+          version: installed
+          path: tests/fixtures/security-update
+          fail-on: none
+          upload-sarif: "false"
+          updates: compatible
+          updates-branch: cargoscope/updates-test
+      - name: Check the pull requests, then close them
+        if: ${{ always() }}
+        env:
+          GROUPED: ${{ steps.grouped.outputs.pr-url }}
+          PER_PACKAGE: ${{ steps.per-package.outputs.pr-url }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status=0
+          test -n "$GROUPED" && test -n "$PER_PACKAGE" || status=1
+          gh pr view "$GROUPED" --json state --jq .state | grep -qx CLOSED || status=1
+          gh pr view "$PER_PACKAGE" --json title,headRefName --jq '.headRefName + " | " + .title' | tee /dev/stderr \
+            | grep -q '^cargoscope/updates-test-chrono | Bump chrono from 0.4.19 to 0.4.' || status=1
+          gh pr diff "$PER_PACKAGE" | grep -q '^+version = "0.4.' || status=1
+          for number in $(gh pr list --state open --json number,headRefName --jq '.[] | select(.headRefName | startswith("cargoscope/updates-test")) | .number'); do
+            gh pr close "$number" --delete-branch --comment "Test pull request of the Action test." > /dev/null
+          done
+          exit "$status"

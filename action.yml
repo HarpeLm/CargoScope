@@ -39,6 +39,15 @@ inputs:
   pr-per-package:
     description: "With open-pr, one pull request per vulnerable package instead of one for all."
     default: "false"
+  updates:
+    description: "Outside pull requests (on a schedule, say), open or update pull requests that move direct dependencies to their newest version, as Dependabot version updates do: none, compatible (Cargo.lock only, within the requirements) or breaking (also newer major versions, raising the requirement in Cargo.toml). Needs `contents: write` and `pull-requests: write`."
+    default: "none"
+  updates-branch:
+    description: Branch prefix of the version update pull requests (one branch per dependency, or the branch itself with updates-grouped).
+    default: cargoscope/updates
+  updates-grouped:
+    description: "With updates, one pull request for every dependency instead of one per dependency."
+    default: "false"
   token:
     description: "Token used to push and open the pull request. The default token works when the repository allows GitHub Actions to create pull requests, but the pull request then starts no workflow; a personal access token or a GitHub App token starts them."
     default: ${{ github.token }}
@@ -54,7 +63,7 @@ outputs:
     description: "CargoScope exit code: 0 OK, 1 threshold reached, 2 execution error."
     value: ${{ steps.scan.outputs.exit-code }}
   pr-url:
-    description: URL of the (first) security update pull request opened or updated.
+    description: URL of the first pull request opened or updated (security first, then version updates).
     value: ${{ steps.security-pr.outputs.url }}
 
 runs:
@@ -188,47 +197,51 @@ runs:
             || echo "::warning::CargoScope could not comment (the token needs pull-requests: write; pull requests from forks get a read-only token). The comparison is in the job summary."
         fi
 
-    - name: Open, update or close the security update pull requests
+    - name: Open, update or close the security and version update pull requests
       id: security-pr
-      if: ${{ inputs.open-pr == 'true' && !github.event.pull_request }}
+      if: ${{ (inputs.open-pr == 'true' || inputs.updates != 'none') && !github.event.pull_request }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token }}
         TOKEN: ${{ inputs.token }}
         PROJECT: ${{ inputs.path }}
+        SECURITY: ${{ inputs.open-pr }}
         BRANCH: ${{ inputs.pr-branch }}
         PER_PACKAGE: ${{ inputs.pr-per-package }}
+        UPDATES: ${{ inputs.updates }}
+        UPDATES_BRANCH: ${{ inputs.updates-branch }}
+        UPDATES_GROUPED: ${{ inputs.updates-grouped }}
         BASE: ${{ github.ref_name }}
         CI_WORKFLOW: ${{ inputs.ci-workflow }}
         REPOSITORY: ${{ github.repository }}
       run: |
-        plan="$RUNNER_TEMP/cargoscope-security-plan.json"
-        if ! cargoscope fix --advisories "$PROJECT" --format json > "$plan"; then
-          echo "::warning::CargoScope could not plan the security updates: no pull request opened or closed."
-          exit 0
-        fi
-        packages=$(jq -r '.updates[].package' "$plan")
+        case "$UPDATES" in
+          none | compatible | breaking) ;;
+          *) echo "::error::updates must be none, compatible or breaking, not '$UPDATES'."; exit 1 ;;
+        esac
         git config user.name "github-actions[bot]"
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
         kept=" "
         first_url=""
 
         # Opens or updates the pull request of BRANCH, from the commit the
-        # workflow runs on, with the updates of the given packages (all when
+        # workflow runs on: FIX is the cargoscope fix arguments (--advisories,
+        # or --updates [--breaking]), then the packages to update (all when
         # none is given).
         open_pr() {
-          branch="$1"; title="$2"; shift 2
-          body="$RUNNER_TEMP/cargoscope-security-pr.md"
+          branch="$1"; title="$2"; fix="$3"; shift 3
+          body="$RUNNER_TEMP/cargoscope-pr.md"
           git checkout -q --detach --force "$GITHUB_SHA"
           only=()
           [ "$#" -gt 0 ] && only=(--only "$(IFS=,; echo "$*")")
-          cargoscope fix --advisories "$PROJECT" --apply --format markdown "${only[@]}" > "$body" || return 0
+          # shellcheck disable=SC2086
+          cargoscope fix $fix "$PROJECT" --apply --format markdown "${only[@]}" > "$body" || return 0
           changed=$(git status --porcelain -- '*Cargo.lock' 'Cargo.lock' '*Cargo.toml' 'Cargo.toml' | awk '{print $2}' | sort -u)
           [ -n "$changed" ] || return 0
           git switch -q -C "$branch"
           # shellcheck disable=SC2086
           git add $changed
-          git commit -q -m "$title (cargoscope fix --advisories)"
+          git commit -q -m "$title (cargoscope fix $fix)"
           # The extra header actions/checkout leaves would replace the token.
           if ! git -c http.https://github.com/.extraheader= push -q --force \
             "https://x-access-token:${TOKEN}@github.com/${REPOSITORY}.git" "HEAD:refs/heads/${branch}"; then
@@ -240,10 +253,10 @@ runs:
           if [ -n "$existing" ]; then
             gh pr edit "$existing" --repo "$REPOSITORY" --title "$title" --body-file "$body" > /dev/null
             url=$(gh pr view "$existing" --repo "$REPOSITORY" --json url --jq .url)
-            echo "Updated the security pull request: $url"
+            echo "Updated the pull request: $url"
           elif url=$(gh pr create --repo "$REPOSITORY" --base "$BASE" --head "$branch" \
               --title "$title" --body-file "$body"); then
-            echo "Opened the security pull request: $url"
+            echo "Opened the pull request: $url"
           else
             echo "::error::CargoScope pushed ${branch} but could not open the pull request: give the job pull-requests: write, and allow GitHub Actions to create pull requests (Settings, Actions, General), or pass a personal access token or GitHub App token as token."
             exit 1
@@ -257,32 +270,67 @@ runs:
           fi
         }
 
-        if [ "$PER_PACKAGE" = "true" ]; then
-          for package in $packages; do
-            open_pr "$BRANCH-$package" "Security update for $package from CargoScope" "$package"
-          done
-        elif [ -n "$packages" ]; then
-          # shellcheck disable=SC2086
-          open_pr "$BRANCH" "Security updates from CargoScope" $packages
-        fi
-        [ -n "$packages" ] || echo "No vulnerable package can be updated."
+        # Closes the open pull requests of PREFIX that this run did not keep.
+        close_obsolete() {
+          prefix="$1"; why="$2"
+          gh pr list --repo "$REPOSITORY" --state open --limit 200 --json number,headRefName \
+            --jq '.[] | "\(.number) \(.headRefName)"' 2>/dev/null | while read -r number head; do
+            case "$head" in
+              "$prefix" | "$prefix"-*) ;;
+              *) continue ;;
+            esac
+            case "$kept" in
+              *" $head "*) continue ;;
+            esac
+            gh pr close "$number" --repo "$REPOSITORY" --delete-branch --comment "CargoScope: $why" > /dev/null \
+              && echo "Closed the obsolete pull request #$number ($head)."
+          done || true
+        }
 
-        # Close the pull requests of this action that no longer match an
-        # update: fixed on the base branch, no longer updatable, or the other
-        # pull request mode.
-        gh pr list --repo "$REPOSITORY" --state open --limit 200 --json number,headRefName \
-          --jq '.[] | "\(.number) \(.headRefName)"' 2>/dev/null | while read -r number head; do
-          case "$head" in
-            "$BRANCH" | "$BRANCH"-*) ;;
-            *) continue ;;
-          esac
-          case "$kept" in
-            *" $head "*) continue ;;
-          esac
-          gh pr close "$number" --repo "$REPOSITORY" --delete-branch \
-            --comment "CargoScope: nothing left to update in this pull request (the vulnerable version is gone from the base branch, it can no longer be updated, or the pull request mode changed)." > /dev/null \
-            && echo "Closed the obsolete security pull request #$number ($head)."
-        done || true
+        if [ "$SECURITY" = "true" ]; then
+          plan="$RUNNER_TEMP/cargoscope-security-plan.json"
+          if cargoscope fix --advisories "$PROJECT" --format json > "$plan"; then
+            packages=$(jq -r '.updates[].package' "$plan")
+            if [ "$PER_PACKAGE" = "true" ]; then
+              for package in $packages; do
+                open_pr "$BRANCH-$package" "Security update for $package from CargoScope" "--advisories" "$package"
+              done
+            elif [ -n "$packages" ]; then
+              # shellcheck disable=SC2086
+              open_pr "$BRANCH" "Security updates from CargoScope" "--advisories" $packages
+            fi
+            [ -n "$packages" ] || echo "No vulnerable package can be updated."
+            close_obsolete "$BRANCH" "nothing left to update in this pull request (the vulnerable version is gone from the base branch, it can no longer be updated, or the pull request mode changed)."
+          else
+            echo "::warning::CargoScope could not plan the security updates: no pull request opened or closed."
+          fi
+        fi
+
+        if [ "$UPDATES" != "none" ]; then
+          fix="--updates"
+          [ "$UPDATES" = "breaking" ] && fix="--updates --breaking"
+          git checkout -q --detach --force "$GITHUB_SHA"
+          plan="$RUNNER_TEMP/cargoscope-updates-plan.json"
+          # shellcheck disable=SC2086
+          if cargoscope fix $fix "$PROJECT" --format json > "$plan"; then
+            packages=$(jq -r '.updates[].package' "$plan" | sort -u)
+            if [ "$UPDATES_GROUPED" = "true" ]; then
+              if [ -n "$packages" ]; then
+                # shellcheck disable=SC2086
+                open_pr "$UPDATES_BRANCH" "$(jq -r '.title' "$plan")" "$fix" $packages
+              fi
+            else
+              for package in $packages; do
+                title=$(jq -r --arg p "$package" '[.updates[] | select(.package == $p)][0] | "Bump \(.package) from \(.from) to \(.to)"' "$plan")
+                open_pr "$UPDATES_BRANCH-$package" "$title" "$fix" "$package"
+              done
+            fi
+            [ -n "$packages" ] || echo "Every direct dependency is up to date."
+            close_obsolete "$UPDATES_BRANCH" "this update is no longer needed (the dependency was updated on the base branch, or the update mode changed)."
+          else
+            echo "::warning::CargoScope could not plan the version updates: no pull request opened or closed."
+          fi
+        fi
         git checkout -q --detach --force "$GITHUB_SHA"
         echo "url=$first_url" >> "$GITHUB_OUTPUT"
 
