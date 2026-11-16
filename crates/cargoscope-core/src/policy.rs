@@ -872,9 +872,14 @@ impl Policy {
                 .position(|package| package.root)
                 .unwrap_or(0);
             for allowed in &self.allow_licenses {
-                if !used_licenses.contains(&allowed.to_ascii_lowercase())
-                    && project < inventory.packages.len()
-                {
+                // `Apache-2.0 WITH LLVM-exception` is used by that exact
+                // requirement, whatever the spacing.
+                let key = allowed
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .to_ascii_lowercase();
+                if !used_licenses.contains(&key) && project < inventory.packages.len() {
                     violations.push(Violation {
                         package: project,
                         rule: Rule::License,
@@ -1166,6 +1171,10 @@ mod tests {
         policy.bans.clear();
         policy.allow_registries = None;
         policy.allow_licenses.push("ISC".to_owned());
+        policy
+            .allow_licenses
+            .push("Apache-2.0 WITH LLVM-exception".to_owned());
+        info[1].license = Some("MIT OR Apache-2.0 WITH LLVM-exception".to_owned());
         policy.unknown_license = UnknownLicense::Allow;
         info[2] = PackageInfo::default();
         // `app` (the project) is unlicensed: checked only with include-workspace.
