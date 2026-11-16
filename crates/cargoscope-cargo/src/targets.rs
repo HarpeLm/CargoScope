@@ -372,22 +372,11 @@ pub fn active_packages(
     root_package_only: bool,
 ) -> Result<(ActivePackages, EnabledFeatures), String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let output = Command::new(&cargo)
-        .current_dir(root)
-        .args(tree_args(targets, features, exclude_dev, root_package_only))
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|error| format!("could not run cargo: {error}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let why = stderr
-            .lines()
-            .map(str::trim)
-            .find(|line| line.starts_with("error:"))
-            .or_else(|| stderr.lines().map(str::trim).rfind(|line| !line.is_empty()))
-            .unwrap_or("cargo tree failed");
-        return Err(format!("`cargo tree`: {why}"));
-    }
+    let output = run_tree(
+        &cargo,
+        root,
+        &tree_args(targets, features, exclude_dev, root_package_only),
+    )?;
     let dead = if targets.is_empty() {
         dead_edges(&cargo, root, exclude_dev)
     } else {
@@ -409,16 +398,72 @@ pub fn active_packages(
     } else {
         None
     };
-    let (saw_any, packages, enabled_features) = filter_depth_tree(
-        &String::from_utf8_lossy(&output.stdout),
-        excluded_members,
-        &dead,
-        root_name.as_deref(),
-    );
+    let (saw_any, mut packages, mut enabled_features) =
+        filter_depth_tree(&output, excluded_members, &dead, root_name.as_deref());
     if !saw_any {
         return Err("`cargo tree` listed no package".to_owned());
     }
+    // As cargo-deny (krates) does with excluded members: the kept members
+    // get the features the whole workspace unifies on them, but what only
+    // the excluded members ask of other crates is not applied. A second
+    // `cargo tree` starts from the kept members with exactly those features.
+    if !excluded_members.is_empty() && !root_package_only {
+        let kept: Vec<PackageKey> = output
+            .lines()
+            .filter_map(parse_depth_line)
+            .filter(|(depth, key, _)| *depth == 0 && !excluded_members.contains(&key.0))
+            .map(|(_, key, _)| key)
+            .collect();
+        if !kept.is_empty() {
+            let list = kept
+                .iter()
+                .flat_map(|key| {
+                    enabled_features
+                        .get(key)
+                        .into_iter()
+                        .flatten()
+                        .map(move |feature| format!("{}/{feature}", key.0))
+                })
+                .collect();
+            let member_features = Features {
+                list,
+                all: false,
+                no_default: true,
+            };
+            let mut args = tree_args(targets, Some(&member_features), exclude_dev, true);
+            for key in &kept {
+                args.extend(["--package".to_owned(), format!("{}@{}", key.0, key.1)]);
+            }
+            let rooted = run_tree(&cargo, root, &args)?;
+            let (saw, kept_packages, kept_features) = filter_depth_tree(&rooted, &[], &dead, None);
+            if saw {
+                packages = kept_packages;
+                enabled_features = kept_features;
+            }
+        }
+    }
     Ok((packages, enabled_features))
+}
+
+/// Runs `cargo` with `args` in `root` and returns its standard output.
+fn run_tree(cargo: &std::ffi::OsStr, root: &Path, args: &[String]) -> Result<String, String> {
+    let output = Command::new(cargo)
+        .current_dir(root)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("could not run cargo: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let why = stderr
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with("error:"))
+            .or_else(|| stderr.lines().map(str::trim).rfind(|line| !line.is_empty()))
+            .unwrap_or("cargo tree failed");
+        return Err(format!("`cargo tree`: {why}"));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 #[cfg(test)]

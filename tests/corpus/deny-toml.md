@@ -43,12 +43,12 @@ The license check now gathers licenses as cargo-deny does: license texts recogni
 
 | | Both | cargo-deny only | CargoScope only |
 |---|---|---|---|
-| Errors, all rules (28 repos) | 12 | 0 | 2 |
+| Errors, all rules (28 repos) | 12 | 0 | 0 |
 | License errors | 0 | 0 | 0 |
 | `unused-allowed-license` warnings (`license-not-encountered`) | 67 | 0 | 3 |
 
 - **License errors match exactly**, but none of these 28 projects has one: the parity is real, the evidence thin.
 - The 67 shared warnings check the new lint. The 3 extra ones (`ISC`, `CDLA-Permissive-2.0` in `actix-web`, `Unicode-3.0` in `clap`) come from a graph difference: cargo-deny takes features as `cargo metadata` unifies them, including features that only dev-dependencies enable (`rustls` in actix-web), while `cargo tree -e normal,build` leaves them out.
-- The 2 extra errors are duplicates in `wgpu` (`petgraph`, `fixedbitset`): the unpublished `wgpu-test` member enables `parking_lot/deadlock_detection`, which pulls in `petgraph` 0.6; CargoScope keeps that feature unification (added for `tower-http` in `bfd90ed`), cargo-deny does not. Not a license issue; still to be resolved.
+- `wgpu` had 2 extra duplicate errors (`petgraph`, `fixedbitset`): the unpublished `wgpu-test` member enables `parking_lot/deadlock_detection`, which pulls in `petgraph` 0.6. cargo-deny (krates) gives the kept members the features the whole workspace unifies on them, but does not apply what only excluded members ask of other crates. CargoScope now does the same with a second `cargo tree` rooted at the published members with exactly those features: `wgpu` matches, and `tower-http` keeps its `zstd-sys` license error (cargo-deny reports it too).
 - The re-run found two bugs, now fixed: a loop between path dependencies that point at each other made scans of `axum`, `bevy`, `diesel` and `tower` run for more than 10 minutes (1 s now), and with a root `[package]`, the other `default-members` were checked (`ring-cavp` in ring).
 
