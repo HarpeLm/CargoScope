@@ -168,7 +168,24 @@ pub fn translate(text: &str) -> Result<Translated, String> {
             }
         };
 
-    if let Some(graph) = table("graph") {
+    // Before [graph] existed, these keys sat at the top level; cargo-deny
+    // 0.20 still reads them there, over [graph].
+    let mut merged_graph = table("graph").cloned();
+    for key in [
+        "targets",
+        "exclude",
+        "features",
+        "all-features",
+        "no-default-features",
+        "exclude-dev",
+    ] {
+        if let Some(value) = value.get(key) {
+            merged_graph
+                .get_or_insert_with(toml::Table::new)
+                .insert(key.to_owned(), value.clone());
+        }
+    }
+    if let Some(graph) = merged_graph.as_ref() {
         for target in graph
             .get("targets")
             .and_then(toml::Value::as_array)
@@ -658,6 +675,25 @@ mod tests {
             .unwrap()
             .into();
         assert_eq!(crate_spec(&table), Some(("ring".to_owned(), None)));
+    }
+
+    #[test]
+    fn reads_the_graph_keys_of_older_configurations_at_the_top_level() {
+        let (policy, _, _) = translate(
+            "targets = [{ triple = \"x86_64-unknown-linux-gnu\" }, \"aarch64-apple-darwin\"]\nall-features = true\n[licenses]\nallow = [\"MIT\"]\n",
+        )
+        .expect("valid");
+        let policy = policy.expect("rules");
+        assert_eq!(
+            policy.targets,
+            vec!["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]
+        );
+        assert!(
+            policy
+                .features
+                .as_ref()
+                .is_some_and(|features| features.all)
+        );
     }
 
     #[test]
