@@ -91,10 +91,12 @@ Released on 2026-11-15: offline HTML report (`--format html`), SemVer compatible
 
 ## v0.7.0
 
-Prepared on 2026-11-16: version update pull requests like Dependabot's (`cargoscope fix --updates [--breaking]`, the Action's `updates`, `updates-grouped`, `labels`, `reviewers`, `commit-prefix` and `auto-merge` inputs, `[updates]` ignore rules, groups, limit and `include-dev` in `cargoscope.toml`, diff.rs and release-note links), maintenance indicators (archived repository, no release for 2 years, single owner), licenses checked as cargo-deny does (license-file detection with `confidence-threshold`, the project's own packages, `[licenses.private]`, `unused-allowed-license`, empty `allow`), `[bans.build]` inspection of build-time crates (executables, scripts, `bypass`), `.cargo/audit.toml` ignores, pre-release advisory ranges read as RustSec does, the unused-dependency detection split into facts, named rules and one decision, and the fixes of the third blind benchmark (80 never-seen repositories).
+Released on 2026-11-16: version update pull requests like Dependabot's (`cargoscope fix --updates [--breaking]`, the Action's `updates`, `updates-grouped`, `labels`, `reviewers`, `commit-prefix` and `auto-merge` inputs, `[updates]` ignore rules, groups, limit and `include-dev` in `cargoscope.toml`, diff.rs and release-note links), maintenance indicators (archived repository, no release for 2 years, single owner), licenses checked as cargo-deny does (license-file detection with `confidence-threshold`, the project's own packages, `[licenses.private]`, `unused-allowed-license`, empty `allow`), `[bans.build]` inspection of build-time crates (executables, scripts, `bypass`), `.cargo/audit.toml` ignores, pre-release advisory ranges read as RustSec does, the unused-dependency detection split into facts, named rules and one decision, and the fixes of the third blind benchmark (80 never-seen repositories).
 
 - ✅ `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`; `cargo clean` then `cargo package --workspace --exclude cargoscope-corpus`: the 5 crates verify; `dist plan`: 6 binaries, installers, Homebrew formula, npm package.
 - The binary grows from about 5 MB to 10 MB with the SPDX license store (the one cargo-deny embeds).
+- ✅ Tag `v0.7.0` pushed (2026-11-16) after CI passed on the 3 operating systems and the minimum Rust version. GitHub Release (20 assets), crates.io (5 crates), npm (`latest`; a local `npm view` showed the old version from its cache for a while), Homebrew and the installer report 0.7.0; the Action passes on the 3 operating systems with 0.7.0.
+- ✅ Set the version back to `0.8.0-dev`.
 
 ## One-time setup (maintainer)
 
