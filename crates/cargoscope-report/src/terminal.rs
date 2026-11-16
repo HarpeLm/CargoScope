@@ -72,7 +72,7 @@ fn active(report: &Report) -> impl Iterator<Item = &AdvisoryFinding> {
         .filter(|finding| finding.ignored.is_none())
 }
 
-/// `CargoScope 0.7.0  path · 106 packages · data from 2026-11-15`, then one
+/// `CargoScope 0.7.1  path · 106 packages · data from 2026-11-15`, then one
 /// colored counter per check that ran.
 pub(crate) fn header(out: &mut String, project_root: &Path, report: &Report, paint: Paint) {
     let date = report
