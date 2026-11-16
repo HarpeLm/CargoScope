@@ -190,11 +190,11 @@ jobs:
         run: |
           status=0
           test -n "$GROUPED" && test -n "$PER_PACKAGE" || status=1
-          gh pr view "$GROUPED" --json state --jq .state | grep -qx CLOSED || status=1
-          gh pr view "$PER_PACKAGE" --json title,headRefName --jq '.headRefName + " | " + .title' | tee /dev/stderr \
+          gh pr view "$GROUPED" --repo "$GITHUB_REPOSITORY" --json state --jq .state | grep -qx CLOSED || status=1
+          gh pr view "$PER_PACKAGE" --repo "$GITHUB_REPOSITORY" --json title,headRefName --jq '.headRefName + " | " + .title' | tee /dev/stderr \
             | grep -q '^cargoscope/updates-test-chrono | Bump chrono from 0.4.19 to 0.4.' || status=1
-          gh pr diff "$PER_PACKAGE" | grep -q '^+version = "0.4.' || status=1
-          for number in $(gh pr list --state open --json number,headRefName --jq '.[] | select(.headRefName | startswith("cargoscope/updates-test")) | .number'); do
-            gh pr close "$number" --delete-branch --comment "Test pull request of the Action test." > /dev/null
+          gh pr diff "$PER_PACKAGE" --repo "$GITHUB_REPOSITORY" | grep -q '^+version = "0.4.' || status=1
+          for number in $(gh pr list --repo "$GITHUB_REPOSITORY" --state open --json number,headRefName --jq '.[] | select(.headRefName | startswith("cargoscope/updates-test")) | .number'); do
+            gh pr close "$number" --repo "$GITHUB_REPOSITORY" --delete-branch --comment "Test pull request of the Action test." > /dev/null
           done
           exit "$status"
