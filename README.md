@@ -314,9 +314,34 @@ jobs:
           updates: compatible      # or breaking; open-pr: true adds security updates
           updates-grouped: false   # true: one pull request for every update
           ci-workflow: ci.yml      # optional: starts your CI on each pull request
+          labels: dependencies     # optional, created when missing
+          reviewers: my-org/rust   # optional users or teams
+          commit-prefix: "chore(deps): "
+          auto-merge: patch        # none, patch or minor: merge once the checks pass
 ```
 
-A later run updates each pull request in place, and closes the ones the base branch no longer needs (merged by hand, or already up to date). The two GitHub rules of the security pull requests apply. Compared with Dependabot: CargoScope needs this workflow file (Dependabot needs a `dependabot.yml` for version updates too), covers Cargo only, and writes in the pull request which updates Cargo refused and why.
+Which updates are proposed, and how they are grouped, is set in `cargoscope.toml`, with the keys of `dependabot.yml`:
+
+```toml
+[updates]
+open-pull-requests-limit = 5   # groups first, then one pull request per crate
+include-dev = true             # also update dev-dependencies (default)
+ignore = [
+  { name = "tokio", update-types = ["major"], reason = "migrating later" },
+  { name = "aws-*" },                          # every update of these crates
+  { name = "regex", versions = [">= 2"] },
+]
+groups = [
+  { name = "serde", patterns = ["serde*"] },  # "Bump the serde group with 3 updates"
+  { name = "patches", update-types = ["patch"], dependency-type = "production" },
+]
+```
+
+`auto-merge` uses GitHub's auto-merge, which waits for the checks a branch protection rule requires: **without required checks, GitHub merges at once**, before any CI runs. Require your CI checks on the default branch before turning it on.
+
+Update types count the SemVer component that changes, as Dependabot does (`0.8.1 -> 0.9.0` is a minor update). An ignored major version falls back to the compatible update. Each update in a pull request links its source diff ([diff.rs](https://diff.rs)) and, for GitHub repositories, its release notes.
+
+A later run updates each pull request in place, and closes the ones the base branch no longer needs (merged by hand, or already up to date). The two GitHub rules of the security pull requests apply. Compared with Dependabot: CargoScope needs this workflow file (Dependabot needs a `dependabot.yml` for version updates too), covers Cargo only, has no comment commands (`@dependabot rebase`, ignore this version) yet, and writes in the pull request which updates Cargo refused and why.
 
 ## Auditing a Compiled Binary
 
