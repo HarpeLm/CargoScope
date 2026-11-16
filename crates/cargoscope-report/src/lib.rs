@@ -4,6 +4,7 @@ pub mod compare;
 pub mod cyclonedx;
 pub mod html;
 pub mod sarif;
+mod terminal;
 
 use std::fmt::Write;
 use std::path::Path;
@@ -21,8 +22,14 @@ pub const JSON_FORMAT_VERSION: u32 = 1;
 pub struct TextOptions {
     /// Also list possibly-unused dependencies.
     pub show_uncertain: bool,
-    /// List every resolved package with its path, license and versions.
+    /// List every resolved package with its path, license and versions,
+    /// and every advisory in full instead of grouped by crate.
     pub verbose: bool,
+    /// Color the report with ANSI codes (a terminal without `NO_COLOR`).
+    pub color: bool,
+    /// End with the commands that act on the findings (`cargoscope fix`…),
+    /// which apply to a source project, not to a binary.
+    pub next_steps: bool,
 }
 
 pub(crate) fn scope(package: &Package) -> &'static str {
@@ -62,16 +69,24 @@ pub(crate) fn chain(inventory: &Inventory, index: usize) -> Option<String> {
 /// the full package list only with `verbose`; otherwise only counts are shown.
 pub fn render_text(project_root: &Path, report: &Report, options: TextOptions) -> String {
     let inventory = &report.inventory;
+    let paint = terminal::Paint::new(options.color);
+    let verbose = options.verbose;
     let mut out = String::new();
     // Writing to a String cannot fail.
-    let _ = writeln!(out, "CargoScope {VERSION}");
-    let _ = writeln!(out, "Target: {}", project_root.display());
-    let _ = writeln!(out, "Summary: {}", summary(report));
-
-    if report.checks.advisories {
-        render_advisories_text(&mut out, report);
+    if options.verbose {
+        let _ = writeln!(out, "CargoScope {VERSION}");
+        let _ = writeln!(out, "Target: {}", project_root.display());
+        let _ = writeln!(out, "Summary: {}", summary(report));
     } else {
-        out.push_str("\nAdvisories: not checked\n");
+        terminal::header(&mut out, project_root, report, paint);
+    }
+
+    if report.checks.advisories && options.verbose {
+        render_advisories_text(&mut out, report);
+    } else if report.checks.advisories {
+        terminal::advisories(&mut out, report, paint);
+    } else {
+        not_checked(&mut out, "Advisories", verbose);
     }
     if report.checks.unused {
         render_unused_text(
@@ -81,12 +96,12 @@ pub fn render_text(project_root: &Path, report: &Report, options: TextOptions) -
             report.unused_precise,
         );
     } else {
-        out.push_str("\nUnused dependencies: not checked\n");
+        not_checked(&mut out, "Unused dependencies", verbose);
     }
-    render_registry_text(&mut out, report);
+    render_registry_text(&mut out, report, options.verbose);
     render_duplicates_text(&mut out, report);
     render_weights_text(&mut out, report, options.verbose);
-    render_policy_text(&mut out, report);
+    render_policy_text(&mut out, report, options.verbose);
 
     if options.verbose {
         let _ = writeln!(out, "\nResolved packages: {}", inventory.packages.len());
@@ -102,8 +117,11 @@ pub fn render_text(project_root: &Path, report: &Report, options: TextOptions) -
     for warning in &report.warnings {
         let _ = writeln!(out, "\nwarning: {warning}");
     }
+    if options.next_steps {
+        terminal::next_steps(&mut out, report, verbose, paint);
+    }
 
-    out
+    terminal::style_sections(&out, paint)
 }
 
 /// One-line overview of the findings of the checks that ran.
@@ -195,9 +213,17 @@ pub fn summary(report: &Report) -> String {
     parts.join(", ")
 }
 
-fn render_policy_text(out: &mut String, report: &Report) {
+/// A check that did not run: said only in the full report, since the short
+/// one lists only what was found.
+fn not_checked(out: &mut String, name: &str, verbose: bool) {
+    if verbose {
+        let _ = writeln!(out, "\n{name}: not checked");
+    }
+}
+
+fn render_policy_text(out: &mut String, report: &Report, verbose: bool) {
     if !report.checks.policy {
-        out.push_str("\nPolicy: not checked\n");
+        not_checked(out, "Policy", verbose);
         return;
     }
     let Some(violations) = &report.policy else {
@@ -510,20 +536,20 @@ pub(crate) fn registry_packages(report: &Report) -> Vec<(usize, &cargoscope_core
         .collect()
 }
 
-fn render_registry_text(out: &mut String, report: &Report) {
+fn render_registry_text(out: &mut String, report: &Report, verbose: bool) {
     let date = report.registry_date.as_deref().unwrap_or("never");
     let registry_packages = registry_packages(report);
 
     if report.checks.licenses {
         render_licenses_text(out, &registry_packages, date);
     } else {
-        out.push_str("\nLicenses: not checked\n");
+        not_checked(out, "Licenses", verbose);
     }
     if report.checks.versions {
         render_versions_text(out, report, &registry_packages);
         render_maintenance_text(out, report);
     } else {
-        out.push_str("\nVersions: not checked\n");
+        not_checked(out, "Versions", verbose);
     }
 }
 
@@ -977,6 +1003,8 @@ mod tests {
     const VERBOSE: TextOptions = TextOptions {
         show_uncertain: false,
         verbose: true,
+        color: false,
+        next_steps: true,
     };
     use cargoscope_core::{
         AdvisoryFinding, AdvisoryKind, Checks, DependencyKind, Inventory, Package, PackageInfo,
@@ -1099,7 +1127,7 @@ mod tests {
             version: "2.0.0".to_owned(),
             ..package("beta", None, false, true, vec![])
         });
-        let text = render_text(Path::new("."), &report, TextOptions::default());
+        let text = render_text(Path::new("."), &report, VERBOSE);
         assert!(
             text.contains("1 crate in several versions, 5 packages"),
             "{text}"
@@ -1259,6 +1287,8 @@ mod tests {
             TextOptions {
                 show_uncertain: true,
                 verbose: true,
+                color: false,
+                next_steps: true,
             },
         );
         assert!(text.contains("- openssl-sys [possibly-unused] in [dependencies] of Cargo.toml\n"));

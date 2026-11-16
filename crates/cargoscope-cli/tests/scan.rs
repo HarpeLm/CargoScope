@@ -739,7 +739,17 @@ fn package_list_is_hidden_without_verbose() {
         .expect("cargoscope binary runs");
     let text = stdout(&output);
     assert!(text.starts_with("CargoScope "));
-    assert!(text.contains("Summary: 1 vulnerability (1 informational), 0 likely-unused, 1 yanked, 1 outdated direct, 1 direct to watch, 4 packages\n"));
+    assert!(
+        text.contains(" · 4 packages · data from 2026-01-01\n"),
+        "{text}"
+    );
+    assert!(text.contains("  ✖ 1 vulnerable crate   ⚠ 1 notice   ✔ no unused dependency"));
+    assert!(text.contains("\nVulnerabilities\n  ✖ serde_json 1.0.128  high: "));
+    assert!(text.contains("  fix: 1.0.200\n      via simple › serde_json\n"));
+    assert!(text.contains("\nNotices (not vulnerabilities)\n  unmaintained  itoa\n"));
+    assert!(text.contains("\nNext steps\n  › cargoscope fix --advisories"));
+    // Not a terminal: no ANSI codes.
+    assert!(!text.contains('\u{1b}'));
     assert!(text.contains("Resolved packages: 4 (use --verbose to list them)\n"));
     assert!(!text.contains("- simple 0.1.0 [root]"));
 }
@@ -1384,7 +1394,11 @@ fn audit_bin(file: &str, extra: &[&str]) -> Output {
 
 #[test]
 fn audit_bin_reads_cargo_auditable_data_and_falls_back_to_registry_paths() {
-    let exact = audit_bin("auditable.bin", &[]);
+    let short = stdout(&audit_bin("auditable.bin", &[]));
+    assert!(short.contains("  ✖ serde_json 1.0.128  high: "), "{short}");
+    assert!(!short.contains("cargoscope fix"), "{short}");
+    assert!(!short.contains("not checked"), "{short}");
+    let exact = audit_bin("auditable.bin", &["--verbose"]);
     assert_eq!(exact.status.code(), Some(1));
     let text = stdout(&exact);
     assert!(
@@ -1404,7 +1418,7 @@ fn audit_bin_reads_cargo_auditable_data_and_falls_back_to_registry_paths() {
             .expect("valid JSON");
     assert_eq!(json["advisories"][0]["id"], "CARGOSCOPE-TEST-0001");
 
-    let partial = audit_bin("paths.bin", &["--fail-on", "none"]);
+    let partial = audit_bin("paths.bin", &["--fail-on", "none", "--verbose"]);
     assert_eq!(partial.status.code(), Some(0));
     let text = stdout(&partial);
     assert!(
