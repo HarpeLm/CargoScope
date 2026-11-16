@@ -172,9 +172,12 @@ fn table_mut<'a>(
     document: &'a mut DocumentMut,
     path: &[String],
 ) -> Option<&'a mut dyn toml_edit::TableLike> {
+    // `Item::get_mut` would insert a missing key (an empty `workspace = {}`
+    // in a member manifest makes Cargo read it as a workspace root);
+    // `TableLike::get_mut` only looks.
     let mut item: &mut Item = document.as_item_mut();
     for step in path {
-        item = item.get_mut(step.as_str())?;
+        item = item.as_table_like_mut()?.get_mut(step.as_str())?;
     }
     item.as_table_like_mut()
 }
@@ -374,6 +377,15 @@ extra = ["dep:optional-thing"]
         let (same, changed) = super::set_requirement(manifest, "regex", "1.9.0").expect("valid");
         assert!(!changed);
         assert_eq!(same, manifest);
+    }
+
+    #[test]
+    fn set_requirement_adds_no_table_to_a_member_manifest() {
+        let member = "[package]\nname = \"member\"\nedition.workspace = true\n\n[dependencies]\nureq = \"2\"\n";
+        let (edited, changed) = super::set_requirement(member, "ureq", "3.5.2").expect("valid");
+        assert!(changed);
+        assert_eq!(edited, member.replace("\"2\"", "\"3.5.2\""));
+        assert!(!edited.contains("workspace = {}"), "{edited}");
     }
 
     #[test]
