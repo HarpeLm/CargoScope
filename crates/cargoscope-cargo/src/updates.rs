@@ -359,6 +359,21 @@ pub fn parse(table: &toml::Table) -> Result<UpdatesConfig, String> {
     Ok(config)
 }
 
+/// Reads `[updates]` from the text of a `cargoscope.toml`; the defaults
+/// without the table.
+///
+/// # Errors
+///
+/// Returns a message for invalid TOML or an invalid `[updates]` table.
+pub fn from_toml(text: &str) -> Result<UpdatesConfig, String> {
+    let value: toml::Table = toml::from_str(text).map_err(|error| error.to_string())?;
+    match value.get("updates") {
+        None => Ok(UpdatesConfig::default()),
+        Some(toml::Value::Table(table)) => parse(table),
+        Some(_) => Err("[updates] must be a table".to_owned()),
+    }
+}
+
 /// Reads `[updates]` from `project_root/cargoscope.toml`; the defaults when
 /// there is no such file or table.
 ///
@@ -378,15 +393,7 @@ pub fn load(project_root: &Path) -> Result<UpdatesConfig, String> {
     }
     let text =
         std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let value: toml::Table =
-        toml::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
-    match value.get("updates") {
-        None => Ok(UpdatesConfig::default()),
-        Some(toml::Value::Table(table)) => {
-            parse(table).map_err(|error| format!("{}: {error}", path.display()))
-        }
-        Some(_) => Err(format!("{}: [updates] must be a table", path.display())),
-    }
+    from_toml(&text).map_err(|error| format!("{}: {error}", path.display()))
 }
 
 #[cfg(test)]
