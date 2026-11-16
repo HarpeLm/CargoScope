@@ -13,6 +13,7 @@ use crate::{FailOn, parse_fail_on};
 struct AuditBinOptions {
     files: Vec<PathBuf>,
     json: bool,
+    verbose: bool,
     fail_on: FailOn,
 }
 
@@ -20,6 +21,7 @@ fn parse_options(arguments: impl Iterator<Item = String>) -> Result<AuditBinOpti
     let mut options = AuditBinOptions {
         files: Vec::new(),
         json: false,
+        verbose: false,
         fail_on: FailOn::AnyVulnerability,
     };
     let mut arguments = arguments.peekable();
@@ -49,6 +51,7 @@ fn parse_options(arguments: impl Iterator<Item = String>) -> Result<AuditBinOpti
                 };
             }
             "--fail-on" => options.fail_on = parse_fail_on(&value()?)?,
+            "--verbose" | "-v" if inline.is_none() => options.verbose = true,
             other if other.starts_with('-') => return Err(format!("Unknown option: {other}")),
             _ => options.files.push(PathBuf::from(argument)),
         }
@@ -133,7 +136,15 @@ fn audit(
     let rendered = if options.json {
         cargoscope_report::render_json(file, &report)
     } else {
-        cargoscope_report::render_text(file, &report, cargoscope_report::TextOptions::default())
+        cargoscope_report::render_text(
+            file,
+            &report,
+            cargoscope_report::TextOptions {
+                verbose: options.verbose,
+                color: crate::scan::ColorChoice::Auto.enabled(false),
+                ..cargoscope_report::TextOptions::default()
+            },
+        )
     };
     print!("{rendered}");
     Ok(report

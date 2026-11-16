@@ -27,10 +27,11 @@ const COMPARE_USAGE: &str = "  cargoscope compare BASELINE CURRENT [--format tex
       Compare two JSON reports (markdown: for a pull request comment). Exit code 1 when new advisories reach the threshold.";
 
 const AUDIT_BIN_USAGE: &str =
-    "  cargoscope audit-bin FILE... [--format text|json] [--fail-on THRESHOLD]
+    "  cargoscope audit-bin FILE... [--format text|json] [--fail-on THRESHOLD] [--verbose]
       Report the advisories of the crates compiled into Rust binaries. Exact
       with binaries built by `cargo auditable build`; otherwise the crates
-      named by panic message paths only (incomplete). The files are only read.";
+      named by panic message paths only (incomplete). The files are only read.
+      --verbose lists every advisory in full and every crate found.";
 
 const WHY_USAGE: &str = "  cargoscope why CRATE[@VERSION] [PATH] [--format text|json]
       Show every dependency chain from the project's root packages to CRATE,
@@ -56,7 +57,7 @@ const FIX_USAGE: &str = "  cargoscope fix [PATH] [--dry-run | --apply] [--only N
       newest major version first, raising the requirement in Cargo.toml.
       Needs the crates.io data of `cargoscope update`; compiles nothing.";
 
-const SCAN_USAGE: &str = "  cargoscope scan [PATH] [--format text|json|sarif|cyclonedx|html] [--output FILE] [--fail-on THRESHOLD] [--show-uncertain] [--verbose] [--precise]
+const SCAN_USAGE: &str = "  cargoscope scan [PATH] [--format text|json|sarif|cyclonedx|html] [--output FILE] [--fail-on THRESHOLD] [--show-uncertain] [--verbose] [--precise] [--color WHEN]
       Report on a Cargo project, read-only and offline.
 
 Options for scan:
@@ -74,7 +75,10 @@ Options for scan:
   --precise            Confirm unused dependencies with rustc (cargo check, all
                        targets and features). COMPILES THE PROJECT: build
                        scripts and proc macros run. Never enabled by default.
-  -v, --verbose        List every resolved package (text format).
+  -v, --verbose        Full text report: every advisory in detail and every
+                       resolved package.
+  --color WHEN         auto, always or never (default: auto: colors only on a
+                       terminal, without NO_COLOR, and not with --output).
   --baseline FILE      A previous JSON report: advisories already in it do not
                        fail the scan, so only new ones do.
   --checks LIST        Comma-separated checks to run (default: all):

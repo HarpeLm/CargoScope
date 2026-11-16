@@ -33,6 +33,42 @@ pub struct ScanOptions {
     pub checks: Checks,
     pub baseline: Option<PathBuf>,
     pub precise: bool,
+    pub color: ColorChoice,
+}
+
+/// When the text report uses colors (`--color`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorChoice {
+    Auto,
+    Always,
+    Never,
+}
+
+impl ColorChoice {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            "always" => Ok(Self::Always),
+            "never" => Ok(Self::Never),
+            other => Err(format!(
+                "Unknown color choice: {other}. Use auto, always or never."
+            )),
+        }
+    }
+
+    /// Colors for `auto` only on a terminal, without `NO_COLOR`, and not into a file.
+    pub(crate) fn enabled(self, writes_to_file: bool) -> bool {
+        use std::io::IsTerminal;
+        match self {
+            Self::Always => true,
+            Self::Never => false,
+            Self::Auto => {
+                !writes_to_file
+                    && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty())
+                    && std::io::stdout().is_terminal()
+            }
+        }
+    }
 }
 
 pub fn parse_scan_options(
@@ -48,6 +84,7 @@ pub fn parse_scan_options(
         checks: Checks::ALL,
         baseline: None,
         precise: false,
+        color: ColorChoice::Auto,
     };
     let mut path_given = false;
 
@@ -76,6 +113,7 @@ pub fn parse_scan_options(
                     )
                 })?;
             }
+            "--color" => options.color = ColorChoice::parse(&value()?)?,
             "--fail-on" => options.fail_on = parse_fail_on(&value()?)?,
             "--show-uncertain" if inline_value.is_none() => options.show_uncertain = true,
             "--verbose" | "-v" if inline_value.is_none() => options.verbose = true,
@@ -469,6 +507,8 @@ fn write_report(options: &ScanOptions, report: &Report) -> Result<(), ExitCode> 
             cargoscope_report::TextOptions {
                 show_uncertain: options.show_uncertain,
                 verbose: options.verbose,
+                color: options.color.enabled(options.output.is_some()),
+                next_steps: true,
             },
         ),
         OutputFormat::Json => cargoscope_report::render_json(root, report),
