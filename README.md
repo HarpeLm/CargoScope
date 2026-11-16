@@ -274,6 +274,50 @@ It runs `cargoscope fix --advisories --apply`; when `Cargo.lock` or a `Cargo.tom
 - With the default token, the repository must allow GitHub Actions to create pull requests (Settings, Actions, General, Workflow permissions). A personal access token or a GitHub App token passed as `token` does not need it.
 - A pull request opened with the default token starts no workflow. `ci-workflow` works around it: a `workflow_dispatch` started by the default token does run, and its checks show on the pull request commit (your CI needs a `workflow_dispatch` trigger). A personal access token or a GitHub App token starts the usual pull request workflows.
 
+## Updating Dependencies (like Dependabot)
+
+```sh
+cargoscope update .                              # once: the newest versions on crates.io
+cargoscope fix --updates .                       # dry run: newest compatible version of each direct dependency
+cargoscope fix --updates --breaking . --apply    # also newer major versions, raising the requirement in Cargo.toml
+```
+
+```
+cvss 2.2.0 -> 3.0.0 (breaking) (in crates/cargoscope-advisory/Cargo.toml)
+toml_edit 0.22.27 -> 0.25.19: cannot update: another dependency still requires toml_edit 0.22.27
+ureq 2.12.1 -> 3.5.2 (breaking) (in crates/cargoscope-advisory/Cargo.toml)
+```
+
+Each direct dependency from crates.io moves to its newest SemVer-compatible version in `Cargo.lock` (`cargo update --precise`, so Cargo checks every requirement). With `--breaking`, the newest major version is tried first: its requirement is raised in every manifest that declares the crate, and kept only if Cargo accepts it; otherwise the compatible update is made and the refusal is shown. Nothing is compiled: a breaking update may need code changes, which the pull request's CI shows.
+
+The Action opens the pull requests on a schedule, one per dependency as Dependabot does, titled `Bump serde from 1.0.200 to 1.0.210`:
+
+```yaml
+on:
+  schedule:
+    - cron: "0 6 * * 1"   # every Monday
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  dependency-updates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: HarpeLm/CargoScope@v0.7.0
+        with:
+          fail-on: none
+          upload-sarif: false
+          updates: compatible      # or breaking; open-pr: true adds security updates
+          updates-grouped: false   # true: one pull request for every update
+          ci-workflow: ci.yml      # optional: starts your CI on each pull request
+```
+
+A later run updates each pull request in place, and closes the ones the base branch no longer needs (merged by hand, or already up to date). The two GitHub rules of the security pull requests apply. Compared with Dependabot: CargoScope needs this workflow file (Dependabot needs a `dependabot.yml` for version updates too), covers Cargo only, and writes in the pull request which updates Cargo refused and why.
+
 ## Auditing a Compiled Binary
 
 ```sh
