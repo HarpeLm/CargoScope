@@ -103,6 +103,8 @@ Released on 2026-11-16: version update pull requests like Dependabot's (`cargosc
 Released on 2026-11-16: a shorter, colored text report (vulnerable crates grouped with the version that fixes all their advisories, notices grouped by kind, long lists cut, next steps; the full report with `--verbose`), `--color auto|always|never` and `NO_COLOR`, `audit-bin --verbose`, and the Action's new Marketplace name. The text report is not a stable format (the JSON report is), so this fits a patch release.
 
 - The GitHub Action is renamed **CargoScope-Bot** on the Marketplace (`name:` in `action.yml`; it was Dep Scout). Its page moves to `marketplace/actions/cargoscope-bot`; workflows keep working, since `uses:` names the repository. Tick "Publish this Action to the GitHub Marketplace" on the release.
+- ✅ `cargo fmt`, `clippy -D warnings`, `cargo test --workspace`; `cargo clean` then `cargo package --workspace --exclude cargoscope-corpus`: the 5 crates verify; `dist plan` unchanged. Tag `v0.7.1` pushed (2026-11-16) after CI passed on `main`. GitHub Release (20 assets), crates.io (5 crates), Homebrew and the installer report 0.7.1; npm accepted 0.7.1 ("being processed"); the Action passes on the 3 operating systems with 0.7.1.
+- ✅ Set the version back to `0.8.0-dev`.
 
 ## One-time setup (maintainer)
 
