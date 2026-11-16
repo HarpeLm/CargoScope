@@ -204,11 +204,12 @@ pub(crate) struct Refreshed {
     pub(crate) failures: Vec<String>,
 }
 
-/// Fetches maintenance data for `crates` (name, newest version), skipping
+/// Fetches maintenance data for `crates` (name, newest version, resolved
+/// version), skipping
 /// crates whose cached data is complete and recent.
 pub(crate) fn refresh(
     root: &Path,
-    crates: &[(&str, String)],
+    crates: &[(&str, String, String)],
     api_agent: &ureq::Agent,
     clock: &mut ApiClock,
     local_sources: &[PathBuf],
@@ -226,7 +227,7 @@ pub(crate) fn refresh(
     let mut github_blocked = false;
     let mut refreshed = Refreshed::default();
 
-    for (name, newest) in crates {
+    for (name, newest, resolved) in crates {
         let name = *name;
         let previous = read(root, name).unwrap_or_default();
         if previous.checked > 0 && now.saturating_sub(previous.checked) < MAX_AGE.as_secs() {
@@ -252,8 +253,16 @@ pub(crate) fn refresh(
             }
         }
 
+        // The repository of the newest release, when its sources are on disk;
+        // else that of the resolved version (almost always on disk after a
+        // build), confirmed through the API only if it turns out archived,
+        // since crates that moved keep their old URL in older versions.
+        let mut confirmed = true;
         if let Some(repository) = local_repository(local_sources, name, newest) {
             data.repository = Some(repository);
+        } else if let Some(repository) = local_repository(local_sources, name, resolved) {
+            data.repository = Some(repository);
+            confirmed = false;
         } else {
             clock.wait();
             match fetch_text(
@@ -271,35 +280,56 @@ pub(crate) fn refresh(
             }
         }
 
-        data.archived = None;
-        if let Some((owner, repo)) = data.repository.as_deref().and_then(github_repo) {
+        let mut ask_github = |repository: Option<&str>,
+                              data: &mut Maintenance|
+         -> Result<(), crate::AdvisoryError> {
+            data.archived = None;
+            let Some((owner, repo)) = repository.and_then(github_repo) else {
+                return Ok(());
+            };
             if github_blocked {
                 data.checked = 0;
-            } else {
-                if github.is_none() {
-                    github = Some(
-                        crate::proxy::agent(
-                            GITHUB_API,
-                            Some(Duration::from_secs(30)),
-                            Some(crate::crates_io::USER_AGENT),
-                        )
-                        .map_err(crate::AdvisoryError::Download)?,
-                    );
-                }
-                let agent = github.as_ref().expect("GitHub agent was just created");
-                match github_archived(agent, token.as_deref(), &owner, &repo) {
-                    GithubAnswer::Archived(archived) => data.archived = Some(archived),
-                    GithubAnswer::NotFound => {}
-                    GithubAnswer::Failed(error) => {
-                        if error.contains("rate limit") {
-                            github_blocked = true;
-                        }
-                        refreshed
-                            .failures
-                            .push(format!("{name} archived status: {error}"));
-                        data.checked = 0;
+                return Ok(());
+            }
+            if github.is_none() {
+                github = Some(
+                    crate::proxy::agent(
+                        GITHUB_API,
+                        Some(Duration::from_secs(30)),
+                        Some(crate::crates_io::USER_AGENT),
+                    )
+                    .map_err(crate::AdvisoryError::Download)?,
+                );
+            }
+            let agent = github.as_ref().expect("GitHub agent was just created");
+            match github_archived(agent, token.as_deref(), &owner, &repo) {
+                GithubAnswer::Archived(archived) => data.archived = Some(archived),
+                GithubAnswer::NotFound => {}
+                GithubAnswer::Failed(error) => {
+                    if error.contains("rate limit") {
+                        github_blocked = true;
                     }
+                    refreshed
+                        .failures
+                        .push(format!("{name} archived status: {error}"));
+                    data.checked = 0;
                 }
+            }
+            Ok(())
+        };
+        let repository = data.repository.clone();
+        ask_github(repository.as_deref(), &mut data)?;
+        if data.archived == Some(true) && !confirmed {
+            clock.wait();
+            if let Ok(text) = fetch_text(
+                api_agent,
+                &format!("{}/{name}", crate::crates_io::API_URL),
+                MAX_API_BYTES,
+            ) && let Some(current) = parse_repository(&text)
+                && Some(&current) != data.repository.as_ref()
+            {
+                data.repository = Some(current.clone());
+                ask_github(Some(&current), &mut data)?;
             }
         }
 

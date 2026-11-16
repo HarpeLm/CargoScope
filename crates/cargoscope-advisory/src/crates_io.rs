@@ -280,7 +280,7 @@ pub fn refresh(
     // The repository is read from the newest release: a crate that moved
     // (to an organisation, say) still names its old, often archived,
     // repository in older versions.
-    let mut direct: Vec<(&str, String)> = inventory
+    let mut direct: Vec<(&str, String, String)> = inventory
         .packages
         .iter()
         .filter(|package| {
@@ -295,7 +295,7 @@ pub fn refresh(
                 .ok()
                 .and_then(|text| latest(&read_versions(&text)).map(|v| v.version.clone()))
                 .unwrap_or_else(|| package.version.clone());
-            (package.name.as_str(), newest)
+            (package.name.as_str(), newest, package.version.clone())
         })
         .collect();
     direct.sort_unstable();

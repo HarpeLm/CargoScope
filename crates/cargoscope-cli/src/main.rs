@@ -271,6 +271,20 @@ fn update(project_root: &Path) -> ExitCode {
         "Refreshing crates.io data for {} (licenses not found locally are fetched at most once per second)...",
         project_root.display()
     );
+    let direct = inventory
+        .packages
+        .iter()
+        .filter(|package| {
+            package.direct && !package.root && crates_io::is_crates_io(package.source.as_deref())
+        })
+        .map(|package| package.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    if direct > 30 {
+        println!(
+            "Maintenance data of {direct} direct dependencies: up to {direct} s the first time (crates.io asks for one request per second), then kept for a week."
+        );
+    }
     match crates_io::refresh(&cache, &inventory, cargo_home.as_deref()) {
         Ok(summary) => {
             println!(
