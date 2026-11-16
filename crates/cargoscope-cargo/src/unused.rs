@@ -236,6 +236,7 @@ fn collect_sources(package_dir: &Path, manifest: &toml::Value) -> Sources {
         let before = sources.code.len();
         walk(
             &package_dir.join(dir),
+            &bound,
             0,
             &mut sources.code,
             &mut sources.skipped,
@@ -278,7 +279,7 @@ fn collect_sources(package_dir: &Path, manifest: &toml::Value) -> Sources {
         // `include!("...")`.
         follow_modules(&path, &bound, 0, &mut sources.build, &mut sources.skipped);
         if let Some(dir) = path.parent().filter(|dir| *dir != package_dir) {
-            walk(dir, 0, &mut sources.build, &mut sources.skipped);
+            walk(dir, &bound, 0, &mut sources.build, &mut sources.skipped);
         }
     }
 
@@ -294,8 +295,27 @@ fn is_regular_file(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file())
 }
 
-fn add_file(path: &Path, files: &mut Vec<PathBuf>, skipped: &mut usize) {
-    let Ok(metadata) = fs::symlink_metadata(path) else {
+/// The metadata of `path` as Cargo reads it: a symbolic link is followed
+/// when it resolves to a file inside `bound` (the workspace), as with
+/// `src/bin/cli.rs -> ../../shared/cli.rs`; links that leave the workspace
+/// are never followed.
+fn source_metadata(path: &Path, bound: &Path) -> Option<fs::Metadata> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !metadata.file_type().is_symlink() {
+        return Some(metadata);
+    }
+    if !is_within(bound, path) {
+        return None;
+    }
+    fs::metadata(path).ok().filter(fs::Metadata::is_file)
+}
+
+fn is_source_file(path: &Path, bound: &Path) -> bool {
+    source_metadata(path, bound).is_some_and(|metadata| metadata.is_file())
+}
+
+fn add_file(path: &Path, bound: &Path, files: &mut Vec<PathBuf>, skipped: &mut usize) {
+    let Some(metadata) = source_metadata(path, bound) else {
         return;
     };
     if !metadata.is_file() || path.extension().is_none_or(|ext| ext != "rs") {
@@ -323,7 +343,7 @@ fn follow_modules(
         return;
     }
     let before = files.len();
-    add_file(file, files, skipped);
+    add_file(file, bound, files, skipped);
     if files.len() == before {
         return;
     }
@@ -358,7 +378,10 @@ fn follow_modules(
                 module_dir.join(&name).join("mod.rs"),
             ],
         };
-        if let Some(found) = candidates.into_iter().find(|path| is_regular_file(path)) {
+        if let Some(found) = candidates
+            .into_iter()
+            .find(|path| is_source_file(path, bound))
+        {
             follow_modules(&found, bound, depth + 1, files, skipped);
         }
     }
@@ -470,7 +493,7 @@ fn collect_modules(
     }
 }
 
-fn walk(dir: &Path, depth: usize, files: &mut Vec<PathBuf>, skipped: &mut usize) {
+fn walk(dir: &Path, bound: &Path, depth: usize, files: &mut Vec<PathBuf>, skipped: &mut usize) {
     if depth > MAX_DEPTH {
         *skipped += 1;
         return;
@@ -488,9 +511,9 @@ fn walk(dir: &Path, depth: usize, files: &mut Vec<PathBuf>, skipped: &mut usize)
             continue;
         };
         if metadata.is_dir() {
-            walk(&path, depth + 1, files, skipped);
+            walk(&path, bound, depth + 1, files, skipped);
         } else {
-            add_file(&path, files, skipped);
+            add_file(&path, bound, files, skipped);
         }
     }
 }
@@ -511,7 +534,7 @@ struct References {
 
 impl References {
     fn in_docs(&self, ident: &str) -> bool {
-        self.doc_text.iter().any(|text| text_mentions(text, ident))
+        self.doc_text.iter().any(|text| doc_mentions(text, ident))
     }
 
     fn contains(&self, ident: &str) -> bool {
@@ -579,7 +602,14 @@ fn continues_path(tokens: &[TokenTree], index: usize) -> bool {
                 | "while"
                 | "yield"
         ),
-        Some(TokenTree::Punct(p)) => p.as_char() == '>',
+        // `<T as X>::b` continues a path; `=> ::b` and `-> ::b` (a match arm,
+        // a return type) start one.
+        Some(TokenTree::Punct(p)) => {
+            p.as_char() == '>'
+                && !index.checked_sub(4).and_then(|position| tokens.get(position)).is_some_and(
+                    |token| matches!(token, TokenTree::Punct(q) if q.as_char() == '=' || q.as_char() == '-'),
+                )
+        }
         Some(TokenTree::Group(_)) | Some(TokenTree::Literal(_)) | None => false,
     }
 }
@@ -810,6 +840,40 @@ fn text_mentions(text: &str, ident: &str) -> bool {
                 || after.starts_with(';')
                 || after.starts_with(' ')
                 || after.starts_with('`'))
+    })
+}
+
+/// Whether documentation text refers to the crate `ident` the way code or a
+/// doc link does: a path (`ident::Item`), `use ident` or `extern crate
+/// ident`, or the bare name as code or a link (`` `ident` ``, `[ident]`).
+/// Prose (`which` in a sentence) and file names (`Cargo.toml`) do not count.
+fn doc_mentions(text: &str, ident: &str) -> bool {
+    text.match_indices(ident).any(|(position, _)| {
+        let before = text[..position].chars().next_back();
+        let after = &text[position + ident.len()..];
+        let word_start =
+            before.is_none_or(|c| !(c.is_alphanumeric() || matches!(c, '_' | '.' | '/' | '-')));
+        let word_end = after
+            .chars()
+            .next()
+            .is_none_or(|c| !(c.is_alphanumeric() || matches!(c, '_' | '.' | '-')));
+        if !word_start {
+            return false;
+        }
+        if after.starts_with("::") {
+            return true;
+        }
+        if !word_end {
+            return false;
+        }
+        let head = text[..position].trim_end();
+        let code_or_link =
+            matches!(before, Some('`' | '[')) && matches!(after.chars().next(), Some('`' | ']'));
+        code_or_link
+            || head.ends_with(" use")
+            || head == "use"
+            || head.ends_with("\nuse")
+            || head.ends_with("extern crate")
     })
 }
 
@@ -1509,9 +1573,13 @@ mod tests {
             fn h() { $crate::log::info!(); serde_json::json!({}); }
             impl ::serde::Serialize for X {}
             fn k() -> impl ::futures::Future { todo!() }
+            fn m(s: S) { match s { S::Url(u) => ::http_helpers::fetch(u), _ => {} } }
+            fn n() -> ::retval::T { todo!() }
             "#,
         );
         for expected in [
+            "http_helpers",
+            "retval",
             "std",
             "deno_runtime",
             "phf",
@@ -1639,6 +1707,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn follows_symbolic_links_inside_the_workspace_only() {
+        let root = std::env::temp_dir().join(format!("cargoscope-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("app/src/bin")).expect("dirs");
+        std::fs::create_dir_all(root.join("shared")).expect("dirs");
+        std::fs::write(root.join("shared/cli.rs"), "use clap::Parser;\n").expect("write");
+        let outside =
+            std::env::temp_dir().join(format!("cargoscope-outside-{}.rs", std::process::id()));
+        std::fs::write(&outside, "use secret::X;\n").expect("write");
+        std::os::unix::fs::symlink("../../../shared/cli.rs", root.join("app/src/bin/cli.rs"))
+            .expect("link");
+        std::os::unix::fs::symlink(&outside, root.join("app/src/bin/escape.rs")).expect("link");
+        let bound = root.canonicalize().expect("root");
+        let mut files = Vec::new();
+        let mut skipped = 0;
+        super::walk(&root.join("app/src"), &bound, 0, &mut files, &mut skipped);
+        let names: Vec<String> = files
+            .iter()
+            .map(|file| {
+                file.file_name()
+                    .expect("name")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec!["cli.rs"],
+            "the link leaving the workspace is not followed"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(&outside);
+    }
+
     #[test]
     fn guesses_library_names_from_package_names() {
         assert_eq!(
@@ -1654,6 +1758,18 @@ mod tests {
         assert_eq!(super::library_name_guesses("tokio-test"), vec!["tokio"]);
         assert_eq!(super::library_name_guesses("strum-macros"), vec!["strum"]);
         assert!(super::library_name_guesses("serde").is_empty());
+    }
+
+    #[test]
+    fn documentation_mentions_need_code_or_a_link() {
+        use super::doc_mentions;
+        assert!(doc_mentions("see [`toml::Value`] for details", "toml"));
+        assert!(doc_mentions("parsed with `toml`.", "toml"));
+        assert!(doc_mentions("parsed with [toml].", "toml"));
+        assert!(doc_mentions("```\nuse which;\n```", "which"));
+        assert!(!doc_mentions("Watch `Cargo.toml` and `Cargo.lock`", "toml"));
+        assert!(!doc_mentions("which is the default", "which"));
+        assert!(!doc_mentions("see src/http/mod.rs", "http"));
     }
 
     #[test]

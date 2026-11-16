@@ -240,6 +240,7 @@ labels = [
   { manifest = "axum/Cargo.toml", section = "dev-dependencies", dependency = "axum-extra", truth = "unused", note = "no reference" },
   { manifest = "axum/Cargo.toml", section = "dev-dependencies", dependency = "anyhow", truth = "used", note = "doctest in docs/error_handling.md" },
   { manifest = "axum-core/Cargo.toml", section = "dev-dependencies", dependency = "hyper", truth = "unused", note = "never referenced; the package has no test files (checked in the git checkout, 2026-11-15)" },
+  { manifest = "axum-extra/Cargo.toml", section = "dev-dependencies", dependency = "hyper", truth = "unused", note = "only prose in a doc comment ('If you use axum with hyper'); never in code (2026-11-16)" },
 ]
 
 [[repository]]
@@ -512,6 +513,8 @@ labels = [
   { manifest = "crates/nu-explore/Cargo.toml", section = "dependencies", dependency = "nu-json", truth = "unused", note = "never referenced in the package's code, library name checked (2026-11-15)" },
   { manifest = "crates/nu-test-support-macros/Cargo.toml", section = "dependencies", dependency = "proc-macro-error3", truth = "unused", note = "never referenced in the package's code, library name checked (2026-11-15)" },
   { manifest = "crates/nu-test-support-macros/Cargo.toml", section = "dependencies", dependency = "nu-experimental", truth = "unused", note = "no occurrence in the package" },
+  { manifest = "Cargo.toml", section = "dependencies", dependency = "time", truth = "unused", note = "only `std::time` paths and prose; the time crate is never in code (2026-11-16)" },
+  { manifest = "crates/nu-test-support/Cargo.toml", section = "dependencies", dependency = "which", truth = "unused", note = "only the English word in doc comments; never in code (2026-11-16)" },
 ]
 
 [[repository]]
@@ -551,6 +554,9 @@ labels = [
   { manifest = "crates/polars-python/Cargo.toml", section = "dependencies", dependency = "itoa", truth = "unused", note = "never referenced; only a non-exported macro of a workspace crate names it, which no other crate can call (2026-11-15)" },
   { manifest = "crates/polars-row/Cargo.toml", section = "dependencies", dependency = "polars-error", truth = "unused", note = "never referenced; only a non-exported macro of a workspace crate names it, which no other crate can call (2026-11-15)" },
   { manifest = "crates/polars-time/Cargo.toml", section = "dependencies", dependency = "polars-error", truth = "unused", note = "never referenced; only a non-exported macro of a workspace crate names it, which no other crate can call (2026-11-15)" },
+  { manifest = "crates/polars-python/Cargo.toml", section = "dependencies", dependency = "bincode", truth = "unused", note = "only prose in doc comments ('bincode-encode'); never in code (2026-11-16)" },
+  { manifest = "crates/polars-utils/Cargo.toml", section = "dependencies", dependency = "bytes", truth = "unused", note = "only `regex::bytes`, variables and prose; the bytes crate is never in code (2026-11-16)" },
+  { manifest = "crates/polars-utils/Cargo.toml", section = "dependencies", dependency = "either", truth = "unused", note = "only the English word in comments; never in code (2026-11-16)" },
 ]
 
 [[repository]]
@@ -698,6 +704,7 @@ labels = [
   { manifest = "widget/Cargo.toml", section = "dependencies", dependency = "unicode-segmentation", truth = "unused", note = "no occurrence in the package" },
   { manifest = "winit/Cargo.toml", section = "dependencies", dependency = "tracing", truth = "unused", note = "no occurrence in the package" },
   { manifest = "examples/pokedex/Cargo.toml", section = "dependencies", dependency = "serde_json", truth = "unused", note = "no occurrence in the package" },
+  { manifest = "runtime/Cargo.toml", section = "dependencies", dependency = "bytes", truth = "unused", note = "only a field and variables named bytes; the bytes crate is never in code (2026-11-16)" },
 ]
 
 [[repository]]
