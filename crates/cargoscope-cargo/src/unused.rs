@@ -35,12 +35,28 @@ pub struct DeclaredDependency {
     pub optional: bool,
     /// Declared under `[target.'...'.*dependencies]`.
     pub target_specific: bool,
-    /// Declared with `features` or `default-features`.
+    /// Declared with features that can change the crate for its other
+    /// users (anything but `derive`, which only adds macros); turning
+    /// default features off never does, since features only add up.
     pub sets_features: bool,
     /// `path = "..."` of a local dependency, and whether it is relative to
     /// the workspace root (inherited with `workspace = true`) rather than to
     /// the package.
     pub path: Option<(String, bool)>,
+}
+
+/// Whether a declaration enables features that may matter to the other
+/// crates using the dependency (feature unification): its own `features`
+/// and those of the `[workspace.dependencies]` entry it inherits, except
+/// `derive`, which only re-exports derive macros.
+fn selects_features(specification: &toml::Value, from_workspace: Option<&toml::Value>) -> bool {
+    [Some(specification), from_workspace]
+        .into_iter()
+        .flatten()
+        .filter_map(|spec| spec.get("features").and_then(toml::Value::as_array))
+        .flatten()
+        .filter_map(toml::Value::as_str)
+        .any(|feature| feature != "derive")
 }
 
 /// Reads every declared dependency of a manifest.
@@ -95,11 +111,7 @@ pub fn declared_dependencies(
                             .and_then(toml::Value::as_bool)
                             .unwrap_or(false),
                         target_specific,
-                        sets_features: lookup("features")
-                            .and_then(toml::Value::as_array)
-                            .is_some_and(|features| !features.is_empty())
-                            || lookup("default-features").is_some()
-                            || lookup("default_features").is_some(),
+                        sets_features: selects_features(specification, from_workspace),
                         path: specification
                             .get("path")
                             .and_then(toml::Value::as_str)
@@ -1267,6 +1279,91 @@ fn reachable_dependencies_of<'a>(
     collect_dependencies_of(inventory, package_name, false)
 }
 
+/// Names of the packages a build script can generate code for: its
+/// build-dependencies and everything they pull in (`prost-build` brings
+/// `prost`, `tonic-build` brings `prost-build`...).
+fn build_dependency_tree<'a>(
+    inventory: &'a Inventory,
+    package_name: &str,
+    build_dependencies: &[&str],
+) -> BTreeSet<&'a str> {
+    let mut names = BTreeSet::new();
+    let Some(package) = inventory
+        .packages
+        .iter()
+        .find(|package| package.root && package.name == package_name)
+    else {
+        return names;
+    };
+    let mut stack: Vec<usize> = package
+        .dependencies
+        .iter()
+        .copied()
+        .filter(|&index| build_dependencies.contains(&inventory.packages[index].name.as_str()))
+        .collect();
+    // A lockfile edge Cargo leaves ambiguous (two `x 1.0.0`, one local, one
+    // from a registry) may be missing: look such names up directly.
+    for name in build_dependencies {
+        if !stack
+            .iter()
+            .any(|&index| inventory.packages[index].name == *name)
+        {
+            stack.extend(
+                inventory
+                    .packages
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, candidate)| candidate.name == *name)
+                    .map(|(index, _)| index),
+            );
+        }
+    }
+    let mut seen: BTreeSet<usize> = stack.iter().copied().collect();
+    while let Some(index) = stack.pop() {
+        names.insert(inventory.packages[index].name.as_str());
+        for &next in &inventory.packages[index].dependencies {
+            if seen.insert(next) {
+                stack.push(next);
+            }
+        }
+    }
+    names
+}
+
+/// Whether the build script reads other files (Markdown, templates, test
+/// directories...): the code it generates from them may then use any crate.
+fn build_script_reads_files(build_files: &[PathBuf]) -> bool {
+    const READS: [&str; 8] = [
+        "read_to_string",
+        "File::open",
+        "fs::read",
+        "read_dir",
+        "WalkDir",
+        "walkdir::",
+        "glob(",
+        "glob::",
+    ];
+    build_files.iter().any(|file| {
+        fs::read_to_string(file).is_ok_and(|text| READS.iter().any(|call| text.contains(call)))
+    })
+}
+
+/// Whether the build script's sources name `ident` as a path (`ident::`),
+/// in code or in the text of the code it writes (`"uuid::Uuid::new_v4()"`).
+fn build_sources_name(build_files: &[PathBuf], ident: &str) -> bool {
+    let needle = format!("{ident}::");
+    build_files.iter().any(|file| {
+        fs::read_to_string(file).is_ok_and(|text| {
+            text.match_indices(&needle).any(|(position, _)| {
+                text[..position]
+                    .chars()
+                    .next_back()
+                    .is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+            })
+        })
+    })
+}
+
 pub fn check_package(
     package: &PackageToCheck<'_>,
     workspace_dependencies: Option<&toml::Value>,
@@ -1285,6 +1382,30 @@ pub fn check_package(
     }
 
     let transitive_names = transitive_dependencies_of(inventory, package.name);
+    let build_dependency_names: Vec<String> =
+        declared_dependencies(package.manifest, workspace_dependencies)
+            .into_iter()
+            .filter(|declared| declared.kind == DependencyKind::Build)
+            .map(|declared| declared.package)
+            .collect();
+    let build_dependency_names: Vec<&str> =
+        build_dependency_names.iter().map(String::as_str).collect();
+    let mut build_tree: BTreeSet<String> =
+        build_dependency_tree(inventory, package.name, &build_dependency_names)
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+    let build_reads_files = sources.has_build_script && build_script_reads_files(&sources.build);
+    // A code generator named `X-build` or `X-codegen` writes code for the
+    // crate `X`, which it need not depend on (`tonic-prost-build` writes
+    // `tonic_prost::...`).
+    for generator in &build_dependency_names {
+        for suffix in ["-build", "_build", "-codegen", "_codegen"] {
+            if let Some(runtime) = generator.strip_suffix(suffix) {
+                build_tree.insert(runtime.to_owned());
+            }
+        }
+    }
     let reachable_idents: BTreeSet<String> = reachable_dependencies_of(inventory, package.name)
         .iter()
         .map(|name| name.replace('-', "_"))
@@ -1423,9 +1544,14 @@ pub fn check_package(
         if ident == "strum" && code_refs.contains("strum_macros") {
             exceptions.push("`strum_macros` derives expand to traits in `strum`".to_owned());
         }
+        // Generated code can only use a crate the build script names, or
+        // one a code generator among its build-dependencies brings along.
         if sources.has_build_script
             && dependency.kind != DependencyKind::Build
             && code_refs.includes_generated_code
+            && (build_reads_files
+                || build_tree.contains(&dependency.package)
+                || build_sources_name(&sources.build, &ident))
         {
             exceptions.push(
                 "the sources include code generated by the build script, which may use it"
@@ -1705,6 +1831,63 @@ mod tests {
         names.sort();
         assert_eq!(names, vec!["build.rs", "src/cli.rs", "src/cmd/cmd.rs"]);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn generated_code_explains_only_crates_the_build_script_can_name() {
+        use cargoscope_core::{Inventory, Package};
+        let package = |name: &str, root: bool, dependencies: Vec<usize>| Package {
+            name: name.to_owned(),
+            version: "1.0.0".to_owned(),
+            source: (!root)
+                .then(|| "registry+https://github.com/rust-lang/crates.io-index".to_owned()),
+            root,
+            direct: !root,
+            dependencies,
+        };
+        // app -> prost-build (build) -> prost; app -> serde, sha2.
+        let inventory = Inventory {
+            packages: vec![
+                package("app", true, vec![1, 3, 4]),
+                package("prost-build", false, vec![2]),
+                package("prost", false, vec![]),
+                package("serde", false, vec![]),
+                package("sha2", false, vec![]),
+            ],
+        };
+        let tree = super::build_dependency_tree(&inventory, "app", &["prost-build"]);
+        assert!(tree.contains("prost") && tree.contains("prost-build"));
+        assert!(!tree.contains("sha2") && !tree.contains("serde"));
+
+        let dir = std::env::temp_dir().join(format!("cargoscope-gen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let build = dir.join("build.rs");
+        std::fs::write(
+            &build,
+            "fn main() { write(\"let id = uuid::Uuid::new_v4();\"); }\n",
+        )
+        .expect("write");
+        assert!(super::build_sources_name(
+            std::slice::from_ref(&build),
+            "uuid"
+        ));
+        assert!(!super::build_sources_name(
+            std::slice::from_ref(&build),
+            "sha2"
+        ));
+        assert!(!super::build_script_reads_files(std::slice::from_ref(
+            &build
+        )));
+        // A build script that turns Markdown into tests may use any crate.
+        let reader = dir.join("tests_from_docs.rs");
+        std::fs::write(
+            &reader,
+            "fn main() { let md = std::fs::read_to_string(\"docs.md\"); }\n",
+        )
+        .expect("write");
+        assert!(super::build_script_reads_files(&[build, reader]));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]
@@ -2179,6 +2362,26 @@ mod tests {
         let declared = declared_dependencies(&empty_features, None);
         assert_eq!(declared.len(), 1);
         assert!(!declared[0].sets_features);
+        // `derive` only adds macros and turning default features off never
+        // reaches other crates; `wasm_js`, also inherited, does.
+        let features: toml::Value = toml::from_str(
+            "[package]\nname = \"app\"\n[dependencies]\nserde = { version = \"1\", features = [\"derive\"] }\nscopeguard = { version = \"1\", default-features = false }\ngetrandom = { workspace = true }\n",
+        )
+        .expect("valid");
+        let workspace: toml::Value =
+            toml::from_str("getrandom = { version = \"0.4\", features = [\"wasm_js\"] }\n")
+                .expect("valid");
+        let declared = declared_dependencies(&features, Some(&workspace));
+        let selects = |key: &str| {
+            declared
+                .iter()
+                .find(|dependency| dependency.key == key)
+                .expect("declared")
+                .sets_features
+        };
+        assert!(!selects("serde"));
+        assert!(!selects("scopeguard"));
+        assert!(selects("getrandom"));
 
         // 3. Per-package transitive dependencies and scoped workspace proc-macros.
         // Package `app` transitively reaches `reexport_macro` via `app_helper`,
