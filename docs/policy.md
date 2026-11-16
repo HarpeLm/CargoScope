@@ -31,6 +31,21 @@ exceptions = [
 clarify = [
   { name = "webpki", expression = "ISC", reason = "LICENSE file checked on 2026-11-15", license-files = [{ path = "LICENSE", hash = 0x12345678 }] },
 ]
+# Also check the project's own packages (workspace members, path dependencies),
+# as cargo-deny does (default: false).
+include-workspace = true
+# Minimum score for a license text recognised in a LICENSE or COPYING file,
+# used when a package has no usable `license` field (default: 0.8).
+confidence-threshold = 0.8
+# Allowed licenses that no checked package uses: "allow" (default), "warn" or "deny".
+unused-allowed-license = "warn"
+
+[licenses.private]
+# Skip the licenses of unpublished packages (publish = false, or published
+# only to the registries below) and of packages from the ignored sources.
+ignore = true
+registries = ["my-company"]
+ignore-sources = ["https://registry.example.com/index"]
 
 [sources]
 # Allowed registries: "crates.io" or a registry index URL.
@@ -82,6 +97,16 @@ How it works:
 - Advisories, unused dependencies, the package list and the "crates in several versions" listing still cover the whole lockfile. `[graph]` alone sets no rule.
 - On the 15 repositories of the [first blind benchmark](../tests/corpus/blind-benchmark.md), `[graph] exclude-dev = true` gives exactly the 4 license findings cargo-deny gives, against 8 for the whole lockfile.
 
+## Where licenses come from
+
+For each package the license rules check, in this order (as cargo-deny 0.20 does):
+
+1. a `clarify` entry that applies (and whose `license-files` hashes match);
+2. the `license` field: from the crates.io data downloaded by `cargoscope update`, or from the package's own `Cargo.toml` for the project's packages (with `license.workspace = true` read from `[workspace.package]`), git dependencies and other registries;
+3. when there is no `license` field, or it cannot be read: the texts of the package's `LICENSE*` and `COPYING*` files, and of its `license-file`, matched against the SPDX license list with the same license store and settings as cargo-deny. Every license found with a score of at least `confidence-threshold` is required: two files with MIT and Zlib give `MIT AND Zlib`. A violation on such a license says where it was found, for example `(detected in LICENSE-MIT)`; files whose text matches nothing well enough are named in a warning.
+
+Steps 2 and 3 read the package sources on disk: run `cargo fetch` first. A package whose sources are missing keeps its crates.io data, with a warning.
+
 ## Using an existing deny.toml
 
 A project that already uses cargo-deny needs no `cargoscope.toml`: when there is none, CargoScope reads the rules of `deny.toml` (or `.deny.toml`, `.cargo/deny.toml`) and says so in a warning. As soon as a `cargoscope.toml` exists, it is the only file read.
@@ -89,12 +114,12 @@ A project that already uses cargo-deny needs no `cargoscope.toml`: when there is
 | deny.toml | CargoScope |
 |---|---|
 | `[graph] targets` (strings or `{ triple }`), `features`, `all-features`, `no-default-features`, `exclude-dev`, `exclude-unpublished` (default: default features, as cargo-deny) | the same `[graph]` keys |
-| `[licenses] allow`, `exceptions`, `clarify`, `include-dev` | the same (`include-dev` defaults to `false`, leaving dev-only dependencies out of license checks unless `true`), including `license-files` 32-bit xxHash checksums, with `crate = "name"`, `"name@version"` or `name`/`version`; a missing reason becomes "from deny.toml" |
+| `[licenses] allow`, `exceptions`, `clarify`, `include-dev`, `confidence-threshold`, `unused-allowed-license`, `private` (`ignore`, `registries`, `ignore-sources`) | the same (`include-dev` defaults to `false`, leaving dev-only dependencies out of license checks unless `true`), including `license-files` 32-bit xxHash checksums, with `crate = "name"`, `"name@version"` or `name`/`version`; a missing reason becomes "from deny.toml". As in cargo-deny, the project's own packages are checked too (`include-workspace = true`), `unused-allowed-license` defaults to `"warn"`, and an empty `allow` list rejects every license |
 | `[bans] deny` (with `wrappers`; `deny-multiple-versions` on a crate), `features`, `build` (`allow-build-scripts`, `include-workspace`), `multiple-versions` (`"deny"` / `"warn"`), `skip`, `skip-tree`, `multiple-versions-include-dev` | bans with wrappers, feature rules (`allow`, `deny`, `exact`), build-script allowlists, duplicate rules per crate (ignoring `semver-trick` self-dependencies), `skip-multiple-versions`, skipped trees; duplicates of dev-dependencies left out unless `multiple-versions-include-dev = true` |
 | `[sources] unknown-registry`/`unknown-git` (`"deny"` / `"warn"` / `"allow"`), `allow-registry`, `allow-git`, `allow-org` | `allow-registries`, `allow-git` with per-source `"deny"` / `"warn"` / `"allow"` levels (an organisation becomes its URL prefix) |
 | `[advisories] ignore` (IDs or `{ id, reason }`) | `[advisories] ignore` |
 
-When reading `deny.toml` on a manifest with a root `[package]`, CargoScope also follows cargo-deny's default of rooting the dependency graph at that root package instead of adding `--workspace` (unless exclusions are configured). What has no equivalent is listed in the report's warnings, never dropped in silence: for example `confidence-threshold`, `private`, `[bans.build]` executable/interpreter/bypass rules, and advisory settings such as `unmaintained`. The reading is tolerant: an unknown key is a note, not an error, unlike in `cargoscope.toml`.
+When reading `deny.toml` on a manifest with a root `[package]`, CargoScope also follows cargo-deny's default of rooting the dependency graph at that root package instead of adding `--workspace` (unless exclusions are configured). What has no equivalent is listed in the report's warnings, never dropped in silence: for example `[bans.build]` executable/interpreter/bypass rules and advisory settings such as `unmaintained`. The reading is tolerant: an unknown key is a note, not an error, unlike in `cargoscope.toml`.
 
 On the original 28-repository comparison against cargo-deny 0.20.2, CargoScope now matches **28 of 28 repositories** (12 crates reported by both, 0 by cargo-deny only, 0 by CargoScope only), and **32 of 34 valid repositories** across the expanded corpora (31 crates reported by both, 1 by cargo-deny only in `tower-http`, 2 by CargoScope only in `portable-atomic` from workspace feature unification): see [tests/corpus/deny-toml.md](../tests/corpus/deny-toml.md).
 
@@ -123,7 +148,7 @@ A file with only `[advisories]` defines no policy.
 
 - Violations are listed in the report with their level (`error` or `warning`) and the dependency path that pulls the package in, in text, JSON (`policy`) and SARIF (`cargoscope/policy-license`, `-source`, `-ban`, `-multiple-versions`).
 - **`error` violations fail the scan** (exit code 1) unless `--fail-on none`; **`warning` violations** (from `"warn"` levels) are reported cleanly in text, JSON and SARIF with exit code 0.
-- License rules need crates.io data: run `cargoscope update` first. Without it they are skipped, with a warning.
+- License rules need crates.io data: run `cargoscope update` first. Without it they are skipped for crates.io packages, with a warning; the project's own packages and licenses read from disk are still checked.
 - Licenses are compared without case. `WITH` exceptions never make a license unacceptable. The legacy form `MIT/Apache-2.0` is read as `MIT OR Apache-2.0`.
 - The file is strict: an unknown key, a wrong type, an invalid license expression or version requirement, or a ban without a reason is an error (exit code 2), so that a typo never silently disables a rule.
 - `--checks` without `policy` skips the policy.
@@ -131,4 +156,4 @@ A file with only `[advisories]` defines no policy.
 
 ## Compared with cargo-deny
 
-This covers the license, source, build-script and ban checks projects use (including `license-files` xxHash32 verification, `[bans.build] allow-build-scripts`, and `"warn"` lint levels), limited to the build you care about with `[graph]` (targets, features, dev-dependencies). cargo-deny has a few extra checks: binary/script/bypass scanning inside crates, `confidence-threshold` text matching from local license files without `clarify`, and advisory checks like `unmaintained` or `unsound`. Use it when you need those; CargoScope reads your `deny.toml` meanwhile.
+This covers the license, source, build-script and ban checks projects use (including `license-files` xxHash32 verification, `[bans.build] allow-build-scripts`, and `"warn"` lint levels), limited to the build you care about with `[graph]` (targets, features, dev-dependencies). The license check now does what cargo-deny's does: license texts recognised from `LICENSE`/`COPYING` files with `confidence-threshold`, the project's own packages, `[licenses.private]` and `unused-allowed-license`. cargo-deny still has a few extra checks: binary/script/bypass scanning inside crates, and advisory checks like `unmaintained` or `unsound`. Use it when you need those; CargoScope reads your `deny.toml` meanwhile.
