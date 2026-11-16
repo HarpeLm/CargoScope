@@ -295,7 +295,7 @@ fn load_policy(root: &Path) -> Result<Option<Policy>, ExitCode> {
 
 /// crates.io data (licenses, latest versions, yanked status) of every package
 /// and its download date, with warnings when it is missing or incomplete.
-fn registry_data(
+pub(crate) fn registry_data(
     root: &Path,
     inventory: &Inventory,
     warnings: &mut Vec<String>,

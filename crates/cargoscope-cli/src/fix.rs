@@ -22,7 +22,11 @@ struct FixOptions {
     only: Option<Vec<String>>,
     /// Update vulnerable packages instead of removing unused dependencies.
     advisories: bool,
-    /// `--format markdown|json`, with `--advisories`.
+    /// Update direct dependencies to their newest versions (`--updates`).
+    updates: bool,
+    /// With `--updates`, also move to newer major versions (`--breaking`).
+    breaking: bool,
+    /// `--format markdown|json`, with `--advisories` or `--updates`.
     format: crate::fix_advisories::Format,
 }
 
@@ -48,6 +52,8 @@ fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptio
             "--dry-run" => dry_run = true,
             "--precise" => options.precise = true,
             "--advisories" => options.advisories = true,
+            "--updates" => options.updates = true,
+            "--breaking" => options.breaking = true,
             "--format" | "--format=text" | "--format=markdown" | "--format=json" => {
                 let value = match argument.strip_prefix("--format=") {
                     Some(value) => Some(value.to_owned()),
@@ -75,11 +81,20 @@ fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptio
     if options.apply && dry_run {
         return Err("--apply and --dry-run cannot be combined".to_owned());
     }
-    if options.format != crate::fix_advisories::Format::Text && !options.advisories {
-        return Err("--format markdown and json need --advisories".to_owned());
+    if options.format != crate::fix_advisories::Format::Text
+        && !options.advisories
+        && !options.updates
+    {
+        return Err("--format markdown and json need --advisories or --updates".to_owned());
     }
-    if options.advisories && options.precise {
-        return Err("--advisories cannot be combined with --precise".to_owned());
+    if (options.advisories || options.updates) && options.precise {
+        return Err("--advisories and --updates cannot be combined with --precise".to_owned());
+    }
+    if options.advisories && options.updates {
+        return Err("--advisories and --updates cannot be combined".to_owned());
+    }
+    if options.breaking && !options.updates {
+        return Err("--breaking needs --updates".to_owned());
     }
     Ok(options)
 }
@@ -106,6 +121,15 @@ pub fn fix_command(arguments: impl Iterator<Item = String>) -> ExitCode {
 
 fn run_fix(options: &FixOptions) -> Result<ExitCode, ExitCode> {
     let root = options.path.as_deref().unwrap_or(Path::new("."));
+    if options.updates {
+        return crate::fix_updates::run(
+            root,
+            options.breaking,
+            options.apply,
+            options.format,
+            options.only.as_deref(),
+        );
+    }
     if options.advisories {
         return crate::fix_advisories::run(
             root,
@@ -317,6 +341,10 @@ mod tests {
                 .advisories
         );
         assert!(parse(&["--advisories", "--precise"]).is_err());
+        let updates = parse(&["--updates", "--breaking", "--format", "markdown"]).expect("valid");
+        assert!(updates.updates && updates.breaking);
+        assert!(parse(&["--breaking"]).is_err());
+        assert!(parse(&["--updates", "--advisories"]).is_err());
         let advisories =
             parse(&["--advisories", "--only", "chrono", "--format", "json"]).expect("valid");
         assert_eq!(advisories.only, Some(vec!["chrono".to_owned()]));

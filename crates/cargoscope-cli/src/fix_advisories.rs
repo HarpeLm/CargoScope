@@ -101,7 +101,12 @@ fn run_cargo_update(
 
 /// Runs `cargo update -p spec --precise version` (with `--dry-run` unless
 /// applying); returns Cargo's error output on failure.
-fn cargo_update(root: &Path, spec: &str, version: &str, dry_run: bool) -> Result<(), String> {
+pub(crate) fn cargo_update(
+    root: &Path,
+    spec: &str,
+    version: &str,
+    dry_run: bool,
+) -> Result<(), String> {
     run_cargo_update(root, spec, Some(version), dry_run).map(|_| ())
 }
 
@@ -126,7 +131,7 @@ fn strip_ansi(text: &str) -> String {
 
 /// The useful part of Cargo's resolution error: the lines that name a
 /// requirement and who requires it.
-fn reason(stderr: &str) -> String {
+pub(crate) fn reason(stderr: &str) -> String {
     let stderr = strip_ansi(stderr);
     let lines: Vec<&str> = stderr
         .lines()
@@ -164,7 +169,7 @@ struct Row {
 }
 
 /// A manifest in the scanned project.
-struct Manifest {
+pub(crate) struct Manifest {
     path: PathBuf,
     label: String,
     contents: String,
@@ -181,7 +186,7 @@ impl Drop for Restore<'_> {
     }
 }
 
-fn read_manifests(root: &Path) -> Result<Vec<Manifest>, ExitCode> {
+pub(crate) fn read_manifests(root: &Path) -> Result<Vec<Manifest>, ExitCode> {
     let packages =
         cargoscope_cargo::project_packages(root).map_err(|error| execution_error(root, &error))?;
     let candidates = std::iter::once((root.join("Cargo.toml"), "Cargo.toml".to_owned())).chain(
@@ -289,7 +294,7 @@ fn render_markdown(rows: &[Row]) -> String {
 
 /// Checks whether updating direct manifest declarations of `package` to
 /// `=version` lets `cargo update --dry-run` replace `package.version`.
-fn probe_manifest_update(
+pub(crate) fn probe_manifest_update(
     root: &Path,
     package: &Package,
     version: &semver::Version,
@@ -385,7 +390,7 @@ fn plan_package(
     Ok(Step::Blocked(last_error))
 }
 
-fn apply_manifest_update(
+pub(crate) fn apply_manifest_update(
     root: &Path,
     name: &str,
     version: &str,

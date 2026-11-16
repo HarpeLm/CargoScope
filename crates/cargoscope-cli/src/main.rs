@@ -8,6 +8,7 @@ mod audit_bin;
 mod compare;
 mod fix;
 mod fix_advisories;
+mod fix_updates;
 mod scan;
 mod why;
 
@@ -47,7 +48,13 @@ const FIX_USAGE: &str = "  cargoscope fix [PATH] [--dry-run | --apply] [--only N
       Update vulnerable packages to the smallest fixed version Cargo accepts
       (in Cargo.lock, and in Cargo.toml when a direct requirement blocks the
       fix), and say which dependency blocks the others. Runs cargo update,
-      which may read the registry index; it compiles nothing.";
+      which may read the registry index; it compiles nothing.
+  cargoscope fix --updates [PATH] [--breaking] [--dry-run | --apply] [--only NAMES]
+                 [--format text|markdown|json]
+      Update direct dependencies to their newest SemVer-compatible version in
+      Cargo.lock, as Dependabot version updates do. With --breaking, try the
+      newest major version first, raising the requirement in Cargo.toml.
+      Needs the crates.io data of `cargoscope update`; compiles nothing.";
 
 const SCAN_USAGE: &str = "  cargoscope scan [PATH] [--format text|json|sarif|cyclonedx|html] [--output FILE] [--fail-on THRESHOLD] [--show-uncertain] [--verbose] [--precise]
       Report on a Cargo project, read-only and offline.
