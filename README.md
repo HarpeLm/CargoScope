@@ -48,7 +48,7 @@ From a clone of this repository: `cargo install --path crates/cargoscope-cli`.
 
 ## GitHub Action
 
-On the GitHub Marketplace the action is listed as [**Dep Scout**](https://github.com/marketplace/actions/dep-scout) (the name CargoScope belongs to another GitHub account); it runs CargoScope.
+On the GitHub Marketplace the action is listed as [**CargoScope-Bot**](https://github.com/marketplace/actions/cargoscope-bot) (the name CargoScope belongs to another GitHub account; it was listed as Dep Scout up to 0.7.0); it runs CargoScope.
 
 ```yaml
 permissions:

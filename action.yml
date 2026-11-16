@@ -1,4 +1,4 @@
-name: Dep Scout
+name: CargoScope-Bot
 description: Scan a Rust project with CargoScope - advisories, unused dependencies, licenses and versions, with SARIF for code scanning.
 author: CargoScope contributors
 branding:

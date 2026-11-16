@@ -98,6 +98,10 @@ Released on 2026-11-16: version update pull requests like Dependabot's (`cargosc
 - ✅ Tag `v0.7.0` pushed (2026-11-16) after CI passed on the 3 operating systems and the minimum Rust version. GitHub Release (20 assets), crates.io (5 crates), npm (`latest`; a local `npm view` showed the old version from its cache for a while), Homebrew and the installer report 0.7.0; the Action passes on the 3 operating systems with 0.7.0.
 - ✅ Set the version back to `0.8.0-dev`.
 
+## v0.8.0
+
+- The GitHub Action is renamed **CargoScope-Bot** on the Marketplace (`name:` in `action.yml`; it was Dep Scout). Its page moves to `marketplace/actions/cargoscope-bot`; workflows keep working, since `uses:` names the repository. Tick "Publish this Action to the GitHub Marketplace" on the release.
+
 ## One-time setup (maintainer)
 
 1. **crates.io**: create an API token with the `publish-new` and `publish-update` scopes, then add it as the repository secret `CARGO_REGISTRY_TOKEN`.
