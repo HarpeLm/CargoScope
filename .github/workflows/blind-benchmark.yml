@@ -6,6 +6,10 @@ name: Blind benchmark
 
 on:
   workflow_dispatch:
+    inputs:
+      list:
+        description: File listing the repositories and their commits
+        default: tests/corpus/blind-judge/repositories.txt
 
 permissions:
   contents: read
@@ -33,8 +37,10 @@ jobs:
           path: tools/bin
       - id: list
         name: List the repositories
+        env:
+          LIST: ${{ inputs.list }}
         run: |
-          echo "repositories=$(grep -v '^#' tests/corpus/blind-judge/repositories.txt | awk 'NF{printf "%s%s|%s", (n++?",":""), $1, $2}' | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().split(",")))')" >> "$GITHUB_OUTPUT"
+          echo "repositories=$(grep -v '^#' "$LIST" | awk 'NF{printf "%s%s|%s", (n++?",":""), $1, $2}' | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().split(",")))')" >> "$GITHUB_OUTPUT"
 
   judge:
     needs: tools
@@ -89,8 +95,10 @@ jobs:
           name: tools
           path: oracle/tools-bin
       - name: Fetch the sources the evaluation reads
+        env:
+          LIST: ${{ inputs.list }}
         run: |
-          grep -v '^#' tests/corpus/blind-judge/repositories.txt | while read -r repo commit; do
+          grep -v '^#' "$LIST" | while read -r repo commit; do
             [ -n "$repo" ] || continue
             d="oracle/repos/$(echo "$repo" | tr / _)"
             git init -q "$d" < /dev/null
