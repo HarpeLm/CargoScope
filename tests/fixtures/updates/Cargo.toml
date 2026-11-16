@@ -1,0 +1,13 @@
+[package]
+name = "updates-demo"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+chrono = "0.4"
+itoa = "1"
+ryu = "1"
+regex = "1"
+
+[workspace]

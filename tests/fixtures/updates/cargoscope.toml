@@ -1,0 +1,4 @@
+# Version update settings for the Action test (updates-pr job).
+[updates]
+ignore = [{ name = "regex", reason = "kept on purpose for the test" }]
+groups = [{ name = "numbers", patterns = ["itoa", "ryu"] }]

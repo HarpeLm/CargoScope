@@ -46,8 +46,20 @@ inputs:
     description: Branch prefix of the version update pull requests (one branch per dependency, or the branch itself with updates-grouped).
     default: cargoscope/updates
   updates-grouped:
-    description: "With updates, one pull request for every dependency instead of one per dependency."
+    description: "With updates, one pull request for every dependency instead of one per dependency (or per [updates] group of cargoscope.toml)."
     default: "false"
+  labels:
+    description: "Comma-separated labels for the security and update pull requests (created when missing), such as dependencies,rust."
+    default: ""
+  reviewers:
+    description: "Comma-separated GitHub users or teams (org/team) asked to review the pull requests."
+    default: ""
+  commit-prefix:
+    description: "Prefix of the pull request titles and commit messages, such as 'chore(deps): '."
+    default: ""
+  auto-merge:
+    description: "none, patch or minor: enable auto-merge (squash) on version update pull requests of at most this update type, so they merge once the checks pass. The repository must allow auto-merge."
+    default: "none"
   token:
     description: "Token used to push and open the pull request. The default token works when the repository allows GitHub Actions to create pull requests, but the pull request then starts no workflow; a personal access token or a GitHub App token starts them."
     default: ${{ github.token }}
@@ -211,6 +223,10 @@ runs:
         UPDATES: ${{ inputs.updates }}
         UPDATES_BRANCH: ${{ inputs.updates-branch }}
         UPDATES_GROUPED: ${{ inputs.updates-grouped }}
+        LABELS: ${{ inputs.labels }}
+        REVIEWERS: ${{ inputs.reviewers }}
+        PREFIX: ${{ inputs.commit-prefix }}
+        AUTO_MERGE: ${{ inputs.auto-merge }}
         BASE: ${{ github.ref_name }}
         CI_WORKFLOW: ${{ inputs.ci-workflow }}
         REPOSITORY: ${{ github.repository }}
@@ -219,17 +235,52 @@ runs:
           none | compatible | breaking) ;;
           *) echo "::error::updates must be none, compatible or breaking, not '$UPDATES'."; exit 1 ;;
         esac
+        case "$AUTO_MERGE" in
+          none | patch | minor) ;;
+          *) echo "::error::auto-merge must be none, patch or minor, not '$AUTO_MERGE'."; exit 1 ;;
+        esac
         git config user.name "github-actions[bot]"
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
         kept=" "
         first_url=""
 
+        # Labels, reviewers and auto-merge of pull request NUMBER, whose
+        # largest update type is UPDATE_TYPE (empty for security updates).
+        finish_pr() {
+          number="$1"; update_type="$2"
+          IFS=, read -ra labels <<< "$LABELS"
+          for label in "${labels[@]}"; do
+            label=$(echo "$label" | xargs)
+            [ -n "$label" ] || continue
+            gh pr edit "$number" --repo "$REPOSITORY" --add-label "$label" > /dev/null 2>&1 \
+              || { gh label create "$label" --repo "$REPOSITORY" > /dev/null 2>&1; gh pr edit "$number" --repo "$REPOSITORY" --add-label "$label" > /dev/null; } \
+              || echo "::warning::CargoScope could not add the label $label."
+          done
+          IFS=, read -ra reviewers <<< "$REVIEWERS"
+          for reviewer in "${reviewers[@]}"; do
+            reviewer=$(echo "$reviewer" | xargs)
+            [ -n "$reviewer" ] || continue
+            gh pr edit "$number" --repo "$REPOSITORY" --add-reviewer "$reviewer" > /dev/null \
+              || echo "::warning::CargoScope could not ask $reviewer for a review."
+          done
+          allowed=0
+          case "$AUTO_MERGE:$update_type" in
+            patch:patch | minor:patch | minor:minor) allowed=1 ;;
+          esac
+          if [ "$allowed" = 1 ]; then
+            gh pr merge "$number" --repo "$REPOSITORY" --auto --squash > /dev/null \
+              && echo "Auto-merge enabled on #$number ($update_type update)." \
+              || echo "::warning::CargoScope could not enable auto-merge on #$number: allow auto-merge in the repository settings."
+          fi
+        }
+
         # Opens or updates the pull request of BRANCH, from the commit the
         # workflow runs on: FIX is the cargoscope fix arguments (--advisories,
-        # or --updates [--breaking]), then the packages to update (all when
-        # none is given).
+        # or --updates [--breaking]), UPDATE_TYPE the largest update type
+        # (empty for security updates), then the packages to update (all
+        # when none is given).
         open_pr() {
-          branch="$1"; title="$2"; fix="$3"; shift 3
+          branch="$1"; title="$PREFIX$2"; fix="$3"; update_type="$4"; shift 4
           body="$RUNNER_TEMP/cargoscope-pr.md"
           git checkout -q --detach --force "$GITHUB_SHA"
           only=()
@@ -254,9 +305,11 @@ runs:
             gh pr edit "$existing" --repo "$REPOSITORY" --title "$title" --body-file "$body" > /dev/null
             url=$(gh pr view "$existing" --repo "$REPOSITORY" --json url --jq .url)
             echo "Updated the pull request: $url"
+            finish_pr "$existing" "$update_type"
           elif url=$(gh pr create --repo "$REPOSITORY" --base "$BASE" --head "$branch" \
               --title "$title" --body-file "$body"); then
             echo "Opened the pull request: $url"
+            finish_pr "${url##*/}" "$update_type"
           else
             echo "::error::CargoScope pushed ${branch} but could not open the pull request: give the job pull-requests: write, and allow GitHub Actions to create pull requests (Settings, Actions, General), or pass a personal access token or GitHub App token as token."
             exit 1
@@ -293,11 +346,11 @@ runs:
             packages=$(jq -r '.updates[].package' "$plan")
             if [ "$PER_PACKAGE" = "true" ]; then
               for package in $packages; do
-                open_pr "$BRANCH-$package" "Security update for $package from CargoScope" "--advisories" "$package"
+                open_pr "$BRANCH-$package" "Security update for $package from CargoScope" "--advisories" "" "$package"
               done
             elif [ -n "$packages" ]; then
               # shellcheck disable=SC2086
-              open_pr "$BRANCH" "Security updates from CargoScope" "--advisories" $packages
+              open_pr "$BRANCH" "Security updates from CargoScope" "--advisories" "" $packages
             fi
             [ -n "$packages" ] || echo "No vulnerable package can be updated."
             close_obsolete "$BRANCH" "nothing left to update in this pull request (the vulnerable version is gone from the base branch, it can no longer be updated, or the pull request mode changed)."
@@ -316,13 +369,21 @@ runs:
             packages=$(jq -r '.updates[].package' "$plan" | sort -u)
             if [ "$UPDATES_GROUPED" = "true" ]; then
               if [ -n "$packages" ]; then
+                largest=$(jq -r '[.pull_requests[].update_type] | if index("major") then "major" elif index("minor") then "minor" else "patch" end' "$plan")
                 # shellcheck disable=SC2086
-                open_pr "$UPDATES_BRANCH" "$(jq -r '.title' "$plan")" "$fix" $packages
+                open_pr "$UPDATES_BRANCH" "$(jq -r '.title' "$plan")" "$fix" "$largest" $packages
               fi
             else
-              for package in $packages; do
-                title=$(jq -r --arg p "$package" '[.updates[] | select(.package == $p)][0] | "Bump \(.package) from \(.from) to \(.to)"' "$plan")
-                open_pr "$UPDATES_BRANCH-$package" "$title" "$fix" "$package"
+              # Groups of [updates] first, then one per crate, within
+              # open-pull-requests-limit: as planned by CargoScope.
+              count=$(jq '.pull_requests | length' "$plan")
+              for index in $(seq 0 $((count - 1))); do
+                key=$(jq -r ".pull_requests[$index].key" "$plan")
+                title=$(jq -r ".pull_requests[$index].title" "$plan")
+                update_type=$(jq -r ".pull_requests[$index].update_type" "$plan")
+                members=$(jq -r ".pull_requests[$index].packages[]" "$plan")
+                # shellcheck disable=SC2086
+                open_pr "$UPDATES_BRANCH-$key" "$title" "$fix" "$update_type" $members
               done
             fi
             [ -n "$packages" ] || echo "Every direct dependency is up to date."
