@@ -172,7 +172,7 @@ jobs:
           updates: compatible
           updates-grouped: "true"
           updates-branch: cargoscope/updates-test
-      - name: The [updates] groups of cargoscope.toml, labels, prefix and auto-merge
+      - name: The [updates] groups of cargoscope.toml, labels and prefix
         id: per-package
         uses: ./
         with:
@@ -184,7 +184,8 @@ jobs:
           updates-branch: cargoscope/updates-test
           labels: cargoscope-test
           commit-prefix: "chore(deps): "
-          auto-merge: patch
+          # Not auto-merge: this repository requires no checks, so GitHub
+          # would merge the test pull requests at once (as it did with #12).
       - name: Check the pull requests, then close them
         if: ${{ always() }}
         env:
