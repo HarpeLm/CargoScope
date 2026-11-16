@@ -20,6 +20,7 @@ pub mod locations;
 pub mod precise;
 pub mod targets;
 pub mod unused;
+pub mod updates;
 pub mod workspace;
 
 /// An error while reading or interpreting a Cargo project.

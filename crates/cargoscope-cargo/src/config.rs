@@ -117,8 +117,19 @@ pub fn parse_policy(text: &str) -> Result<Option<Policy>, String> {
     check_keys(
         &value,
         "top level",
-        &["licenses", "sources", "bans", "advisories", "graph"],
+        &[
+            "licenses",
+            "sources",
+            "bans",
+            "advisories",
+            "graph",
+            "updates",
+        ],
     )?;
+    if let Some(updates) = value.get("updates") {
+        let table = updates.as_table().ok_or("[updates] must be a table")?;
+        crate::updates::parse(table)?;
+    }
     let (targets, features, exclude_dev) = parse_graph(&value)?;
     if !["licenses", "sources", "bans"]
         .iter()
