@@ -1364,6 +1364,295 @@ fn build_sources_name(build_files: &[PathBuf], ident: &str) -> bool {
     })
 }
 
+/// What is known about the package being checked, shared by every rule.
+struct PackageFacts<'a> {
+    sources: &'a Sources,
+    /// References in the library, binaries, tests, benches and examples.
+    code_refs: &'a References,
+    /// Packages the package reaches through other packages.
+    transitive_names: &'a BTreeSet<&'a str>,
+    /// Crates its build script can generate code for (see
+    /// [`build_dependency_tree`]).
+    build_tree: &'a BTreeSet<String>,
+    /// The build script reads other files, so generated code may use anything.
+    build_reads_files: bool,
+    /// Identifiers of the packages reachable at depth 2 or more.
+    reachable_idents: &'a BTreeSet<String>,
+    /// Identifiers of every declared dependency.
+    declared_idents: Vec<String>,
+    /// Dependencies named in `[features]` as `name/feature`.
+    forwarded_features: BTreeSet<&'a str>,
+    workspace_macros: &'a WorkspaceMacros,
+}
+
+/// What is known about one dependency no file references.
+struct DependencyFacts<'a> {
+    dependency: &'a DeclaredDependency,
+    /// Library name searched for (`-` read as `_`).
+    ident: &'a str,
+    renamed: bool,
+    /// The library name was read from the dependency's own manifest.
+    library_known: bool,
+    /// References of the files that could use it (build script or code).
+    references: &'a References,
+    searched: usize,
+    searched_label: &'a str,
+}
+
+/// A reason a dependency nothing references may still be needed, which
+/// makes it `possibly-unused`: one pure function per rule, returning the
+/// reason shown in the report.
+type Rule = fn(&PackageFacts<'_>, &DependencyFacts<'_>) -> Option<String>;
+
+/// Every rule, by name, in the order its reason is reported.
+const RULES: &[(&str, Rule)] = &[
+    ("sys-crate", rule_sys_crate),
+    ("optional", rule_optional),
+    ("platform-specific", rule_platform_specific),
+    ("selects-features", rule_selects_features),
+    ("library-name-guess", rule_library_name_guess),
+    ("forwarded-feature", rule_forwarded_feature),
+    ("documentation", rule_documentation),
+    ("workspace-proc-macro", rule_workspace_proc_macro),
+    ("workspace-macro-rules", rule_workspace_macro_rules),
+    ("compile-tests", rule_compile_tests),
+    ("wasm-bindgen-futures", rule_wasm_bindgen_futures),
+    ("strum-macros", rule_strum_macros),
+    ("generated-code", rule_generated_code),
+    ("text-fallback", rule_text_fallback),
+    ("test-files-missing", rule_test_files_missing),
+    ("skipped-files", rule_skipped_files),
+    ("nothing-searched", rule_nothing_searched),
+];
+
+/// The reasons, by rule name, to keep a dependency nothing references.
+/// None means `likely-unused`.
+fn reasons_to_keep(
+    package: &PackageFacts<'_>,
+    candidate: &DependencyFacts<'_>,
+) -> Vec<(&'static str, String)> {
+    RULES
+        .iter()
+        .filter_map(|(name, rule)| rule(package, candidate).map(|reason| (*name, reason)))
+        .collect()
+}
+
+fn rule_sys_crate(_: &PackageFacts<'_>, candidate: &DependencyFacts<'_>) -> Option<String> {
+    let package = &candidate.dependency.package;
+    (package.ends_with("-sys") || package.ends_with("_sys"))
+        .then(|| "`-sys` crates are often linked only for their native library".to_owned())
+}
+
+fn rule_optional(_: &PackageFacts<'_>, candidate: &DependencyFacts<'_>) -> Option<String> {
+    candidate
+        .dependency
+        .optional
+        .then(|| "optional dependency: may only be used to forward a feature".to_owned())
+}
+
+fn rule_platform_specific(_: &PackageFacts<'_>, candidate: &DependencyFacts<'_>) -> Option<String> {
+    candidate
+        .dependency
+        .target_specific
+        .then(|| "platform-specific dependency".to_owned())
+}
+
+fn rule_selects_features(
+    package: &PackageFacts<'_>,
+    candidate: &DependencyFacts<'_>,
+) -> Option<String> {
+    let dependency = candidate.dependency;
+    (dependency.sets_features
+        && package
+            .transitive_names
+            .contains(dependency.package.as_str()))
+    .then(|| "also a transitive dependency: may be declared only to select its features".to_owned())
+}
+
+/// Guesses only when the library name could not be read.
+fn rule_library_name_guess(
+    package: &PackageFacts<'_>,
+    candidate: &DependencyFacts<'_>,
+) -> Option<String> {
+    let dependency = candidate.dependency;
+    if candidate.renamed
+        || candidate.library_known
+        || candidate.ident != dependency.key.replace('-', "_")
+    {
+        return None;
+    }
+    let guess = library_name_guesses(&dependency.package)
+        .into_iter()
+        // A guess that is itself a declared dependency (`tokio` for
+        // `tokio-test`) is explained by that dependency.
+        .filter(|guess| !package.declared_idents.contains(guess))
+        .find(|guess| candidate.references.contains(guess))?;
+    Some(format!(
+        "`{guess}::` is used: the library name of `{}` may differ from its package name",
+        dependency.package
+    ))
+}
+
+fn rule_forwarded_feature(
+    package: &PackageFacts<'_>,
+    candidate: &DependencyFacts<'_>,
+) -> Option<String> {
+    let dependency = candidate.dependency;
+    (dependency.kind != DependencyKind::Dev
+        && package.forwarded_features.contains(dependency.key.as_str()))
+    .then(|| {
+        format!(
+            "named in [features] (`{}/...`): may be declared only to forward a feature",
+            dependency.key
+        )
+    })
+}
+
+fn rule_documentation(_: &PackageFacts<'_>, candidate: &DependencyFacts<'_>) -> Option<String> {
+    (candidate.dependency.kind != DependencyKind::Dev
+        && candidate.references.in_docs(candidate.ident))
+    .then(|| "mentioned in documentation (a doc link needs the crate to resolve)".to_owned())
+}
+
+fn rule_workspace_proc_macro(
+    package: &PackageFacts<'_>,
+    candidate: &DependencyFacts<'_>,
+) -> Option<String> {
+    let provider =
+        package
+            .workspace_macros
+            .proc_macros
+            .iter()
+            .find_map(|(crate_ident, names)| {
+                let proc_macro_reachable = if package.declared_idents.contains(crate_ident) {
+                    candidate.references.contains(crate_ident)
+                } else {
+                    package.reachable_idents.contains(crate_ident)
+                };
+                (crate_ident != candidate.ident
+                    && proc_macro_reachable
+                    && names.contains(candidate.ident))
+                .then_some(crate_ident)
+            })?;
+    Some(format!(
+        "workspace proc-macro crate `{provider}` generates paths to it, which derives and attributes expand in this crate"
+    ))
+}
+
+fn rule_workspace_macro_rules(
+    package: &PackageFacts<'_>,
+    candidate: &DependencyFacts<'_>,
+) -> Option<String> {
+    let provider =
+        package
+            .workspace_macros
+            .macro_rules
+            .iter()
+            .find_map(|(crate_ident, names)| {
+                // A macro can only be called through its crate: a path, `use`
+                // or `extern crate` of the provider.
+                (package.declared_idents.contains(crate_ident)
+                    && candidate.references.contains(crate_ident)
+                    && names.contains(candidate.ident))
+                .then_some(crate_ident)
+            })?;
+    Some(format!(
+        "may be used through a macro of workspace crate `{provider}`, which mentions it"
+    ))
+}
+
+/// Compile tests in tests/ are read like any test; without tests/, the
+/// files trybuild compiles live elsewhere and are not read.
+fn rule_compile_tests(
+    package: &PackageFacts<'_>,
+    candidate: &DependencyFacts<'_>,
+) -> Option<String> {
+    (candidate.dependency.kind == DependencyKind::Dev
+        && !package.sources.has_test_files
+        && (package.code_refs.contains("trybuild") || package.code_refs.contains("ui_test")))
+    .then(|| {
+        "the package runs compile tests (trybuild) on files outside it, built against its dev-dependencies"
+            .to_owned()
+    })
+}
+
+fn rule_wasm_bindgen_futures(
+    package: &PackageFacts<'_>,
+    candidate: &DependencyFacts<'_>,
+) -> Option<String> {
+    (candidate.ident == "wasm_bindgen_futures" && package.code_refs.contains("wasm_bindgen")).then(
+        || "`#[wasm_bindgen]` on an async function expands to wasm-bindgen-futures".to_owned(),
+    )
+}
+
+fn rule_strum_macros(
+    package: &PackageFacts<'_>,
+    candidate: &DependencyFacts<'_>,
+) -> Option<String> {
+    (candidate.ident == "strum" && package.code_refs.contains("strum_macros"))
+        .then(|| "`strum_macros` derives expand to traits in `strum`".to_owned())
+}
+
+/// Generated code can only use a crate the build script names, or one a
+/// code generator among its build-dependencies brings along; a build script
+/// that reads other files may generate anything.
+fn rule_generated_code(
+    package: &PackageFacts<'_>,
+    candidate: &DependencyFacts<'_>,
+) -> Option<String> {
+    let dependency = candidate.dependency;
+    (package.sources.has_build_script
+        && dependency.kind != DependencyKind::Build
+        && package.code_refs.includes_generated_code
+        && (package.build_reads_files
+            || package.build_tree.contains(&dependency.package)
+            || build_sources_name(&package.sources.build, candidate.ident)))
+    .then(|| "the sources include code generated by the build script, which may use it".to_owned())
+}
+
+fn rule_text_fallback(_: &PackageFacts<'_>, candidate: &DependencyFacts<'_>) -> Option<String> {
+    let fallback = candidate.references.text_fallback.len();
+    (fallback > 0).then(|| {
+        format!("{fallback} file(s) could not be tokenized and were searched as plain text")
+    })
+}
+
+fn rule_test_files_missing(
+    package: &PackageFacts<'_>,
+    candidate: &DependencyFacts<'_>,
+) -> Option<String> {
+    if candidate.dependency.kind != DependencyKind::Dev {
+        return None;
+    }
+    let sources = package.sources;
+    if sources.published_copy {
+        Some(
+            "published package copy (Cargo.toml.orig present): test files are often excluded from it"
+                .to_owned(),
+        )
+    } else if !sources.has_test_files && !sources.git_checkout {
+        Some(
+            "no tests/, benches/ or examples/ found: test files may be missing from this copy"
+                .to_owned(),
+        )
+    } else {
+        None
+    }
+}
+
+fn rule_skipped_files(package: &PackageFacts<'_>, _: &DependencyFacts<'_>) -> Option<String> {
+    let skipped = package.sources.skipped;
+    (skipped > 0).then(|| {
+        format!(
+            "{skipped} source file(s) were skipped (size, depth or count limit) and not searched"
+        )
+    })
+}
+
+fn rule_nothing_searched(_: &PackageFacts<'_>, candidate: &DependencyFacts<'_>) -> Option<String> {
+    (candidate.searched == 0).then(|| format!("no {} file found", candidate.searched_label))
+}
+
 pub fn check_package(
     package: &PackageToCheck<'_>,
     workspace_dependencies: Option<&toml::Value>,
@@ -1410,14 +1699,29 @@ pub fn check_package(
         .iter()
         .map(|name| name.replace('-', "_"))
         .collect();
+    let declared = declared_dependencies(package.manifest, workspace_dependencies);
+    let facts = PackageFacts {
+        sources: &sources,
+        code_refs: &code_refs,
+        transitive_names: &transitive_names,
+        build_tree: &build_tree,
+        build_reads_files,
+        reachable_idents: &reachable_idents,
+        declared_idents: declared
+            .iter()
+            .map(|declared| declared.key.replace('-', "_"))
+            .collect(),
+        forwarded_features: features_forwarded_to(package.manifest),
+        workspace_macros,
+    };
 
     let mut findings = Vec::new();
-    for dependency in declared_dependencies(package.manifest, workspace_dependencies) {
+    for dependency in &declared {
         let renamed = dependency.key != dependency.package;
         let known_library = if renamed {
             None
         } else {
-            library_name(&dependency, package, inventory)
+            library_name(dependency, package, inventory)
         };
         let library_known = known_library.is_some();
         let ident = known_library.unwrap_or_else(|| dependency.key.replace('-', "_"));
@@ -1434,166 +1738,25 @@ pub fn check_package(
         {
             continue;
         }
-
+        let candidate = DependencyFacts {
+            dependency,
+            ident: &ident,
+            renamed,
+            library_known,
+            references,
+            searched,
+            searched_label,
+        };
         let mut evidence = vec![format!(
             "no `{ident}::`, `use {ident}` or `extern crate {ident}` in {searched} file(s) ({searched_label})"
         )];
-        let mut exceptions = Vec::new();
-        if dependency.package.ends_with("-sys") || dependency.package.ends_with("_sys") {
-            exceptions
-                .push("`-sys` crates are often linked only for their native library".to_owned());
-        }
-        if dependency.optional {
-            exceptions
-                .push("optional dependency: may only be used to forward a feature".to_owned());
-        }
-        if dependency.target_specific {
-            exceptions.push("platform-specific dependency".to_owned());
-        }
-        if dependency.sets_features && transitive_names.contains(dependency.package.as_str()) {
-            exceptions.push(
-                "also a transitive dependency: may be declared only to select its features"
-                    .to_owned(),
-            );
-        }
-        let declared_idents: Vec<String> =
-            declared_dependencies(package.manifest, workspace_dependencies)
-                .iter()
-                .map(|declared| declared.key.replace('-', "_"))
-                .collect();
-        // Guesses only when the library name could not be read.
-        if !renamed
-            && !library_known
-            && ident == dependency.key.replace('-', "_")
-            && let Some(guess) = library_name_guesses(&dependency.package)
-                .into_iter()
-                // A guess that is itself a declared dependency (`tokio` for
-                // `tokio-test`) is explained by that dependency.
-                .filter(|guess| !declared_idents.contains(guess))
-                .find(|guess| references.contains(guess))
-        {
-            exceptions.push(format!(
-                "`{guess}::` is used: the library name of `{}` may differ from its package name",
-                dependency.package
-            ));
-        }
-        if dependency.kind != DependencyKind::Dev
-            && features_forwarded_to(package.manifest).contains(dependency.key.as_str())
-        {
-            exceptions.push(format!(
-                "named in [features] (`{}/...`): may be declared only to forward a feature",
-                dependency.key
-            ));
-        }
-        if dependency.kind != DependencyKind::Dev && references.in_docs(&ident) {
-            exceptions.push(
-                "mentioned in documentation (a doc link needs the crate to resolve)".to_owned(),
-            );
-        }
-        if let Some(provider) =
-            workspace_macros
-                .proc_macros
-                .iter()
-                .find_map(|(crate_ident, names)| {
-                    let proc_macro_reachable = if declared_idents.contains(crate_ident) {
-                        references.contains(crate_ident)
-                    } else {
-                        reachable_idents.contains(crate_ident)
-                    };
-                    (crate_ident != &ident && proc_macro_reachable && names.contains(&ident))
-                        .then_some(crate_ident)
-                })
-        {
-            exceptions.push(format!(
-                "workspace proc-macro crate `{provider}` generates paths to it, which derives and attributes expand in this crate"
-            ));
-        }
-        if let Some(provider) =
-            workspace_macros
-                .macro_rules
-                .iter()
-                .find_map(|(crate_ident, names)| {
-                    // A macro can only be called through its crate: a path,
-                    // `use` or `extern crate` of the provider.
-                    (declared_idents.contains(crate_ident)
-                        && references.contains(crate_ident)
-                        && names.contains(&ident))
-                    .then_some(crate_ident)
-                })
-        {
-            exceptions.push(format!(
-                "may be used through a macro of workspace crate `{provider}`, which mentions it"
-            ));
-        }
-        // Compile tests in tests/ are read like any test; without tests/,
-        // the files trybuild compiles live elsewhere and are not read.
-        if dependency.kind == DependencyKind::Dev
-            && !sources.has_test_files
-            && (code_refs.contains("trybuild") || code_refs.contains("ui_test"))
-        {
-            exceptions.push(
-                "the package runs compile tests (trybuild) on files outside it, built against its dev-dependencies"
-                    .to_owned(),
-            );
-        }
-        if ident == "wasm_bindgen_futures" && code_refs.contains("wasm_bindgen") {
-            exceptions.push(
-                "`#[wasm_bindgen]` on an async function expands to wasm-bindgen-futures".to_owned(),
-            );
-        }
-        if ident == "strum" && code_refs.contains("strum_macros") {
-            exceptions.push("`strum_macros` derives expand to traits in `strum`".to_owned());
-        }
-        // Generated code can only use a crate the build script names, or
-        // one a code generator among its build-dependencies brings along.
-        if sources.has_build_script
-            && dependency.kind != DependencyKind::Build
-            && code_refs.includes_generated_code
-            && (build_reads_files
-                || build_tree.contains(&dependency.package)
-                || build_sources_name(&sources.build, &ident))
-        {
-            exceptions.push(
-                "the sources include code generated by the build script, which may use it"
-                    .to_owned(),
-            );
-        }
-        if !references.text_fallback.is_empty() {
-            exceptions.push(format!(
-                "{} file(s) could not be tokenized and were searched as plain text",
-                references.text_fallback.len()
-            ));
-        }
-        if dependency.kind == DependencyKind::Dev && sources.published_copy {
-            exceptions.push(
-                "published package copy (Cargo.toml.orig present): test files are often excluded from it"
-                    .to_owned(),
-            );
-        } else if dependency.kind == DependencyKind::Dev
-            && !sources.has_test_files
-            && !sources.git_checkout
-        {
-            exceptions.push(
-                "no tests/, benches/ or examples/ found: test files may be missing from this copy"
-                    .to_owned(),
-            );
-        }
-        if sources.skipped > 0 {
-            exceptions.push(format!(
-                "{} source file(s) were skipped (size, depth or count limit) and not searched",
-                sources.skipped
-            ));
-        }
-        if searched == 0 {
-            exceptions.push(format!("no {searched_label} file found"));
-        }
-
-        let confidence = if exceptions.is_empty() {
+        let reasons = reasons_to_keep(&facts, &candidate);
+        let confidence = if reasons.is_empty() {
             UnusedConfidence::Likely
         } else {
             UnusedConfidence::Possibly
         };
-        evidence.extend(exceptions);
+        evidence.extend(reasons.into_iter().map(|(_, reason)| reason));
         findings.push(UnusedFinding {
             declared_by: package.name.to_owned(),
             manifest: package.manifest_label.to_owned(),
