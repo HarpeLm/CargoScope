@@ -484,6 +484,22 @@ pub(crate) fn apply_manifest_update(
     Ok(())
 }
 
+/// The version of `name` in `Cargo.lock` now, when `from` is no longer
+/// there and every version of `name` left is at least `target`.
+fn moved_past(root: &Path, name: &str, from: &str, target: &str) -> Option<String> {
+    let inventory = cargoscope_cargo::scan_cargo_project(root).ok()?;
+    let versions: Vec<&str> = inventory
+        .packages
+        .iter()
+        .filter(|package| package.name == name)
+        .map(|package| package.version.as_str())
+        .collect();
+    let target = semver::Version::parse(target).ok()?;
+    let new_enough = |version: &str| semver::Version::parse(version).is_ok_and(|v| v >= target);
+    (!versions.contains(&from) && !versions.is_empty() && versions.iter().all(|v| new_enough(v)))
+        .then(|| versions.join(", "))
+}
+
 fn apply_updates(
     root: &Path,
     rows: &[Row],
@@ -499,6 +515,16 @@ fn apply_updates(
             continue;
         };
         if target_labels.is_empty() {
+            // An earlier update may have moved this package already
+            // (rustls pulls a newer rustls-webpki): skip it when the version
+            // it was planned from is gone and what replaced it is new enough.
+            if let Some(now) = moved_past(root, &row.name, &row.from, version) {
+                eprintln!(
+                    "{} {}: already at {now} after an earlier update",
+                    row.name, row.from
+                );
+                continue;
+            }
             cargo_update(root, spec, version, false).map_err(|error| {
                 eprintln!(
                     "cargo update -p {spec} --precise {version} failed: {}",
