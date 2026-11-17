@@ -484,20 +484,78 @@ pub(crate) fn apply_manifest_update(
     Ok(())
 }
 
-/// The version of `name` in `Cargo.lock` now, when `from` is no longer
-/// there and every version of `name` left is at least `target`.
-fn moved_past(root: &Path, name: &str, from: &str, target: &str) -> Option<String> {
-    let inventory = cargoscope_cargo::scan_cargo_project(root).ok()?;
-    let versions: Vec<&str> = inventory
-        .packages
-        .iter()
-        .filter(|package| package.name == name)
-        .map(|package| package.version.as_str())
-        .collect();
+/// The versions of `name` in `Cargo.lock` now.
+fn locked_versions(root: &Path, name: &str) -> Vec<String> {
+    cargoscope_cargo::scan_cargo_project(root)
+        .map(|inventory| {
+            inventory
+                .packages
+                .into_iter()
+                .filter(|package| package.name == name)
+                .map(|package| package.version)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The versions left of a package on the line of `target` (other major
+/// lines kept by other dependents do not count), when the one it was
+/// planned from (`from`) is gone and each of them is at least `target`: an
+/// earlier update moved it already.
+fn past_target(versions: &[String], from: &str, target: &str) -> Option<Vec<String>> {
     let target = semver::Version::parse(target).ok()?;
-    let new_enough = |version: &str| semver::Version::parse(version).is_ok_and(|v| v >= target);
-    (!versions.contains(&from) && !versions.is_empty() && versions.iter().all(|v| new_enough(v)))
-        .then(|| versions.join(", "))
+    let same_line: Vec<(String, semver::Version)> = versions
+        .iter()
+        .filter_map(|text| Some((text.clone(), semver::Version::parse(text).ok()?)))
+        .filter(|(_, version)| cargoscope_core::is_semver_compatible(&target, version))
+        .collect();
+    (!versions.iter().any(|version| version == from)
+        && !same_line.is_empty()
+        && same_line.iter().all(|(_, version)| *version >= target))
+    .then(|| same_line.into_iter().map(|(text, _)| text).collect())
+}
+
+fn moved_past(root: &Path, name: &str, from: &str, target: &str) -> Option<String> {
+    past_target(&locked_versions(root, name), from, target).map(|versions| versions.join(", "))
+}
+
+/// Brings the planned packages that an update of another one moved past
+/// their target back to that target, the smallest fixed version (`cargo
+/// update -p rustls --precise 0.23.46` also moves `rustls-webpki` to its
+/// newest compatible version, 0.103.17 where 0.103.16 fixes it). A package
+/// Cargo refuses to move back stays where it is, with a note.
+fn settle_moved_packages(root: &Path, rows: &[Row]) {
+    for row in rows {
+        let Step::Update {
+            version, manifests, ..
+        } = &row.step
+        else {
+            continue;
+        };
+        if !manifests.is_empty() {
+            continue;
+        }
+        let Some(now) = past_target(&locked_versions(root, &row.name), &row.from, version) else {
+            continue;
+        };
+        let [now] = now.as_slice() else {
+            continue;
+        };
+        if now == version {
+            continue;
+        }
+        match cargo_update(root, &format!("{}@{now}", row.name), version, false) {
+            Ok(()) => eprintln!(
+                "{} {now} -> {version}: back to the smallest fixed version",
+                row.name
+            ),
+            Err(error) => eprintln!(
+                "{} stays at {now}: Cargo refused {version}: {}",
+                row.name,
+                reason(&error)
+            ),
+        }
+    }
 }
 
 fn apply_updates(
@@ -540,6 +598,7 @@ fn apply_updates(
         };
         apply_manifest_update(root, &row.name, version, target_labels, loaded)?;
     }
+    settle_moved_packages(root, rows);
     Ok(())
 }
 
@@ -747,7 +806,37 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::{candidates, fixes_all, reason};
+    use super::{candidates, fixes_all, past_target, reason};
+
+    #[test]
+    fn finds_packages_an_earlier_update_moved_past_their_target() {
+        let versions = |list: &[&str]| list.iter().map(|v| (*v).to_owned()).collect::<Vec<_>>();
+        // rustls pulled rustls-webpki 0.103.13 to 0.103.17; the plan said 0.103.16.
+        assert_eq!(
+            past_target(&versions(&["0.103.17"]), "0.103.13", "0.103.16"),
+            Some(versions(&["0.103.17"]))
+        );
+        // Still at the planned-from version: not moved.
+        assert_eq!(
+            past_target(&versions(&["0.103.13"]), "0.103.13", "0.103.16"),
+            None
+        );
+        // Moved, but not far enough: the planned step still has to run.
+        assert_eq!(
+            past_target(&versions(&["0.103.14"]), "0.103.13", "0.103.16"),
+            None
+        );
+        // Another major line kept by another dependent does not count.
+        assert_eq!(
+            past_target(&versions(&["0.26.11", "1.0.10"]), "1.0.7", "1.0.10"),
+            Some(versions(&["1.0.10"]))
+        );
+        assert_eq!(
+            past_target(&versions(&["0.26.11", "1.0.8"]), "1.0.7", "1.0.10"),
+            None
+        );
+        assert_eq!(past_target(&[], "1.0.0", "1.0.1"), None);
+    }
 
     #[test]
     fn a_fix_must_fix_every_advisory() {
