@@ -200,11 +200,31 @@ pub(super) fn rule_selects_features(
     candidate: &DependencyFacts<'_>,
 ) -> Option<String> {
     let dependency = candidate.dependency;
-    (dependency.sets_features
+    if !dependency.sets_features {
+        return None;
+    }
+    if package
+        .transitive_names
+        .contains(dependency.package.as_str())
+    {
+        return Some(
+            "also a transitive dependency: may be declared only to select its features".to_owned(),
+        );
+    }
+    // A dev-dependency on a workspace crate the package also reaches through
+    // another dependency, turning on a feature meant for tests
+    // (`features = ["test-support"]`): it changes that crate for the
+    // package's tests, as Cargo unifies features. Other features (`plugin`,
+    // `os`) are not enough: such dev-dependencies are usually leftovers.
+    (dependency.kind == DependencyKind::Dev
+        && dependency.test_features
+        && dependency.path.is_some()
         && package
-            .transitive_names
-            .contains(dependency.package.as_str()))
-    .then(|| "also a transitive dependency: may be declared only to select its features".to_owned())
+            .reachable_idents
+            .contains(&dependency.package.replace('-', "_")))
+    .then(|| {
+        "a workspace crate also reached through another dependency: may be declared only to enable its test features for this package's tests".to_owned()
+    })
 }
 
 /// Guesses only when the library name could not be read.
@@ -422,8 +442,51 @@ mod tests {
             optional: false,
             target_specific: false,
             sets_features: false,
+            test_features: false,
             path: None,
         }
+    }
+
+    /// The rules that keep `dependency` when the package reaches the
+    /// `reachable` crates (identifiers) through other dependencies.
+    fn kept_with_reachable(
+        dependency: &DeclaredDependency,
+        reachable: &BTreeSet<String>,
+    ) -> Vec<&'static str> {
+        // A git checkout: missing test files are not a reason to keep it.
+        let sources = Sources {
+            git_checkout: true,
+            ..Sources::default()
+        };
+        let code = References::default();
+        let transitive = BTreeSet::new();
+        let build_tree = BTreeSet::new();
+        let macros = WorkspaceMacros::default();
+        let package = PackageFacts {
+            sources: &sources,
+            code_refs: &code,
+            transitive_names: &transitive,
+            build_tree: &build_tree,
+            build_reads_files: false,
+            reachable_idents: reachable,
+            declared_idents: vec![dependency.key.replace('-', "_")],
+            forwarded_features: BTreeSet::new(),
+            workspace_macros: &macros,
+        };
+        let ident = dependency.key.replace('-', "_");
+        let candidate = DependencyFacts {
+            dependency,
+            ident: &ident,
+            renamed: false,
+            library_known: true,
+            references: &code,
+            searched: 1,
+            searched_label: "src/",
+        };
+        reasons_to_keep(&package, &candidate)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
     }
 
     /// Runs the rules on `dependency` with the given package context, and
@@ -534,6 +597,48 @@ mod tests {
             getrandom,
             &BTreeSet::from(["getrandom"]),
             &["selects-features"],
+        );
+        // A workspace crate reached through another dependency: a
+        // dev-dependency enabling its `test-support` feature is needed even
+        // if no file names it (neomacs-layout-engine -> neovm-eval).
+        let local = DeclaredDependency {
+            kind: DependencyKind::Dev,
+            sets_features: true,
+            test_features: true,
+            path: Some(("../neovm-eval".to_owned(), false)),
+            ..dependency("neovm-eval")
+        };
+        let reachable = BTreeSet::from(["neovm_eval".to_owned()]);
+        assert_eq!(
+            kept_with_reachable(&local, &reachable),
+            vec!["selects-features"]
+        );
+        assert!(kept_with_reachable(&local, &BTreeSet::new()).is_empty());
+        let no_features = DeclaredDependency {
+            sets_features: false,
+            test_features: false,
+            ..local.clone()
+        };
+        assert!(kept_with_reachable(&no_features, &reachable).is_empty());
+        // Other features of a workspace crate (nushell's `plugin`, `os`) do
+        // not count: those dev-dependencies were leftovers.
+        let other_feature = DeclaredDependency {
+            test_features: false,
+            ..local.clone()
+        };
+        assert!(kept_with_reachable(&other_feature, &reachable).is_empty());
+        let normal = DeclaredDependency {
+            kind: DependencyKind::Normal,
+            ..local.clone()
+        };
+        assert!(kept_with_reachable(&normal, &reachable).is_empty());
+        let external = DeclaredDependency {
+            path: None,
+            ..local
+        };
+        assert!(
+            kept_with_reachable(&external, &reachable).is_empty(),
+            "an external crate counts only when it is a transitive dependency"
         );
         // Missing test files only matter for dev-dependencies of a copy.
         let dev = DeclaredDependency {

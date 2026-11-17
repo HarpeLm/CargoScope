@@ -123,7 +123,7 @@ The goal is precision over recall: missing a candidate is acceptable, a wrong on
 
 **Layered evidence, from cheap to precise:**
 
-1. **Token scan** (default) of every `.rs` file in `src/`, `tests/`, `benches/`, `examples/` and custom target paths, using the `proc-macro2` lexer. Comments and string literals are ignored, while paths inside macro invocations and attributes are seen. A dependency counts as used when its key (with `-` read as `_`) appears as `name::`, after `use`, or after `extern crate`. Build dependencies are searched only in the build script. Dev-dependencies are also searched in doc comments, where doctests use them.
+1. **Token scan** (default) of every `.rs` file in `src/`, `tests/`, `benches/`, `examples/` and custom target paths, plus the files those reach through `#[path = "..."]` modules and `include!("...")` anywhere in the workspace (an `xtask` reusing `../../core/build_support/x.rs`), using the `proc-macro2` lexer. Comments and string literals are ignored, while paths inside macro invocations and attributes are seen. A dependency counts as used when its key (with `-` read as `_`) appears as `name::`, after `use`, or after `extern crate`. Build dependencies are searched only in the build script. Dev-dependencies are also searched in doc comments, where doctests use them.
 2. **Text fallback**: a file that cannot be tokenized is searched as plain text, and every finding of that package is lowered to `possibly-unused`.
 3. **Optional compiler-based check** (opt-in `--precise`, v0.2), since it runs a build. It is never run by default because build scripts execute code.
 
@@ -133,6 +133,7 @@ The goal is precision over recall: missing a candidate is acceptable, a wrong on
 - Optional dependencies, which may only forward a feature.
 - Platform-specific dependencies (`[target.'cfg(...)'.dependencies]`).
 - Dependencies declared with `features` or `default-features` that are also transitive: they may exist only to select features.
+- Dev-dependencies on a workspace crate the package also reaches through another dependency, turning on a feature meant for tests (`test-support`, `test-util`, `mock`, `fixtures`...): they may exist only to enable it for the package's tests. Other features (`plugin`, `os`) do not count.
 - Sources that `include!` code generated in `OUT_DIR` by a build script.
 - Dev-dependencies when no `tests/`, `benches/` or `examples/` file exists, or when the directory is a published package copy (`Cargo.toml.orig` present), since test files are often excluded from published packages.
 - Renames (`package = "..."`) and workspace inheritance (`workspace = true`) are resolved.

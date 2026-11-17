@@ -44,6 +44,10 @@ pub struct DeclaredDependency {
     /// users (anything but `derive`, which only adds macros); turning
     /// default features off never does, since features only add up.
     pub sets_features: bool,
+    /// Declared with a feature meant for tests (`test-support`,
+    /// `test-util`, `testing`, `mock`, `fixtures`...): a dev-dependency on a
+    /// workspace crate may exist only to turn it on for the package's tests.
+    pub test_features: bool,
     /// `path = "..."` of a local dependency, and whether it is relative to
     /// the workspace root (inherited with `workspace = true`) rather than to
     /// the package.
@@ -62,6 +66,23 @@ fn selects_features(specification: &toml::Value, from_workspace: Option<&toml::V
         .flatten()
         .filter_map(toml::Value::as_str)
         .any(|feature| feature != "derive")
+}
+
+/// Whether a declaration enables a feature meant for tests, by its name.
+fn enables_test_features(
+    specification: &toml::Value,
+    from_workspace: Option<&toml::Value>,
+) -> bool {
+    [Some(specification), from_workspace]
+        .into_iter()
+        .flatten()
+        .filter_map(|spec| spec.get("features").and_then(toml::Value::as_array))
+        .flatten()
+        .filter_map(toml::Value::as_str)
+        .map(str::to_ascii_lowercase)
+        .any(|feature| {
+            feature.contains("test") || feature.contains("mock") || feature.contains("fixture")
+        })
 }
 
 /// Reads every declared dependency of a manifest.
@@ -117,6 +138,7 @@ pub fn declared_dependencies(
                             .unwrap_or(false),
                         target_specific,
                         sets_features: selects_features(specification, from_workspace),
+                        test_features: enables_test_features(specification, from_workspace),
                         path: specification
                             .get("path")
                             .and_then(toml::Value::as_str)
@@ -1081,6 +1103,64 @@ mod tests {
     }
 
     #[test]
+    fn follows_path_modules_of_source_files_into_other_crates_of_the_workspace() {
+        // neomacs's xtask reuses `../../neovm-core/build_support/*.rs`, which
+        // use crates no file of xtask itself names.
+        let base = std::env::temp_dir().join(format!("cargoscope-xpath-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("repo");
+        for dir in ["crates/xtask/src", "crates/core/build_support"] {
+            std::fs::create_dir_all(root.join(dir)).expect("dirs");
+        }
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/xtask\", \"crates/core\"]\n",
+        )
+        .expect("write");
+        let manifest = "[package]\nname = \"xtask\"\n";
+        std::fs::write(root.join("crates/xtask/Cargo.toml"), manifest).expect("write");
+        std::fs::write(
+            root.join("crates/xtask/src/main.rs"),
+            "#[path = \"../../core/build_support/generated.rs\"]\nmod generated;\n#[path = \"../../../../outside.rs\"]\nmod outside;\nfn main() {}\n",
+        )
+        .expect("write");
+        std::fs::write(
+            root.join("crates/core/build_support/generated.rs"),
+            "mod helper;\npub fn run() { flate2::Compression::default(); }\n",
+        )
+        .expect("write");
+        std::fs::create_dir_all(root.join("crates/core/build_support/generated")).expect("dirs");
+        std::fs::write(
+            root.join("crates/core/build_support/generated/helper.rs"),
+            "use proc_macro2::TokenStream;\n",
+        )
+        .expect("write");
+        std::fs::write(base.join("outside.rs"), "use leaked::Thing;\n").expect("write");
+
+        let manifest: toml::Value = toml::from_str(manifest).expect("toml");
+        let sources = super::collect_sources(&root.join("crates/xtask"), &manifest);
+        let names: Vec<String> = sources
+            .code
+            .iter()
+            .map(|file| {
+                file.file_name()
+                    .expect("name")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert!(names.contains(&"generated.rs".to_owned()), "{names:?}");
+        assert!(names.contains(&"helper.rs".to_owned()), "{names:?}");
+        assert!(
+            !names.contains(&"outside.rs".to_owned()),
+            "outside the workspace: {names:?}"
+        );
+        let refs = super::scan_files(&sources.code);
+        assert!(refs.contains("flate2") && refs.contains("proc_macro2"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn follows_parent_paths_inside_the_workspace_only() {
         let base = std::env::temp_dir().join(format!("cargoscope-bound-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -1294,6 +1374,23 @@ mod tests {
         assert!(!selects("serde"));
         assert!(!selects("scopeguard"));
         assert!(selects("getrandom"));
+
+        // Features meant for tests, by name; `plugin` or `os` are not.
+        let test_support: toml::Value = toml::from_str(
+            "[package]\nname = \"app\"\n[dev-dependencies]\nengine = { path = \"../engine\", default-features = false, features = [\"test-support\"] }\nmocked = { path = \"../mocked\", features = [\"Mock\"] }\nplugin = { path = \"../plugin\", features = [\"plugin\", \"os\"] }\n",
+        )
+        .expect("valid");
+        let declared = declared_dependencies(&test_support, None);
+        let for_tests = |key: &str| {
+            declared
+                .iter()
+                .find(|dependency| dependency.key == key)
+                .expect("declared")
+                .test_features
+        };
+        assert!(for_tests("engine"));
+        assert!(for_tests("mocked"));
+        assert!(!for_tests("plugin"));
 
         // 3. Per-package transitive dependencies and scoped workspace proc-macros.
         // Package `app` transitively reaches `reexport_macro` via `app_helper`,
