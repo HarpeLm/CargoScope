@@ -238,7 +238,8 @@ pub fn set_requirement(
                 continue;
             }
             if value.is_str() {
-                if value.as_str() != Some(requirement) {
+                let requirement = keep_pin(value.as_str(), requirement);
+                if value.as_str() != Some(requirement.as_str()) {
                     // `name = "1.2"`: keep the surrounding spaces and comment.
                     let decor = value.as_value().map(|v| v.decor().clone());
                     *value = toml_edit::value(requirement);
@@ -249,7 +250,9 @@ pub fn set_requirement(
                 }
             } else if let Some(entry) = value.as_table_like_mut()
                 && entry.get("version").is_some()
-                && entry.get("version").and_then(Item::as_str) != Some(requirement)
+                && let requirement =
+                    keep_pin(entry.get("version").and_then(Item::as_str), requirement)
+                && entry.get("version").and_then(Item::as_str) != Some(requirement.as_str())
             {
                 let decor = entry
                     .get("version")
@@ -266,6 +269,17 @@ pub fn set_requirement(
         }
     }
     Ok((document.to_string(), changed))
+}
+
+/// The requirement to write over `old`: a bare version (`1.2.3`) stays pinned
+/// (`=1.2.3`) when `old` was, so an update never unpins a dependency.
+fn keep_pin(old: Option<&str>, requirement: &str) -> String {
+    let pinned = old.is_some_and(|old| old.trim_start().starts_with('='));
+    if pinned && requirement.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("={requirement}")
+    } else {
+        requirement.to_owned()
+    }
 }
 
 #[cfg(test)]
@@ -368,7 +382,7 @@ extra = ["dep:optional-thing"]
         assert!(changed);
         assert_eq!(
             edited,
-            "[dependencies]\nchrono = \"0.4.20\" # pinned\nold = { package = \"chrono\", version = \"0.4.20\", default-features = false }\nserde = \"1\"\nshared.workspace = true\n\n[dev-dependencies.chrono]\nversion = \"0.4.20\"\n\n[target.'cfg(unix)'.dependencies]\nchrono = { version = \"0.4.20\", optional = true }\n\n[workspace.dependencies]\nchrono = \"0.4.20\"\n"
+            "[dependencies]\nchrono = \"=0.4.20\" # pinned\nold = { package = \"chrono\", version = \"0.4.20\", default-features = false }\nserde = \"1\"\nshared.workspace = true\n\n[dev-dependencies.chrono]\nversion = \"0.4.20\"\n\n[target.'cfg(unix)'.dependencies]\nchrono = { version = \"0.4.20\", optional = true }\n\n[workspace.dependencies]\nchrono = \"0.4.20\"\n"
         );
         let (again, changed_again) =
             super::set_requirement(&edited, "chrono", "0.4.20").expect("valid");
@@ -377,6 +391,21 @@ extra = ["dep:optional-thing"]
         let (same, changed) = super::set_requirement(manifest, "regex", "1.9.0").expect("valid");
         assert!(!changed);
         assert_eq!(same, manifest);
+    }
+
+    #[test]
+    fn set_requirement_keeps_a_pinned_dependency_pinned() {
+        let manifest = "[dependencies]\nchrono = \"=0.4.19\"\nserde = { version = \"= 1.0.1\", features = [\"derive\"] }\nlog = \"0.4\"\n";
+        let (chrono, changed) = super::set_requirement(manifest, "chrono", "0.4.45").unwrap();
+        assert!(changed);
+        assert!(chrono.contains("chrono = \"=0.4.45\""), "{chrono}");
+        let (serde, _) = super::set_requirement(manifest, "serde", "1.0.2").unwrap();
+        assert!(serde.contains("version = \"=1.0.2\""), "{serde}");
+        let (log, _) = super::set_requirement(manifest, "log", "0.4.20").unwrap();
+        assert!(log.contains("log = \"0.4.20\""), "{log}");
+        // Already exact: nothing to change.
+        let (_, unchanged) = super::set_requirement(manifest, "chrono", "=0.4.19").unwrap();
+        assert!(!unchanged);
     }
 
     #[test]

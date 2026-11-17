@@ -5,8 +5,9 @@
 //! crates.io data (`cargoscope update`):
 //!
 //! - the newest SemVer-compatible version is set in `Cargo.lock` with
-//!   `cargo update -p name@version --precise new` (the manifests already allow
-//!   it);
+//!   `cargo update -p name@version --precise new` when the manifests already
+//!   allow it, else by raising the requirement that holds it back (a pin such
+//!   as `=0.4.19` stays a pin: `=0.4.45`);
 //! - with `--breaking`, the newest version of a newer major line is tried
 //!   first: the requirement is raised in the manifests that declare the crate,
 //!   and Cargo must accept it, else the compatible update is kept.
@@ -167,19 +168,41 @@ fn plan_package(
     if let Some(reason) = ignore_reason(config, &package.name, &package.version, &to) {
         return Ok(Some(Plan::Ignored { to, reason }));
     }
-    Ok(Some(match cargo_update(root, &spec, &to, true) {
-        Ok(()) => Plan::Update {
-            spec,
-            to,
-            kind: Kind::Compatible,
-            manifests: Vec::new(),
-            breaking_blocked,
+    let lock_error = match cargo_update(root, &spec, &to, true) {
+        Ok(()) => {
+            return Ok(Some(Plan::Update {
+                spec,
+                to,
+                kind: Kind::Compatible,
+                manifests: Vec::new(),
+                breaking_blocked,
+            }));
+        }
+        Err(error) => error,
+    };
+    // A requirement that holds the version back (`=0.4.19`, `~1.2.0`, `<1.5`):
+    // raise it in the manifests, as Dependabot does; a pin stays a pin.
+    let loaded = match manifests {
+        Some(loaded) => loaded,
+        None => manifests.insert(read_manifests(root)?),
+    };
+    let mut version = semver::Version::parse(&to).map_err(|_| ExitCode::from(2))?;
+    version.build = semver::BuildMetadata::EMPTY;
+    Ok(Some(
+        match probe_manifest_update(root, package, &version, loaded) {
+            Ok(Some(labels)) => Plan::Update {
+                spec,
+                to: version.to_string(),
+                kind: Kind::Compatible,
+                manifests: labels,
+                breaking_blocked,
+            },
+            Ok(None) | Err(_) => Plan::Blocked {
+                to,
+                reason: reason(&lock_error),
+            },
         },
-        Err(error) => Plan::Blocked {
-            to,
-            reason: reason(&error),
-        },
-    }))
+    ))
 }
 
 fn apply(root: &Path, rows: &[Row], manifests: &mut Option<Vec<Manifest>>) -> Result<(), ExitCode> {

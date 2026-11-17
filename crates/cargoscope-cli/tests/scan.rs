@@ -1543,8 +1543,9 @@ fn fix_advisories_updates_pinned_manifest_when_lockfile_alone_fails() {
         String::from_utf8_lossy(&applied.stderr)
     );
     let updated_manifest = std::fs::read_to_string(dir.join("Cargo.toml")).expect("manifest");
+    // The pin is moved, not removed.
     assert!(
-        updated_manifest.contains("serde_json = \"1.0.200\"\n"),
+        updated_manifest.contains("serde_json = \"=1.0.200\"\n"),
         "{updated_manifest}"
     );
     let updated_lock = std::fs::read_to_string(dir.join("Cargo.lock")).expect("lock");
