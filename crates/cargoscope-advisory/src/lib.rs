@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cargoscope_core::{AdvisoryFinding, AdvisoryKind, Inventory, Severity};
 
+pub mod crate_files;
 pub mod crates_io;
 mod maintenance;
 mod proxy;
