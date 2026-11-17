@@ -131,6 +131,9 @@ Released on 2026-11-17: two `fix --advisories --apply` fixes found while prepari
 
 Released on 2026-11-17: two unused-dependency false positives found while preparing eval-exec/neomacs#811. Source files' `#[path]` modules and `include!` are followed into the rest of the workspace (neomacs's xtask reuses `neovm-core/build_support/`), and a dev-dependency turning on a test feature of a workspace crate the package also reaches is possibly-unused (`neovm-eval` with `test-support`). Snapshot of 223 repositories: no change on the 70 labelled applications or the 73 libraries.
 
+- ✅ Tag `v0.7.5` pushed (2026-11-17) after CI passed on `main`; `cargo package` verified the 5 crates. GitHub Release (20 assets), crates.io (5 crates), npm, Homebrew and the installer report 0.7.5.
+- ✅ Set the version back to `0.8.0-dev`.
+
 ## One-time setup (maintainer)
 
 1. **crates.io**: create an API token with the `publish-new` and `publish-update` scopes, then add it as the repository secret `CARGO_REGISTRY_TOKEN`.
