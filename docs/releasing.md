@@ -110,6 +110,10 @@ Released on 2026-11-16: a shorter, colored text report (vulnerable crates groupe
 
 Released on 2026-11-17: update pull requests that say what to check (publication date, advisories fixed or brought, license change, minimum Rust version against the project's `rust-version`, maintenance concerns, `Cargo.lock` changes, release notes from the changelog or GitHub releases with mentions neutralised, skip rules, and a "Needs attention" list), and `fix --updates` / `fix --advisories` moving a pinned requirement while keeping it pinned. Tested on pull requests #18 and #19 of the Action test.
 
+## v0.7.3
+
+Released on 2026-11-17, right after 0.7.2: `fix --advisories` (and the Action's security pull requests) took the first patched lower bound Cargo accepted, so quinn-proto 0.11.14 went to 0.11.15, which fixes one of its seven advisories and is affected by another. A target must now fix every advisory of the package and be affected by none in the database (0.11.19). Found by running CargoScope on yyjeqhc/webcodex.
+
 ## One-time setup (maintainer)
 
 1. **crates.io**: create an API token with the `publish-new` and `publish-update` scopes, then add it as the repository secret `CARGO_REGISTRY_TOKEN`.
