@@ -108,6 +108,7 @@ dependencies = [
  "jsonschema",
  "semver",
  "serde_json",
+ "toml",
 ]
 
 [[package]]

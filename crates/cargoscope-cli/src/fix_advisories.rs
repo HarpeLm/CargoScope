@@ -172,7 +172,7 @@ struct Row {
 pub(crate) struct Manifest {
     path: PathBuf,
     label: String,
-    contents: String,
+    pub(crate) contents: String,
 }
 
 /// Restores manifests on disk when a dry-run probe finishes or fails.

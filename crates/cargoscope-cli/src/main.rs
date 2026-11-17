@@ -10,6 +10,7 @@ mod fix;
 mod fix_advisories;
 mod fix_updates;
 mod scan;
+mod update_notes;
 mod why;
 
 use std::path::{Path, PathBuf};
