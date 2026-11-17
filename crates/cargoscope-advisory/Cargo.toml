@@ -11,7 +11,7 @@ categories.workspace = true
 description = "RustSec advisory database access and caching for CargoScope"
 
 [dependencies]
-cargoscope-core = { path = "../cargoscope-core", version = "0.8.0-dev" }
+cargoscope-core = { path = "../cargoscope-core", version = "0.7.4" }
 cvss = "2"
 flate2 = "1"
 semver = "1"

@@ -120,6 +120,10 @@ Released on 2026-11-17, right after 0.7.2: `fix --advisories` (and the Action's 
 - After the tag, `main` also got the fix for `--apply` stopping when an earlier update had already moved a package (rustls pulling rustls-webpki): it ships in the next release.
 - ✅ Set the version back to `0.8.0-dev`.
 
+## v0.7.4
+
+Released on 2026-11-17: two `fix --advisories --apply` fixes found while preparing yyjeqhc/webcodex#1426. A package an earlier update already moved is skipped instead of stopping the run (#20), and packages Cargo moved along the way are brought back to their smallest fixed version (#21); a moved package is now detected even when another major version of the same crate stays in `Cargo.lock`.
+
 ## One-time setup (maintainer)
 
 1. **crates.io**: create an API token with the `publish-new` and `publish-update` scopes, then add it as the repository secret `CARGO_REGISTRY_TOKEN`.
