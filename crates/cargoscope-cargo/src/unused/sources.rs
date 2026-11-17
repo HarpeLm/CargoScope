@@ -91,6 +91,13 @@ pub(super) fn collect_sources(package_dir: &Path, manifest: &toml::Value) -> Sou
         );
         sources.has_test_files |= dir != "src" && sources.code.len() > before;
     }
+    // `#[path]` modules and `include!` of those files that point elsewhere
+    // in the workspace (an `xtask` reusing `../../core/build_support/x.rs`):
+    // the walk above only sees the package's own directories.
+    let walked = sources.code.clone();
+    for file in &walked {
+        follow_explicit_paths(file, &bound, &mut sources.code, &mut sources.skipped);
+    }
     // Targets with custom paths, such as `[[bin]] path = "tools/main.rs"`.
     for section in ["lib", "bin", "test", "bench", "example"] {
         let targets: Vec<&toml::Value> = match manifest.get(section) {
@@ -231,6 +238,38 @@ pub(super) fn follow_modules(
             .find(|path| is_source_file(path, bound))
         {
             follow_modules(&found, bound, depth + 1, files, skipped);
+        }
+    }
+}
+
+/// Follows the `#[path = "..."]` modules and `include!("...")` files of
+/// `file` (which is already collected), with their own modules, while they
+/// stay inside `bound`. Plain `mod name;` children are not followed: they
+/// live next to `file`, where the directory walk already found them.
+pub(super) fn follow_explicit_paths(
+    file: &Path,
+    bound: &Path,
+    files: &mut Vec<PathBuf>,
+    skipped: &mut usize,
+) {
+    let Ok(text) = fs::read_to_string(file) else {
+        return;
+    };
+    if !text.contains("path") && !text.contains("include!") {
+        return;
+    }
+    let Ok(tokens) = TokenStream::from_str(&text) else {
+        return;
+    };
+    let Some(dir) = file.parent() else {
+        return;
+    };
+    for included in included_files(tokens.clone()) {
+        follow_modules(&dir.join(included), bound, 1, files, skipped);
+    }
+    for (_, explicit_path) in declared_modules(tokens) {
+        if let Some(path) = explicit_path {
+            follow_modules(&dir.join(path), bound, 1, files, skipped);
         }
     }
 }
