@@ -106,6 +106,10 @@ Released on 2026-11-16: a shorter, colored text report (vulnerable crates groupe
 - ✅ `cargo fmt`, `clippy -D warnings`, `cargo test --workspace`; `cargo clean` then `cargo package --workspace --exclude cargoscope-corpus`: the 5 crates verify; `dist plan` unchanged. Tag `v0.7.1` pushed (2026-11-16) after CI passed on `main`. GitHub Release (20 assets), crates.io (5 crates), Homebrew and the installer report 0.7.1; npm reports 0.7.1 after about 20 minutes of processing; the Action passes on the 3 operating systems with 0.7.1.
 - ✅ Set the version back to `0.8.0-dev`.
 
+## v0.7.2
+
+Released on 2026-11-17: update pull requests that say what to check (publication date, advisories fixed or brought, license change, minimum Rust version against the project's `rust-version`, maintenance concerns, `Cargo.lock` changes, release notes from the changelog or GitHub releases with mentions neutralised, skip rules, and a "Needs attention" list), and `fix --updates` / `fix --advisories` moving a pinned requirement while keeping it pinned. Tested on pull requests #18 and #19 of the Action test.
+
 ## One-time setup (maintainer)
 
 1. **crates.io**: create an API token with the `publish-new` and `publish-update` scopes, then add it as the repository secret `CARGO_REGISTRY_TOKEN`.
