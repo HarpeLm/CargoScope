@@ -116,6 +116,10 @@ Released on 2026-11-17: update pull requests that say what to check (publication
 
 Released on 2026-11-17, right after 0.7.2: `fix --advisories` (and the Action's security pull requests) took the first patched lower bound Cargo accepted, so quinn-proto 0.11.14 went to 0.11.15, which fixes one of its seven advisories and is affected by another. A target must now fix every advisory of the package and be affected by none in the database (0.11.19). Found by running CargoScope on yyjeqhc/webcodex.
 
+- ✅ Tag `v0.7.3` pushed (2026-11-17) after CI passed on `main`; `cargo package` verified the 5 crates. GitHub Release (20 assets), crates.io (5 crates), npm, Homebrew and the installer report 0.7.3.
+- After the tag, `main` also got the fix for `--apply` stopping when an earlier update had already moved a package (rustls pulling rustls-webpki): it ships in the next release.
+- ✅ Set the version back to `0.8.0-dev`.
+
 ## One-time setup (maintainer)
 
 1. **crates.io**: create an API token with the `publish-new` and `publish-update` scopes, then add it as the repository secret `CARGO_REGISTRY_TOKEN`.
