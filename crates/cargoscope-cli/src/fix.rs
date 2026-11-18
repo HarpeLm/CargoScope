@@ -32,6 +32,10 @@ struct FixOptions {
     format: crate::fix_advisories::Format,
     /// ANSI color preference for text output.
     color: ColorChoice,
+    /// PR comment command to apply on an update pull request (`--comment-command`).
+    comment_command: Option<String>,
+    /// File containing the pull request Markdown body (`--pr-body`).
+    pr_body: Option<PathBuf>,
 }
 
 fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptions, String> {
@@ -58,6 +62,26 @@ fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptio
             }
             .ok_or("Missing value for --color.")?;
             options.color = ColorChoice::parse(&value)?;
+            continue;
+        }
+        if argument == "--comment-command" || argument.starts_with("--comment-command=") {
+            let value = match argument.strip_prefix("--comment-command=") {
+                Some(value) => Some(value.to_owned()),
+                None => arguments.next(),
+            }
+            .filter(|val| !val.trim().is_empty())
+            .ok_or("Missing value for --comment-command.")?;
+            options.comment_command = Some(value);
+            continue;
+        }
+        if argument == "--pr-body" || argument.starts_with("--pr-body=") {
+            let value = match argument.strip_prefix("--pr-body=") {
+                Some(value) => Some(value.to_owned()),
+                None => arguments.next(),
+            }
+            .filter(|val| !val.trim().is_empty())
+            .ok_or("Missing value for --pr-body.")?;
+            options.pr_body = Some(PathBuf::from(value));
             continue;
         }
         match argument.as_str() {
@@ -109,6 +133,12 @@ fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptio
     if options.breaking && !options.updates {
         return Err("--breaking needs --updates".to_owned());
     }
+    if options.comment_command.is_some() != options.pr_body.is_some() {
+        return Err("--comment-command and --pr-body must be used together".to_owned());
+    }
+    if options.comment_command.is_some() && !options.updates {
+        return Err("--comment-command requires --updates".to_owned());
+    }
     Ok(options)
 }
 
@@ -135,6 +165,15 @@ pub fn fix_command(arguments: impl Iterator<Item = String>) -> ExitCode {
 fn run_fix(options: &FixOptions) -> Result<ExitCode, ExitCode> {
     let root = options.path.as_deref().unwrap_or(Path::new("."));
     let paint = Paint::new(options.color.enabled(false));
+    if let (Some(comment), Some(pr_body)) = (&options.comment_command, &options.pr_body) {
+        return crate::fix_updates::run_comment_command(
+            root,
+            comment,
+            pr_body,
+            options.apply,
+            paint,
+        );
+    }
     if options.updates {
         return crate::fix_updates::run(
             root,

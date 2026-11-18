@@ -396,6 +396,93 @@ pub fn load(project_root: &Path) -> Result<UpdatesConfig, String> {
     from_toml(&text).map_err(|error| format!("{}: {error}", path.display()))
 }
 
+/// Appends an ignore rule to `[updates] ignore` in `contents` (`cargoscope.toml`),
+/// creating `[updates]` and `ignore` if absent while keeping existing formatting
+/// and comments. Returns the updated contents and `false` if an identical rule
+/// already exists.
+///
+/// # Errors
+///
+/// Returns a message when `contents` is not valid TOML, or when `[updates]` or
+/// `[updates] ignore` has an incompatible type.
+pub fn add_ignore_rule(
+    contents: &str,
+    name: &str,
+    versions: Option<&[String]>,
+    update_types: Option<&[UpdateType]>,
+    reason: Option<&str>,
+) -> Result<(String, bool), String> {
+    let mut document: toml_edit::DocumentMut =
+        contents.parse().map_err(|error| format!("{error}"))?;
+    let updates_item = document
+        .as_table_mut()
+        .entry("updates")
+        .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
+    let updates_table = updates_item
+        .as_table_like_mut()
+        .ok_or_else(|| "[updates] must be a table".to_owned())?;
+    let ignore_item = updates_table
+        .entry("ignore")
+        .or_insert_with(|| toml_edit::value(toml_edit::Array::new()));
+    let ignore_array = ignore_item
+        .as_value_mut()
+        .and_then(toml_edit::Value::as_array_mut)
+        .ok_or_else(|| "[updates] ignore must be an array of tables".to_owned())?;
+
+    let desired_versions: Vec<&str> = versions.unwrap_or(&[]).iter().map(String::as_str).collect();
+    let desired_types: Vec<&str> = update_types
+        .unwrap_or(&[])
+        .iter()
+        .map(|kind| kind.as_str())
+        .collect();
+    let already_exists = ignore_array.iter().any(|item| {
+        let Some(table) = item.as_inline_table() else {
+            return false;
+        };
+        let same_name = table.get("name").and_then(toml_edit::Value::as_str) == Some(name);
+        let entry_list = |key: &str| -> Vec<&str> {
+            table
+                .get(key)
+                .and_then(toml_edit::Value::as_array)
+                .map(|arr| arr.iter().filter_map(toml_edit::Value::as_str).collect())
+                .unwrap_or_default()
+        };
+        same_name
+            && entry_list("versions") == desired_versions
+            && entry_list("update-types") == desired_types
+    });
+    if already_exists {
+        return Ok((contents.to_owned(), false));
+    }
+
+    let mut rule = toml_edit::InlineTable::new();
+    rule.insert("name", toml_edit::Value::from(name));
+    if !desired_versions.is_empty() {
+        let mut arr = toml_edit::Array::new();
+        for v in desired_versions {
+            arr.push(v);
+        }
+        rule.insert("versions", toml_edit::Value::Array(arr));
+    }
+    if !desired_types.is_empty() {
+        let mut arr = toml_edit::Array::new();
+        for kind in desired_types {
+            arr.push(kind);
+        }
+        rule.insert("update-types", toml_edit::Value::Array(arr));
+    }
+    if let Some(reason) = reason.filter(|r| !r.trim().is_empty()) {
+        rule.insert("reason", toml_edit::Value::from(reason));
+    }
+    let mut val = toml_edit::Value::InlineTable(rule);
+    val.decor_mut().set_prefix("\n  ");
+    ignore_array.push_formatted(val);
+    ignore_array.set_trailing("\n");
+    ignore_array.set_trailing_comma(true);
+
+    Ok((document.to_string(), true))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{DependencyType, UpdateType, parse, wildcard_match};
@@ -522,5 +609,40 @@ mod tests {
             error("[updates]\ngroups = [{ name = \"a b\" }]\n").contains("groups need a `name`")
         );
         assert!(error("[updates]\nopen-pull-requests-limit = -1\n").contains("limit"));
+    }
+
+    #[test]
+    fn adds_ignore_rule_and_stays_idempotent() {
+        let original = "# project policy\n[advisories]\nignore = []\n";
+        let versions = vec!["1.0.210".to_owned()];
+        let (edited, added) = super::add_ignore_rule(
+            original,
+            "serde",
+            Some(&versions),
+            None,
+            Some("ignored from pull request"),
+        )
+        .expect("valid edit");
+        assert!(added);
+        assert!(edited.contains("# project policy\n"), "{edited}");
+        assert!(
+            edited.contains(
+                "{ name = \"serde\", versions = [\"1.0.210\"], reason = \"ignored from pull request\" }"
+            ),
+            "{edited}"
+        );
+
+        let (again, added_again) =
+            super::add_ignore_rule(&edited, "serde", Some(&versions), None, None).expect("valid");
+        assert!(!added_again);
+        assert_eq!(again, edited);
+
+        let types = vec![super::UpdateType::Major];
+        let (with_major, added_major) =
+            super::add_ignore_rule(&edited, "ureq", None, Some(&types), None).expect("valid");
+        assert!(added_major);
+        let table: toml::Table = toml::from_str(&with_major).expect("valid TOML");
+        let parsed = super::parse(table["updates"].as_table().unwrap()).expect("valid [updates]");
+        assert_eq!(parsed.ignore.len(), 2);
     }
 }

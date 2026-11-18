@@ -195,7 +195,7 @@ The JSON report follows a published schema with a compatibility policy: see [doc
 | **v0.5** | Delivered: `fix --advisories`, `audit-bin`, `deny.toml` parity, `[graph]` scoping, per-crate licenses |
 | **v0.6** | Delivered: offline HTML report (`--format html`), SemVer compatible vs breaking updates, CycloneDX 1.5 SBOM, `cargoscope why`, full `deny.toml` parity (34 of 34 projects) |
 | **v0.7** | Delivered: Dependabot-style update pull requests with `[updates]` settings, maintenance indicators, cargo-deny-level licenses and build-time crate inspection, third blind benchmark |
-| **v0.8** | Multi-project report aggregation (`cargoscope aggregate`, delivered); comment commands on update pull requests |
+| **v0.8** | Delivered so far: multi-project report aggregation (`cargoscope aggregate`), PR comment commands (`/cargoscope rebase`, `recreate`, `ignore`) on update PRs |
 | **1.0** | Stable CLI, JSON schema and compatibility policy |
 
 CargoScope supports **Rust/Cargo only**. Other ecosystems are not planned until the Rust experience is clearly better than combining existing tools. See [SPEC.md](SPEC.md) for the full specification.
@@ -356,6 +356,8 @@ The Action opens the pull requests on a schedule, one per dependency as Dependab
 on:
   schedule:
     - cron: "0 6 * * 1"   # every Monday
+  issue_comment:
+    types: [created]      # respond to /cargoscope rebase | recreate | ignore this ...
   workflow_dispatch:
 
 permissions:
@@ -401,7 +403,7 @@ groups = [
 
 Update types count the SemVer component that changes, as Dependabot does (`0.8.1 -> 0.9.0` is a minor update). An ignored major version falls back to the compatible update. Each update in a pull request links its source diff ([diff.rs](https://diff.rs)) and, for GitHub repositories, its release notes. The pull request also says, for each update: when the new version was published, the advisories it fixes or brings, a license change, the minimum Rust version it needs against the project's `rust-version`, and maintenance concerns; what else changes in `Cargo.lock`; the release notes in between, from the crate's changelog or its GitHub releases (mentions and issue references are neutralised, as Dependabot does, so nobody is notified); and the `[updates] ignore` rule that skips it. Anything that needs a decision (a major version, a higher minimum Rust version, a new license, a new advisory) is listed first. A pinned requirement (`=0.4.19`) is moved and stays pinned (`=0.4.45`). Building the body reads the crate files from Cargo's cache or crates.io, and the GitHub releases with `GITHUB_TOKEN` when set.
 
-A later run updates each pull request in place, and closes the ones the base branch no longer needs (merged by hand, or already up to date). The two GitHub rules of the security pull requests apply. Compared with Dependabot: CargoScope needs this workflow file (Dependabot needs a `dependabot.yml` for version updates too), covers Cargo only, has no comment commands (`@dependabot rebase`, ignore this version) yet, and writes in the pull request which updates Cargo refused and why.
+A later run updates each pull request in place, and closes the ones the base branch no longer needs (merged by hand, or already up to date). Maintainers can also comment `/cargoscope rebase`, `/cargoscope recreate`, `/cargoscope ignore this version`, `/cargoscope ignore this major version`, `/cargoscope ignore this minor version`, or `/cargoscope ignore this dependency` (`@cargoscope ...` works too) on an update pull request when `issue_comment` is enabled on the workflow. The two GitHub rules of the security pull requests apply. Compared with Dependabot: CargoScope needs this workflow file (Dependabot needs a `dependabot.yml` for version updates too), covers Cargo only, and writes in the pull request which updates Cargo refused and why.
 
 ## Auditing a Compiled Binary
 

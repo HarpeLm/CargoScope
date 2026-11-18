@@ -67,9 +67,12 @@ const FIX_USAGE: &str =
       which may read the registry index; it compiles nothing.
   cargoscope fix --updates [PATH] [--breaking] [--dry-run | --apply] [--only NAMES]
                  [--format text|markdown|json] [--color WHEN]
+                 [--comment-command COMMENT --pr-body FILE]
       Update direct dependencies to their newest SemVer-compatible version in
       Cargo.lock, as Dependabot version updates do. With --breaking, try the
       newest major version first, raising the requirement in Cargo.toml.
+      With --comment-command and --pr-body, interpret a PR comment such as
+      `/cargoscope rebase` or `/cargoscope ignore this major version`.
       Needs the crates.io data of `cargoscope update`; compiles nothing.";
 
 const SCAN_USAGE: &str = "  cargoscope scan [PATH] [--update] [--no-maintenance | --fast] [--format text|json|sarif|cyclonedx|html] [--output FILE] [--fail-on THRESHOLD] [--ignore-unlikely] [--show-uncertain] [--verbose] [--precise] [--color WHEN]

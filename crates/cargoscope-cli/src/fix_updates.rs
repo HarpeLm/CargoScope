@@ -32,6 +32,254 @@ use crate::update_notes::{
     LockDiff, project_rust_version, release_notes, rust_version_key, sanitize_notes,
 };
 
+/// Command parsed from a comment on a CargoScope update pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrCommand {
+    /// `/cargoscope rebase` or `@cargoscope rebase`.
+    Rebase,
+    /// `/cargoscope recreate` or `@cargoscope recreate`.
+    Recreate,
+    /// `/cargoscope ignore this version`.
+    IgnoreVersion,
+    /// `/cargoscope ignore this major version`.
+    IgnoreMajor,
+    /// `/cargoscope ignore this minor version`.
+    IgnoreMinor,
+    /// `/cargoscope ignore this dependency` (or `crate`).
+    IgnoreDependency,
+}
+
+impl PrCommand {
+    const fn action_name(self) -> &'static str {
+        match self {
+            Self::Rebase => "rebase",
+            Self::Recreate => "recreate",
+            Self::IgnoreVersion
+            | Self::IgnoreMajor
+            | Self::IgnoreMinor
+            | Self::IgnoreDependency => "ignore",
+        }
+    }
+}
+
+/// Parses a PR comment looking for `/cargoscope <command>` or `@cargoscope <command>`.
+#[must_use]
+pub fn parse_pr_comment(comment: &str) -> Option<PrCommand> {
+    for raw_line in comment.lines() {
+        let trimmed = raw_line.trim();
+        let rest = trimmed
+            .strip_prefix("/cargoscope")
+            .or_else(|| trimmed.strip_prefix("@cargoscope"))
+            .or_else(|| trimmed.strip_prefix("/CARGOSCOPE"))
+            .or_else(|| trimmed.strip_prefix("@CARGOSCOPE"));
+        let Some(after) = rest else {
+            continue;
+        };
+        if !after.is_empty() && !after.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let normalized: String = after
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
+        let parsed = match normalized.as_str() {
+            "rebase" => Some(PrCommand::Rebase),
+            "recreate" => Some(PrCommand::Recreate),
+            "ignore this version" => Some(PrCommand::IgnoreVersion),
+            "ignore this major version" => Some(PrCommand::IgnoreMajor),
+            "ignore this minor version" => Some(PrCommand::IgnoreMinor),
+            "ignore this dependency" | "ignore this crate" => Some(PrCommand::IgnoreDependency),
+            _ => None,
+        };
+        if parsed.is_some() {
+            return parsed;
+        }
+    }
+    None
+}
+
+/// Extracts `(package, from, to)` rows from the Markdown table of a
+/// CargoScope update pull request (`<!-- cargoscope-update-pr -->`).
+#[must_use]
+pub fn parse_pr_body_updates(body: &str) -> Vec<(String, String, String)> {
+    let mut updates = Vec::new();
+    for line in body.lines() {
+        let line = line.trim();
+        if !line.starts_with('|') {
+            continue;
+        }
+        let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+        if cells.len() < 4 {
+            continue;
+        }
+        let pkg_cell = cells[1];
+        let ver_cell = cells[2];
+        let Some(pkg_start) = pkg_cell.find('`') else {
+            continue;
+        };
+        let Some(pkg_rel_end) = pkg_cell[pkg_start + 1..].find('`') else {
+            continue;
+        };
+        let name = pkg_cell[pkg_start + 1..pkg_start + 1 + pkg_rel_end].trim();
+        let Some((from, to_raw)) = ver_cell.split_once('→') else {
+            continue;
+        };
+        let from = from.trim();
+        let to = to_raw.trim().trim_matches('*').trim();
+        if !name.is_empty() && !from.is_empty() && !to.is_empty() {
+            updates.push((name.to_owned(), from.to_owned(), to.to_owned()));
+        }
+    }
+    updates
+}
+
+/// Executes a PR comment command against a `<!-- cargoscope-update-pr -->`
+/// pull request body and prints a JSON summary on stdout.
+///
+/// # Errors
+///
+/// Returns exit code `2` when the PR body is unreadable or not a CargoScope
+/// update PR, when the comment contains no supported command, or when
+/// `cargoscope.toml` cannot be read or written.
+pub fn run_comment_command(
+    root: &Path,
+    comment: &str,
+    pr_body_path: &Path,
+    apply_changes: bool,
+    paint: cargoscope_report::Paint,
+) -> Result<ExitCode, ExitCode> {
+    let body = std::fs::read_to_string(pr_body_path).map_err(|error| {
+        eprintln!(
+            "CargoScope could not read {}: {error}",
+            pr_body_path.display()
+        );
+        ExitCode::from(2)
+    })?;
+    if !body.trim_start().starts_with(PR_MARKER) {
+        eprintln!("Pull request body is not a CargoScope update pull request.");
+        return Err(ExitCode::from(2));
+    }
+    let Some(command) = parse_pr_comment(comment) else {
+        eprintln!("Unsupported comment command: `{}`.", comment.trim());
+        return Err(ExitCode::from(2));
+    };
+    let updates = parse_pr_body_updates(&body);
+    if updates.is_empty() {
+        eprintln!("No dependency updates found in pull request body.");
+        return Err(ExitCode::from(2));
+    }
+    let mut packages: Vec<String> = updates.iter().map(|(name, _, _)| name.clone()).collect();
+    packages.sort();
+    packages.dedup();
+    let has_major = body.contains(" | major | ");
+
+    match command {
+        PrCommand::Rebase | PrCommand::Recreate => {
+            if apply_changes {
+                return run(root, has_major, true, Format::Json, Some(&packages), paint);
+            }
+            let payload = serde_json::json!({
+                "command": command.action_name(),
+                "packages": packages,
+                "breaking": has_major,
+                "modified": false,
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&payload).unwrap_or_default()
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        PrCommand::IgnoreVersion
+        | PrCommand::IgnoreMajor
+        | PrCommand::IgnoreMinor
+        | PrCommand::IgnoreDependency => {
+            let config_path = root.join(cargoscope_cargo::config::FILE_NAME);
+            let existing = if config_path.exists() {
+                std::fs::read_to_string(&config_path).map_err(|error| {
+                    eprintln!(
+                        "CargoScope could not read {}: {error}",
+                        config_path.display()
+                    );
+                    ExitCode::from(2)
+                })?
+            } else {
+                String::new()
+            };
+            let mut updated = existing.clone();
+            let mut any_changed = false;
+            for (name, _, to) in &updates {
+                let versions = [to.clone()];
+                let major = [UpdateType::Major];
+                let minor = [UpdateType::Minor];
+                let (next, changed) = match command {
+                    PrCommand::IgnoreVersion => cargoscope_cargo::updates::add_ignore_rule(
+                        &updated,
+                        name,
+                        Some(&versions),
+                        None,
+                        Some("ignored from pull request comment"),
+                    ),
+                    PrCommand::IgnoreMajor => cargoscope_cargo::updates::add_ignore_rule(
+                        &updated,
+                        name,
+                        None,
+                        Some(&major),
+                        Some("ignored from pull request comment"),
+                    ),
+                    PrCommand::IgnoreMinor => cargoscope_cargo::updates::add_ignore_rule(
+                        &updated,
+                        name,
+                        None,
+                        Some(&minor),
+                        Some("ignored from pull request comment"),
+                    ),
+                    PrCommand::IgnoreDependency => cargoscope_cargo::updates::add_ignore_rule(
+                        &updated,
+                        name,
+                        None,
+                        None,
+                        Some("ignored from pull request comment"),
+                    ),
+                    PrCommand::Rebase | PrCommand::Recreate => unreachable!(),
+                }
+                .map_err(|error| execution_error(root, &error))?;
+                updated = next;
+                any_changed |= changed;
+            }
+            if apply_changes && any_changed {
+                std::fs::write(&config_path, &updated).map_err(|error| {
+                    eprintln!(
+                        "CargoScope could not write {}: {error}",
+                        config_path.display()
+                    );
+                    ExitCode::from(2)
+                })?;
+            }
+            let rule_summary = match command {
+                PrCommand::IgnoreVersion => "ignore this version",
+                PrCommand::IgnoreMajor => "ignore this major version",
+                PrCommand::IgnoreMinor => "ignore this minor version",
+                PrCommand::IgnoreDependency => "ignore this dependency",
+                PrCommand::Rebase | PrCommand::Recreate => "",
+            };
+            let payload = serde_json::json!({
+                "command": "ignore",
+                "rule": rule_summary,
+                "packages": packages,
+                "modified": any_changed,
+                "breaking": has_major,
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&payload).unwrap_or_default()
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
 /// First line of the Markdown report: lets the GitHub Action recognise its
 /// own pull requests.
 pub const PR_MARKER: &str = "<!-- cargoscope-update-pr -->";
@@ -604,7 +852,7 @@ fn render_markdown(rows: &[Row], body: &Body) -> String {
                 );
             }
         }
-        out.push_str("]\n```\n\n</details>\n\n");
+        out.push_str("]\n```\n\nComment on this pull request with `/cargoscope rebase`, `/cargoscope recreate`, `/cargoscope ignore this version`, `/cargoscope ignore this major version`, or `/cargoscope ignore this dependency`.\n\n</details>\n\n");
     }
     out.push_str("Made with `cargoscope fix --updates --apply`, which only resolves versions: the checks of this pull request build and test them.\n");
     out
@@ -1290,6 +1538,50 @@ mod tests {
         assert_eq!(
             UpdateType::between("1.40.0", "2.0.0"),
             Some(UpdateType::Major)
+        );
+    }
+
+    #[test]
+    fn parses_pr_comment_commands_and_body_updates() {
+        use super::{PrCommand, parse_pr_body_updates, parse_pr_comment};
+
+        assert_eq!(
+            parse_pr_comment("/cargoscope rebase"),
+            Some(PrCommand::Rebase)
+        );
+        assert_eq!(
+            parse_pr_comment("thanks!\n@cargoscope recreate\n"),
+            Some(PrCommand::Recreate)
+        );
+        assert_eq!(
+            parse_pr_comment("/cargoscope ignore   this version"),
+            Some(PrCommand::IgnoreVersion)
+        );
+        assert_eq!(
+            parse_pr_comment("@cargoscope ignore this major version"),
+            Some(PrCommand::IgnoreMajor)
+        );
+        assert_eq!(
+            parse_pr_comment("/cargoscope ignore this dependency"),
+            Some(PrCommand::IgnoreDependency)
+        );
+        assert_eq!(parse_pr_comment("/cargoscope-other rebase"), None);
+        assert_eq!(parse_pr_comment("looks good to me"), None);
+
+        let body = format!(
+            "{}\n| Package | Version | Update | Published | Checks | Links |\n|---|---|---|---|---|---|\n| [`serde`](https://crates.io/crates/serde/1.0.210) | 1.0.200 → **1.0.210** | patch | 2026-11-01 | ✅ | [diff](https://diff.rs/serde/1.0.200/1.0.210) |\n| [`ureq`](https://crates.io/crates/ureq/3.1.0) | 2.12.1 → **3.1.0** | major | 2026-11-01 | ✅ | [diff](https://diff.rs/ureq/2.12.1/3.1.0) |\n",
+            super::PR_MARKER
+        );
+        assert_eq!(
+            parse_pr_body_updates(&body),
+            vec![
+                (
+                    "serde".to_owned(),
+                    "1.0.200".to_owned(),
+                    "1.0.210".to_owned()
+                ),
+                ("ureq".to_owned(), "2.12.1".to_owned(), "3.1.0".to_owned()),
+            ]
         );
     }
 }

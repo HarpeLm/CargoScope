@@ -102,6 +102,7 @@ runs:
 
     - name: Choose the data cache
       id: cache-key
+      if: ${{ github.event_name != 'issue_comment' }}
       shell: bash
       run: |
         echo "CARGOSCOPE_CACHE_DIR=$RUNNER_TEMP/cargoscope-cache" >> "$GITHUB_ENV"
@@ -109,6 +110,7 @@ runs:
         echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
 
     - name: Restore RustSec and crates.io data
+      if: ${{ github.event_name != 'issue_comment' }}
       uses: actions/cache@v4
       with:
         path: ${{ runner.temp }}/cargoscope-cache
@@ -116,6 +118,7 @@ runs:
         restore-keys: cargoscope-data-${{ runner.os }}-
 
     - name: Download advisory and registry data
+      if: ${{ github.event_name != 'issue_comment' }}
       shell: bash
       env:
         PROJECT: ${{ inputs.path }}
@@ -125,7 +128,7 @@ runs:
 
     - name: Scan the base branch of the pull request
       id: base
-      if: ${{ github.event.pull_request && (inputs.comment == 'true' || inputs.new-only == 'true') }}
+      if: ${{ github.event_name != 'issue_comment' && github.event.pull_request && (inputs.comment == 'true' || inputs.new-only == 'true') }}
       shell: bash
       env:
         PROJECT: ${{ inputs.path }}
@@ -148,6 +151,7 @@ runs:
 
     - name: Scan
       id: scan
+      if: ${{ github.event_name != 'issue_comment' }}
       shell: bash
       env:
         PROJECT: ${{ inputs.path }}
@@ -211,7 +215,7 @@ runs:
 
     - name: Open, update or close the security and version update pull requests
       id: security-pr
-      if: ${{ (inputs.open-pr == 'true' || inputs.updates != 'none') && !github.event.pull_request }}
+      if: ${{ github.event_name != 'issue_comment' && (inputs.open-pr == 'true' || inputs.updates != 'none') && !github.event.pull_request }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token }}
@@ -395,8 +399,100 @@ runs:
         git checkout -q --detach --force "$GITHUB_SHA"
         echo "url=$first_url" >> "$GITHUB_OUTPUT"
 
+    - name: Handle comment commands on update pull requests
+      if: ${{ github.event_name == 'issue_comment' && github.event.issue.pull_request && (startsWith(github.event.comment.body, '/cargoscope') || startsWith(github.event.comment.body, '@cargoscope')) }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        TOKEN: ${{ inputs.token }}
+        PROJECT: ${{ inputs.path }}
+        REPOSITORY: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.issue.number }}
+        COMMENT_BODY: ${{ github.event.comment.body }}
+        ASSOCIATION: ${{ github.event.comment.author_association }}
+        PREFIX: ${{ inputs.commit-prefix }}
+        CI_WORKFLOW: ${{ inputs.ci-workflow }}
+        UPDATES: ${{ inputs.updates }}
+      run: |
+        case "$ASSOCIATION" in
+          OWNER | MEMBER | COLLABORATOR) ;;
+          *) echo "Ignoring CargoScope comment from user without write access ($ASSOCIATION)."; exit 0 ;;
+        esac
+        pr_json="$RUNNER_TEMP/cargoscope-pr.json"
+        pr_body="$RUNNER_TEMP/cargoscope-pr-body.md"
+        gh pr view "$PR_NUMBER" --repo "$REPOSITORY" --json body,headRefName,baseRefName,state > "$pr_json"
+        if [ "$(jq -r .state "$pr_json")" != "OPEN" ]; then
+          exit 0
+        fi
+        jq -r .body "$pr_json" > "$pr_body"
+        if ! head -n 1 "$pr_body" | grep -q "<!-- cargoscope-update-pr -->"; then
+          exit 0
+        fi
+        head_branch=$(jq -r .headRefName "$pr_json")
+        base_branch=$(jq -r .baseRefName "$pr_json")
+
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git fetch -q origin "$base_branch"
+        git checkout -q -B "$base_branch" "origin/$base_branch"
+
+        plan="$RUNNER_TEMP/cargoscope-comment-plan.json"
+        cargoscope fix --updates "$PROJECT" --comment-command "$COMMENT_BODY" --pr-body "$pr_body" > "$plan"
+        cmd=$(jq -r .command "$plan")
+        pkg_csv=$(jq -r '.packages | join(",")' "$plan")
+        has_major=$(jq -r .breaking "$plan")
+
+        if [ "$cmd" = "ignore" ]; then
+          rule=$(jq -r .rule "$plan")
+          cargoscope fix --updates "$PROJECT" --comment-command "$COMMENT_BODY" --pr-body "$pr_body" --apply > /dev/null
+          cfg=$(git status --porcelain -- '*cargoscope.toml' 'cargoscope.toml' | awk '{print $2}' | head -n 1)
+          if [ -n "$cfg" ]; then
+            git add "$cfg"
+            git commit -q -m "${PREFIX}Ignore $pkg_csv update in cargoscope.toml ($rule)"
+            if ! git -c http.https://github.com/.extraheader= push -q \
+              "https://x-access-token:${TOKEN}@github.com/${REPOSITORY}.git" "HEAD:refs/heads/${base_branch}"; then
+              ignore_branch="cargoscope/ignore-${PR_NUMBER}"
+              git checkout -q -b "$ignore_branch"
+              git -c http.https://github.com/.extraheader= push -q --force \
+                "https://x-access-token:${TOKEN}@github.com/${REPOSITORY}.git" "HEAD:refs/heads/${ignore_branch}"
+              gh pr create --repo "$REPOSITORY" --base "$base_branch" --head "$ignore_branch" \
+                --title "${PREFIX}Ignore $pkg_csv update ($rule)" \
+                --body "Requested on #${PR_NUMBER} via \`${COMMENT_BODY}\`." > /dev/null
+            fi
+          fi
+          gh pr close "$PR_NUMBER" --repo "$REPOSITORY" --delete-branch \
+            --comment "CargoScope: added \`${rule}\` rule for \`${pkg_csv}\` and closed this pull request." > /dev/null
+        elif [ "$cmd" = "rebase" ] || [ "$cmd" = "recreate" ]; then
+          export CARGOSCOPE_CACHE_DIR="$RUNNER_TEMP/cargoscope-cache"
+          cargoscope update "$PROJECT" --fast
+          fix="--updates"
+          if [ "$has_major" = "true" ] || [ "$UPDATES" = "breaking" ]; then
+            fix="--updates --breaking"
+          fi
+          new_body="$RUNNER_TEMP/cargoscope-rebuilt-pr.md"
+          # shellcheck disable=SC2086
+          cargoscope fix $fix "$PROJECT" --apply --format markdown --only "$pkg_csv" > "$new_body"
+          changed=$(git status --porcelain -- '*Cargo.lock' 'Cargo.lock' '*Cargo.toml' 'Cargo.toml' | awk '{print $2}' | sort -u)
+          if [ -n "$changed" ]; then
+            git switch -q -C "$head_branch"
+            # shellcheck disable=SC2086
+            git add $changed
+            git commit -q -m "${PREFIX}Rebuild $pkg_csv update (/cargoscope $cmd)"
+            git -c http.https://github.com/.extraheader= push -q --force \
+              "https://x-access-token:${TOKEN}@github.com/${REPOSITORY}.git" "HEAD:refs/heads/${head_branch}"
+            gh pr edit "$PR_NUMBER" --repo "$REPOSITORY" --body-file "$new_body" > /dev/null
+            if [ -n "$CI_WORKFLOW" ]; then
+              gh workflow run "$CI_WORKFLOW" --repo "$REPOSITORY" --ref "$head_branch" || true
+            fi
+            gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" --body "CargoScope: rebuilt this pull request via \`/cargoscope $cmd\`." > /dev/null
+          else
+            gh pr close "$PR_NUMBER" --repo "$REPOSITORY" --delete-branch \
+              --comment "CargoScope: nothing left to update for \`${pkg_csv}\` after rebasing onto \`${base_branch}\`." > /dev/null
+          fi
+        fi
+
     - name: Upload SARIF to code scanning
-      if: ${{ inputs.upload-sarif == 'true' && steps.scan.outputs.exit-code != '2' }}
+      if: ${{ github.event_name != 'issue_comment' && inputs.upload-sarif == 'true' && steps.scan.outputs.exit-code != '2' }}
       continue-on-error: true
       uses: github/codeql-action/upload-sarif@v3
       with:
@@ -404,7 +500,7 @@ runs:
         category: cargoscope
 
     - name: Apply the failure threshold
-      if: ${{ steps.scan.outputs.exit-code == '1' }}
+      if: ${{ github.event_name != 'issue_comment' && steps.scan.outputs.exit-code == '1' }}
       shell: bash
       run: |
         echo "::error::CargoScope found advisories at or above the threshold, or a policy violation."

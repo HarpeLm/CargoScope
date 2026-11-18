@@ -2936,3 +2936,83 @@ fn aggregate_merges_reports_across_projects_in_text_json_and_html() {
     let _ = std::fs::remove_file(&report_a);
     let _ = std::fs::remove_file(&report_b);
 }
+
+#[test]
+fn comment_commands_parse_pr_body_and_update_ignore_rules() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-pr-cmd-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    copy_dir(&fixture("simple"), &dir);
+
+    let pr_body = dir.join("pr-body.md");
+    std::fs::write(
+        &pr_body,
+        "<!-- cargoscope-update-pr -->\n| Package | Version | Update | Published | Checks | Links |\n|---|---|---|---|---|---|\n| [`serde_json`](https://crates.io/crates/serde_json/1.0.200) | 1.0.128 → **1.0.200** | minor | 2026-11-01 | ✅ no issue found | [diff](https://diff.rs/serde_json/1.0.128/1.0.200) |\n",
+    )
+    .expect("write pr body");
+
+    let dry_ignore = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .args([
+            "fix",
+            "--updates",
+            "--comment-command",
+            "/cargoscope ignore this version",
+            "--pr-body",
+            pr_body.to_str().expect("utf-8"),
+        ])
+        .arg(&dir)
+        .output()
+        .expect("comment dry run");
+    assert_eq!(dry_ignore.status.code(), Some(0));
+    assert!(!dir.join("cargoscope.toml").exists());
+    let dry_json: serde_json::Value =
+        serde_json::from_slice(&dry_ignore.stdout).expect("valid JSON");
+    assert_eq!(dry_json["command"], "ignore");
+    assert_eq!(dry_json["modified"], true);
+    assert_eq!(dry_json["packages"], serde_json::json!(["serde_json"]));
+
+    let apply_ignore = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .args([
+            "fix",
+            "--updates",
+            "--apply",
+            "--comment-command",
+            "@cargoscope ignore this version",
+            "--pr-body",
+            pr_body.to_str().expect("utf-8"),
+        ])
+        .arg(&dir)
+        .output()
+        .expect("comment apply ignore");
+    assert_eq!(apply_ignore.status.code(), Some(0));
+    let config =
+        std::fs::read_to_string(dir.join("cargoscope.toml")).expect("cargoscope.toml written");
+    assert!(config.contains("[updates]"), "{config}");
+    assert!(
+        config.contains("name = \"serde_json\", versions = [\"1.0.200\"]"),
+        "{config}"
+    );
+    assert!(
+        cargoscope_cargo::updates::from_toml(&config).is_ok(),
+        "{config}"
+    );
+
+    let rebase = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .args([
+            "fix",
+            "--updates",
+            "--comment-command",
+            "/cargoscope rebase",
+            "--pr-body",
+            pr_body.to_str().expect("utf-8"),
+        ])
+        .arg(&dir)
+        .output()
+        .expect("comment rebase");
+    assert_eq!(rebase.status.code(), Some(0));
+    let rebase_json: serde_json::Value =
+        serde_json::from_slice(&rebase.stdout).expect("valid JSON");
+    assert_eq!(rebase_json["command"], "rebase");
+    assert_eq!(rebase_json["packages"], serde_json::json!(["serde_json"]));
+
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -4,6 +4,7 @@ All notable changes to CargoScope are documented in this file.
 
 ## Unreleased
 
+- Update PR comment commands (#23): `/cargoscope rebase`, `/cargoscope recreate`, and `/cargoscope ignore this version | major version | minor version | dependency` (also `@cargoscope ...`) via `cargoscope fix --updates --comment-command ... --pr-body ...` and `action.yml` on `issue_comment` events.
 - `cargoscope aggregate REPORT.json... [--format text|json|html]` merges JSON reports from multiple projects into a single view of shared advisories (ranked by relevance), licenses, outdated direct dependencies, and unused dependencies (#24).
 - `cargoscope fix` removes orphaned `crate/feature` and `crate?/feature` entries from `[features]` when deleting a non-optional unused dependency instead of leaving it skipped.
 - `cargoscope audit-bin` now supports `--format sarif`, `--format cyclonedx`, `--format html`, `--output FILE`, and `--color`.
