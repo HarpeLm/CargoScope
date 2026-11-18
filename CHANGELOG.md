@@ -2,11 +2,11 @@
 
 All notable changes to CargoScope are documented in this file.
 
-## Unreleased
+## 0.8.0 (2026-11-18)
 
 - Update PR comment commands (#23): `/cargoscope rebase`, `/cargoscope recreate`, and `/cargoscope ignore this version | major version | minor version | dependency` (also `@cargoscope ...`) via `cargoscope fix --updates --comment-command ... --pr-body ...` and `action.yml` on `issue_comment` events.
 - `cargoscope aggregate REPORT.json... [--format text|json|html]` merges JSON reports from multiple projects into a single view of shared advisories (ranked by relevance), licenses, outdated direct dependencies, and unused dependencies (#24).
-- `cargoscope fix` removes orphaned `crate/feature` and `crate?/feature` entries from `[features]` when deleting a non-optional unused dependency instead of leaving it skipped.
+- Unused dependencies & `cargoscope fix`: cleans `dep:<crate>`, `<crate>/feature`, and `<crate>?/feature` entries from `[features]` when deleting unused dependencies, lets `cargoscope fix` act on `possibly-unused` findings with `--include-uncertain` or explicit `--only`, stops keeping non-transitive `optional = true` crates wired only via `dep:` as uncertain, and follows `#[cfg_attr(..., path = "...")]` on module declarations.
 - `cargoscope audit-bin` now supports `--format sarif`, `--format cyclonedx`, `--format html`, `--output FILE`, and `--color`.
 - Colored terminal output (`--color auto|always|never`) across `why`, `fix` (`unused`, `--advisories`, `--updates`), `compare`, and `audit-bin` (#22).
 - Advisory relevance ranking (#25): evaluates whether each advisory affects shipped code (`affects-you`, `possibly`, `unlikely`) using `[graph]` target filtering (even without a policy rule table), `[dev-dependencies]` reachability, `[affected]` OS/architecture constraints, and uncalled `[affected.functions]`. Surfaces relevance across JSON, terminal, text, HTML, SARIF (`properties.relevance` + message note), CycloneDX 1.5 VEX (`analysis.state = "not_affected"` with `code_not_reachable` / `code_not_present`), and `cargoscope compare`; adds `--ignore-unlikely` (on `scan` and `compare`) and `[advisories] ignore-unlikely = true` in `cargoscope.toml`.

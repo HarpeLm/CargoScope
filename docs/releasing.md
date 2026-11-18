@@ -142,6 +142,13 @@ Prepared on 2026-11-18: `cargoscope update --fast` / `--no-maintenance`, `cargos
 - ✅ `cargo fmt`, `clippy -D warnings`, `cargo test --workspace`; `cargo clean` then `cargo package --workspace --exclude cargoscope-corpus`: the 5 crates verify; `dist plan` ok. Tag `v0.7.6` pushed (2026-11-18).
 - ✅ Set the version back to `0.8.0-dev`.
 
+## v0.8.0
+
+Released on 2026-11-18: advisory relevance ranking (`affects-you`, `possibly`, `unlikely`, `--ignore-unlikely`, standalone `[graph]`, CycloneDX 1.5 VEX `not_affected`, SARIF/compare relevance #25), `cargoscope aggregate` multi-project reporting (#24), PR comment commands (`/cargoscope rebase`, `recreate`, `ignore` #23), unified `--color` across `why`/`fix`/`compare`/`audit-bin` and all output formats in `audit-bin` (#22), `dep:` / `subfeature` cleanup and `--include-uncertain` in `cargoscope fix`, refined `rule_optional` and `#[cfg_attr(..., path = "...")]` module tracking, and visual SVG assets for `README.md`.
+
+- ✅ Set versions to `0.8.0`, verified `cargo fmt`, `clippy -D warnings`, `cargo test --workspace`, and `cargo package --workspace --exclude cargoscope-corpus`; tag `v0.8.0` pushed (2026-11-18).
+- ✅ Set the version back to `0.9.0-dev`.
+
 ## One-time setup (maintainer)
 
 1. **crates.io**: create an API token with the `publish-new` and `publish-update` scopes, then add it as the repository secret `CARGO_REGISTRY_TOKEN`.

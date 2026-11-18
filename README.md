@@ -1,11 +1,16 @@
-# CargoScope
+<div align="center">
 
-**Understand every dependency in your Rust project: why it's there, what it risks, and what to do.**
+![CargoScope](docs/images/banner.svg)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Crates.io](https://img.shields.io/crates/v/cargoscope.svg)](https://crates.io/crates/cargoscope)
+[![CI](https://github.com/HarpeLm/CargoScope/actions/workflows/ci.yml/badge.svg)](https://github.com/HarpeLm/CargoScope/actions/workflows/ci.yml)
+[![Container](https://img.shields.io/badge/ghcr.io-harpelm%2Fcargoscope-blue)](https://github.com/HarpeLm/CargoScope/pkgs/container/cargoscope)
 [![Rust](https://img.shields.io/badge/rust-1.90%2B-orange.svg)](https://www.rust-lang.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
----
+[Quick Start](#quick-start) · [Install](#install) · [GitHub Action](#github-action) · [Updating Dependencies](#updating-dependencies-like-dependabot) · [Policy](#dependency-policy) · [Benchmarks](tests/corpus/README.md) · [Changelog](CHANGELOG.md)
+
+</div>
 
 ![cargoscope scan on a small project: two vulnerable crates with their fix version and chain, one unused dependency, licenses, outdated versions and the next commands to run](docs/images/scan.gif)
 
@@ -21,13 +26,23 @@ CargoScope is an open-source CLI, written in Rust, for Rust/Cargo projects. One 
 
 ## Status
 
-**Version 0.7.6.** One offline `scan` covers RustSec advisories (ranked by relevance — `affects-you`, `possibly`, `unlikely` — with dependency chains and fix versions), static unused dependencies (with `--precise` rustc verification), `cargo-deny`-compatible license/ban/source policies (`deny.toml` supported out of the box), outdated and yanked crates (SemVer compatible vs breaking), maintenance risks (archived, stale, or single-owner crates), and duplicate versions — exported as text, JSON, SARIF, CycloneDX 1.5 (with VEX `not_affected` for `unlikely` advisories), or standalone HTML.
+**Version 0.8.0.** One offline `scan` covers RustSec advisories (ranked by relevance — `affects-you`, `possibly`, `unlikely` — with dependency chains and fix versions), static unused dependencies (with `--precise` rustc verification), `cargo-deny`-compatible license/ban/source policies (`deny.toml` supported out of the box), outdated and yanked crates (SemVer compatible vs breaking), maintenance risks (archived, stale, or single-owner crates), and duplicate versions — exported as text, JSON, SARIF, CycloneDX 1.5 (with VEX `not_affected` for `unlikely` advisories), or standalone HTML, plus multi-project aggregation via `cargoscope aggregate`.
 
-- **Action & fixes**: `cargoscope fix` removes unused deps, patches advisories (`--advisories`), and opens Dependabot-style update PRs (`--updates` / [CargoScope-Bot](https://github.com/marketplace/actions/cargoscope-bot)) with changelogs, MSRV/license checks, and `Cargo.lock` diffs; `cargoscope audit-bin` checks compiled binaries, and container images live on `ghcr.io/harpelm/cargoscope`.
+- **Action & fixes**: `cargoscope fix` removes unused deps, patches advisories (`--advisories`), and opens Dependabot-style update PRs (`--updates` / [CargoScope-Bot](https://github.com/marketplace/actions/cargoscope-bot) with `/cargoscope rebase`, `recreate`, and `ignore` comment commands) including changelogs, MSRV/license checks, and `Cargo.lock` diffs; `cargoscope audit-bin` checks compiled binaries, and container images live on `ghcr.io/harpelm/cargoscope`.
 - **Measured parity**: matches `cargo-audit` 0.23.0 on 1,376 advisories across 74 unseen repos, `cargo-deny` 0.20.2 on all 44 tested `deny.toml` projects, and reaches 98.9% post-fix precision on unused dependencies in an 80-repo rustc benchmark ([methodology & raw data](tests/corpus/README.md)).
-- **History & feedback**: see [CHANGELOG.md](CHANGELOG.md) for release notes (`0.1.0`–`0.7.6`). It is young — please report anything wrong in the [feedback issue](https://github.com/HarpeLm/CargoScope/issues/1).
+- **History & feedback**: see [CHANGELOG.md](CHANGELOG.md) for release notes (`0.1.0`–`0.8.0`). It is young — please report anything wrong in the [feedback issue](https://github.com/HarpeLm/CargoScope/issues/1).
 
 **New here?** [Try CargoScope in two minutes](docs/try-it.md), then tell us how it went.
+
+### At a Glance: What One Scan Replaces
+
+| Capability | Replaces / Compares to | How CargoScope handles it |
+|---|---|---|
+| **Security advisories & binary audit** | `cargo-audit` | Matches `cargo-audit` on 1,376 RustSec advisories, ranks relevance (`affects-you` / `possibly` / `unlikely`), adds `--ignore-unlikely` & CycloneDX VEX, and audits binaries (`audit-bin`) |
+| **Unused dependencies** | `cargo-machete`, `cargo-shear` | Lexer-based static analysis with per-finding evidence (98.9% post-fix precision vs 1 error against 8 for `cargo-shear`), plus opt-in `rustc` `--precise` & `cargoscope fix` |
+| **Licenses, bans & sources** | `cargo-deny` | Reads `deny.toml` natively (`cargoscope init` also translates it), checks SPDX/files, feature & build-script bans, and `[graph]` targets — 34/34 project parity |
+| **Versions, yanked & maintenance** | `cargo-outdated`, `cargo-tree` | Classifies `compatible` vs `breaking` updates, flags yanked crates, archived/stale/single-owner risks, duplicate versions, and exclusive pruning weights (`cargoscope why`) |
+| **PR updates & CI reporting** | Dependabot | Opens security & SemVer update PRs with MSRV/license diffs and changelogs, supports `/cargoscope rebase \| recreate \| ignore`, SARIF, HTML, and `cargoscope aggregate` |
 
 ## Install
 
@@ -64,7 +79,7 @@ The `cargoscope-cache` volume keeps the downloaded advisory and crates.io data b
 ```yaml
 cargoscope:
   image:
-    name: ghcr.io/harpelm/cargoscope:0.7.6
+    name: ghcr.io/harpelm/cargoscope:0.8.0
     entrypoint: [""]
   script:
     - cargoscope update .
@@ -80,7 +95,7 @@ On the GitHub Marketplace the action is listed as [**CargoScope-Bot**](https://g
 Minimal step you can drop into an existing CI job (no extra `permissions:` needed):
 
 ```yaml
-      - uses: HarpeLm/CargoScope@v0.7.6
+      - uses: HarpeLm/CargoScope@v0.8.0
         with:
           fail-on: high
           upload-sarif: false
@@ -99,7 +114,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: HarpeLm/CargoScope@v0.7.6
+      - uses: HarpeLm/CargoScope@v0.8.0
         with:
           fail-on: high        # or none, to report without failing
 ```
@@ -195,12 +210,14 @@ The JSON report follows a published schema with a compatibility policy: see [doc
 | **v0.5** | Delivered: `fix --advisories`, `audit-bin`, `deny.toml` parity, `[graph]` scoping, per-crate licenses |
 | **v0.6** | Delivered: offline HTML report (`--format html`), SemVer compatible vs breaking updates, CycloneDX 1.5 SBOM, `cargoscope why`, full `deny.toml` parity (34 of 34 projects) |
 | **v0.7** | Delivered: Dependabot-style update pull requests with `[updates]` settings, maintenance indicators, cargo-deny-level licenses and build-time crate inspection, third blind benchmark |
-| **v0.8** | Delivered so far: multi-project report aggregation (`cargoscope aggregate`), PR comment commands (`/cargoscope rebase`, `recreate`, `ignore`) on update PRs |
+| **v0.8** | Delivered: advisory relevance ranking (`affects-you` / `possibly` / `unlikely`, `--ignore-unlikely`, CycloneDX VEX), multi-project aggregation (`cargoscope aggregate`), update PR comment commands (`/cargoscope rebase`, `recreate`, `ignore`), `--color` across all commands, full formats in `audit-bin`, and `dep:` / `--include-uncertain` support in `cargoscope fix` |
 | **1.0** | Stable CLI, JSON schema and compatibility policy |
 
 CargoScope supports **Rust/Cargo only**. Other ecosystems are not planned until the Rust experience is clearly better than combining existing tools. See [SPEC.md](SPEC.md) for the full specification.
 
 ## Architecture
+
+![CargoScope pipeline and crate architecture](docs/images/pipeline.svg)
 
 ```
 cargoscope/
@@ -321,7 +338,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: HarpeLm/CargoScope@v0.7.6
+      - uses: HarpeLm/CargoScope@v0.8.0
         with:
           fail-on: none
           open-pr: true
@@ -369,7 +386,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: HarpeLm/CargoScope@v0.7.6
+      - uses: HarpeLm/CargoScope@v0.8.0
         with:
           fail-on: none
           upload-sarif: false
@@ -412,7 +429,7 @@ cargoscope update                      # once, for the advisory database
 cargoscope audit-bin target/release/my-app
 ```
 
-Reports the advisories of the crates compiled into a Rust binary, with the chain that pulls each one in. It is exact for binaries built with [`cargo auditable build`](https://github.com/rust-secure-code/cargo-auditable), which embeds the dependency tree; on a test project it gives the same findings as `cargo audit bin`. Without that data, it falls back to the crate paths that panic messages keep in the binary: that list is incomplete, has no tree, and the report says so. The file is only read, never run. Options: `--format text|json`, `--fail-on`.
+Reports the advisories of the crates compiled into a Rust binary, with the chain that pulls each one in. It is exact for binaries built with [`cargo auditable build`](https://github.com/rust-secure-code/cargo-auditable), which embeds the dependency tree; on a test project it gives the same findings as `cargo audit bin`. Without that data, it falls back to the crate paths that panic messages keep in the binary: that list is incomplete, has no tree, and the report says so. The file is only read, never run. Options: `--format text|json|sarif|cyclonedx|html`, `--output FILE`, `--fail-on`, `--color`, `--verbose`.
 
 ## Ignoring an Advisory
 
@@ -453,7 +470,7 @@ Cargo.toml
   - remove `rand` from [workspace.dependencies]: no member uses it anymore
 ```
 
-Only likely-unused dependencies are removed: possibly-unused and ignored ones are never touched. A dependency is removed from its section and from the same section of `[target.'...']` tables, and kept when `[features]` names it. An entry of `[workspace.dependencies]` that no member uses anymore after the removal goes too. `--only rand,log` limits the removal to those dependencies. The manifests are edited with `toml_edit`, so formatting, order and the other comments stay as they were (a comment on the removed line goes with it). `fix` never runs `cargo`: run `cargo check` yourself afterwards. Add `--precise` to confirm the candidates with rustc first.
+By default only likely-unused dependencies are removed (pass `--include-uncertain`, or name a crate explicitly with `--only`, to include possibly-unused findings; ignored dependencies are never touched). A dependency is removed from its section and from the same section of `[target.'...']` tables, cleaning `dep:<crate>`, `<crate>/feature`, and `<crate>?/feature` entries from `[features]` automatically (implicit optional features without `dep:` are still left in place). An entry of `[workspace.dependencies]` that no member uses anymore after the removal goes too. `--only rand,log` limits the removal to those dependencies. The manifests are edited with `toml_edit`, so formatting, order and the other comments stay as they were (a comment on the removed line goes with it). `fix` never runs `cargo`: run `cargo check` yourself afterwards. Add `--precise` to confirm the candidates with rustc first.
 
 ## Ignoring an Unused-Dependency Finding
 
