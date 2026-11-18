@@ -139,6 +139,9 @@ Released on 2026-11-17: two unused-dependency false positives found while prepar
 
 Prepared on 2026-11-18: `cargoscope update --fast` / `--no-maintenance`, `cargoscope scan --update [--fast]`, `cargoscope init` (`--ci`, `--policy`, `--dry-run`, `--force`, migrating `deny.toml` and `.cargo/audit.toml`), non-blocking SARIF upload in `action.yml`, extracted `CHANGELOG.md` and refreshed `README.md` / `docs/try-it.md`.
 
+- ✅ `cargo fmt`, `clippy -D warnings`, `cargo test --workspace`; `cargo clean` then `cargo package --workspace --exclude cargoscope-corpus`: the 5 crates verify; `dist plan` ok. Tag `v0.7.6` pushed (2026-11-18).
+- ✅ Set the version back to `0.8.0-dev`.
+
 ## One-time setup (maintainer)
 
 1. **crates.io**: create an API token with the `publish-new` and `publish-update` scopes, then add it as the repository secret `CARGO_REGISTRY_TOKEN`.
