@@ -21,11 +21,11 @@ CargoScope is an open-source CLI, written in Rust, for Rust/Cargo projects. One 
 
 ## Status
 
-**Version 0.7.5.** One offline `scan` covers RustSec advisories (with dependency chains and fix versions), static unused dependencies (with `--precise` rustc verification), `cargo-deny`-compatible license/ban/source policies (`deny.toml` supported out of the box), outdated and yanked crates (SemVer compatible vs breaking), maintenance risks (archived, stale, or single-owner crates), and duplicate versions — exported as text, JSON, SARIF, CycloneDX 1.5, or standalone HTML.
+**Version 0.7.6.** One offline `scan` covers RustSec advisories (with dependency chains and fix versions), static unused dependencies (with `--precise` rustc verification), `cargo-deny`-compatible license/ban/source policies (`deny.toml` supported out of the box), outdated and yanked crates (SemVer compatible vs breaking), maintenance risks (archived, stale, or single-owner crates), and duplicate versions — exported as text, JSON, SARIF, CycloneDX 1.5, or standalone HTML.
 
 - **Action & fixes**: `cargoscope fix` removes unused deps, patches advisories (`--advisories`), and opens Dependabot-style update PRs (`--updates` / [CargoScope-Bot](https://github.com/marketplace/actions/cargoscope-bot)) with changelogs, MSRV/license checks, and `Cargo.lock` diffs; `cargoscope audit-bin` checks compiled binaries, and container images live on `ghcr.io/harpelm/cargoscope`.
 - **Measured parity**: matches `cargo-audit` 0.23.0 on 1,376 advisories across 74 unseen repos, `cargo-deny` 0.20.2 on all 44 tested `deny.toml` projects, and reaches 98.9% post-fix precision on unused dependencies in an 80-repo rustc benchmark ([methodology & raw data](tests/corpus/README.md)).
-- **History & feedback**: see [CHANGELOG.md](CHANGELOG.md) for release notes (`0.1.0`–`0.7.5`). It is young — please report anything wrong in the [feedback issue](https://github.com/HarpeLm/CargoScope/issues/1).
+- **History & feedback**: see [CHANGELOG.md](CHANGELOG.md) for release notes (`0.1.0`–`0.7.6`). It is young — please report anything wrong in the [feedback issue](https://github.com/HarpeLm/CargoScope/issues/1).
 
 **New here?** [Try CargoScope in two minutes](docs/try-it.md), then tell us how it went.
 
@@ -64,7 +64,7 @@ The `cargoscope-cache` volume keeps the downloaded advisory and crates.io data b
 ```yaml
 cargoscope:
   image:
-    name: ghcr.io/harpelm/cargoscope:0.7.5
+    name: ghcr.io/harpelm/cargoscope:0.7.6
     entrypoint: [""]
   script:
     - cargoscope update .
@@ -80,7 +80,7 @@ On the GitHub Marketplace the action is listed as [**CargoScope-Bot**](https://g
 Minimal step you can drop into an existing CI job (no extra `permissions:` needed):
 
 ```yaml
-      - uses: HarpeLm/CargoScope@v0.7.5
+      - uses: HarpeLm/CargoScope@v0.7.6
         with:
           fail-on: high
           upload-sarif: false
@@ -99,7 +99,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: HarpeLm/CargoScope@v0.7.5
+      - uses: HarpeLm/CargoScope@v0.7.6
         with:
           fail-on: high        # or none, to report without failing
 ```
@@ -319,7 +319,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: HarpeLm/CargoScope@v0.7.5
+      - uses: HarpeLm/CargoScope@v0.7.6
         with:
           fail-on: none
           open-pr: true
@@ -365,7 +365,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: HarpeLm/CargoScope@v0.7.5
+      - uses: HarpeLm/CargoScope@v0.7.6
         with:
           fail-on: none
           upload-sarif: false

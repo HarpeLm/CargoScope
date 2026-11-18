@@ -89,7 +89,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: HarpeLm/CargoScope@v0.7.5
+      - uses: HarpeLm/CargoScope@v0.7.6
         with:
           fail-on: high    # or none, to report without failing builds
 "
@@ -798,7 +798,7 @@ ignore = [{ id = "RUSTSEC-2020-0071", reason = "only time" }]
         assert_eq!(ignores.len(), 2);
 
         let ci = render_ci_workflow();
-        assert!(ci.contains("HarpeLm/CargoScope@v0.7.5"));
+        assert!(ci.contains("HarpeLm/CargoScope@v0.7.6"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

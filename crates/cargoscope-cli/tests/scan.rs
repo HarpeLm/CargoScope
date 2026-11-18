@@ -2316,7 +2316,7 @@ ignore = [{ id = "RUSTSEC-2020-0071", reason = "from deny" }]
     assert!(dir.join("cargoscope.toml").is_file());
     let workflow = std::fs::read_to_string(dir.join(".github/workflows/cargoscope.yml"))
         .expect("workflow written");
-    assert!(workflow.contains("HarpeLm/CargoScope@v0.7.5"));
+    assert!(workflow.contains("HarpeLm/CargoScope@v0.7.6"));
 
     // Refuses to overwrite without --force, overwrites with --force.
     let second = run(&[]);
