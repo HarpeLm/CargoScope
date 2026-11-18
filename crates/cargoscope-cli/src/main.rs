@@ -4,6 +4,7 @@
 //! `0` no finding at or above the threshold, `1` threshold reached,
 //! `2` execution error.
 
+mod aggregate;
 mod audit_bin;
 mod compare;
 mod fix;
@@ -34,6 +35,9 @@ const INIT_USAGE: &str = "  cargoscope init [PATH] [--ci] [--policy] [--dry-run]
 
 const COMPARE_USAGE: &str = "  cargoscope compare BASELINE CURRENT [--format text|json|markdown] [--fail-on THRESHOLD] [--ignore-unlikely] [--color WHEN]
       Compare two JSON reports (markdown: for a pull request comment). Exit code 1 when new advisories reach the threshold.";
+
+const AGGREGATE_USAGE: &str = "  cargoscope aggregate REPORT.json... [--format text|json|html] [--output FILE] [--fail-on THRESHOLD] [--ignore-unlikely] [--color WHEN]
+      Merge JSON reports from several CargoScope scans into one shared view of advisories, licenses, outdated crates and unused dependencies.";
 
 const AUDIT_BIN_USAGE: &str =
     "  cargoscope audit-bin FILE... [--format text|json|sarif|cyclonedx|html] [--output FILE] [--fail-on THRESHOLD] [--color WHEN] [--verbose]
@@ -125,6 +129,7 @@ fn main() -> ExitCode {
         Some("scan") => Some(SCAN_USAGE),
         Some("why") => Some(WHY_USAGE),
         Some("compare") => Some(COMPARE_USAGE),
+        Some("aggregate") => Some(AGGREGATE_USAGE),
         Some("fix") => Some(FIX_USAGE),
         Some("init") => Some(INIT_USAGE),
         Some("update") => Some(UPDATE_USAGE),
@@ -149,6 +154,7 @@ fn main() -> ExitCode {
             }
         },
         Some("compare") => compare::compare_command(rest.into_iter()),
+        Some("aggregate") => aggregate::aggregate_command(rest.into_iter()),
         Some("why") => why::why_command(rest.into_iter()),
         Some("fix") => fix::fix_command(rest.into_iter()),
         Some("init") => init::init_command(rest.into_iter()),
@@ -171,6 +177,7 @@ fn main() -> ExitCode {
                     INIT_USAGE,
                     UPDATE_USAGE,
                     COMPARE_USAGE,
+                    AGGREGATE_USAGE,
                     FIX_USAGE,
                     AUDIT_BIN_USAGE,
                     WHY_USAGE,

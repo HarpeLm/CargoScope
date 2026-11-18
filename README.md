@@ -170,6 +170,7 @@ cargoscope scan . --format json --output report.json         # versioned JSON re
 cargoscope scan . --format sarif --output results.sarif       # SARIF 2.1.0 for GitHub code scanning
 cargoscope scan . --format cyclonedx --output bom.cdx.json    # CycloneDX 1.5 SBOM (components, licenses, advisories)
 cargoscope scan . --format html --output report.html          # self-contained offline HTML report
+cargoscope aggregate a.json b.json --format html -o org.html  # merge reports across multiple projects
 cargoscope why serde_json                                     # all reverse chains & pruning weight for a crate
 cargoscope scan . --fail-on high                    # fail only on high or critical vulnerabilities
 cargoscope scan . --fail-on high --ignore-unlikely  # also skip unlikely advisories (dev-only, uncalled, unbuilt)
@@ -194,7 +195,7 @@ The JSON report follows a published schema with a compatibility policy: see [doc
 | **v0.5** | Delivered: `fix --advisories`, `audit-bin`, `deny.toml` parity, `[graph]` scoping, per-crate licenses |
 | **v0.6** | Delivered: offline HTML report (`--format html`), SemVer compatible vs breaking updates, CycloneDX 1.5 SBOM, `cargoscope why`, full `deny.toml` parity (34 of 34 projects) |
 | **v0.7** | Delivered: Dependabot-style update pull requests with `[updates]` settings, maintenance indicators, cargo-deny-level licenses and build-time crate inspection, third blind benchmark |
-| **v0.8** | Comment commands on update pull requests, multi-project aggregation of local reports |
+| **v0.8** | Multi-project report aggregation (`cargoscope aggregate`, delivered); comment commands on update pull requests |
 | **1.0** | Stable CLI, JSON schema and compatibility policy |
 
 CargoScope supports **Rust/Cargo only**. Other ecosystems are not planned until the Rust experience is clearly better than combining existing tools. See [SPEC.md](SPEC.md) for the full specification.

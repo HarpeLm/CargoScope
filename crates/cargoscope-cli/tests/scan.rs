@@ -1348,6 +1348,7 @@ fn every_subcommand_has_its_own_help() {
         ("fix", "--only NAMES", "--show-uncertain"),
         ("init", "--ci", "cargoscope compare"),
         ("compare", "--format text|json|markdown", "cargoscope scan"),
+        ("aggregate", "--format text|json|html", "cargoscope scan"),
         (
             "update",
             "The only command that uses the network",
@@ -2867,4 +2868,71 @@ fn color_flag_styles_why_fix_and_compare_only_when_enabled() {
     assert!(!cmp_plain.contains("\u{1b}["), "{cmp_plain}");
 
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn aggregate_merges_reports_across_projects_in_text_json_and_html() {
+    let report_a = write_report("agg-simple", "simple");
+    let report_b = write_report("agg-unused", "unused");
+    let out_html = std::env::temp_dir().join(format!("cargoscope-agg-{}.html", std::process::id()));
+    let _ = std::fs::remove_file(&out_html);
+
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .arg("aggregate")
+            .args(args)
+            .output()
+            .expect("cargoscope aggregate runs")
+    };
+
+    let text_out = run(&[
+        report_a.to_str().expect("utf-8"),
+        report_b.to_str().expect("utf-8"),
+        "--fail-on",
+        "high",
+    ]);
+    assert_eq!(text_out.status.code(), Some(1));
+    let text = stdout(&text_out);
+    assert!(text.contains("CargoScope aggregate (2 projects)"), "{text}");
+    assert!(text.contains("CARGOSCOPE-TEST-0001"), "{text}");
+    assert!(text.contains("Likely-unused dependencies: 5"), "{text}");
+
+    let json_out = run(&[
+        report_a.to_str().expect("utf-8"),
+        report_b.to_str().expect("utf-8"),
+        "--format",
+        "json",
+        "--fail-on",
+        "none",
+    ]);
+    assert_eq!(json_out.status.code(), Some(0));
+    let parsed: serde_json::Value = serde_json::from_slice(&json_out.stdout).expect("valid JSON");
+    assert_eq!(parsed["aggregate_format_version"], 1);
+    assert_eq!(parsed["projects"].as_array().expect("projects").len(), 2);
+    assert!(
+        parsed["advisories"]
+            .as_array()
+            .expect("advisories")
+            .iter()
+            .any(|item| item["id"] == "CARGOSCOPE-TEST-0001"
+                && item["projects"].as_array().expect("proj list").len() == 2)
+    );
+
+    let html_out = run(&[
+        report_a.to_str().expect("utf-8"),
+        report_b.to_str().expect("utf-8"),
+        "--format",
+        "html",
+        "--fail-on",
+        "none",
+        "--output",
+        out_html.to_str().expect("utf-8"),
+    ]);
+    assert_eq!(html_out.status.code(), Some(0));
+    let html = std::fs::read_to_string(&out_html).expect("html file written");
+    assert!(html.contains("CargoScope Aggregate Report"), "{html}");
+    assert!(html.contains("CARGOSCOPE-TEST-0001"), "{html}");
+    let _ = std::fs::remove_file(&out_html);
+    let _ = std::fs::remove_file(&report_a);
+    let _ = std::fs::remove_file(&report_b);
 }

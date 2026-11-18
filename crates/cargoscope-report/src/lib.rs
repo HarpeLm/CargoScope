@@ -1,5 +1,6 @@
 //! Report rendering: text, JSON, SARIF, CycloneDX and HTML.
 
+pub mod aggregate;
 pub mod compare;
 pub mod cyclonedx;
 pub mod html;
