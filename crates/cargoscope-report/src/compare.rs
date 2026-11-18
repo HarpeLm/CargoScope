@@ -277,11 +277,15 @@ pub fn compare(baseline: &Value, current: &Value) -> Comparison {
     }
 }
 
-fn section(out: &mut String, title: &str, items: &[String]) {
-    let _ = writeln!(out, "\n{title}: {}", items.len());
+fn section(out: &mut String, title: &str, items: &[String], paint: crate::Paint) {
+    let _ = writeln!(out, "\n{}: {}", paint.bold(title), items.len());
     for item in items {
         let _ = writeln!(out, "- {item}");
     }
+}
+
+fn green_items(items: &[String], paint: crate::Paint) -> Vec<String> {
+    items.iter().map(|item| paint.green(item)).collect()
 }
 
 fn format_relevance_note(relevance: Option<&str>, reason: Option<&str>) -> String {
@@ -292,10 +296,20 @@ fn format_relevance_note(relevance: Option<&str>, reason: Option<&str>) -> Strin
     }
 }
 
-/// Renders a comparison as text.
+/// Renders a comparison as text without ANSI color codes.
 #[must_use]
 pub fn render_comparison_text(comparison: &Comparison) -> String {
-    let mut out = String::from("CargoScope comparison (baseline -> current)\n");
+    render_comparison_text_colored(comparison, false)
+}
+
+/// Renders a comparison as text, optionally styled with ANSI color codes.
+#[must_use]
+pub fn render_comparison_text_colored(comparison: &Comparison, color: bool) -> String {
+    let paint = crate::Paint::new(color);
+    let mut out = format!(
+        "{}\n",
+        paint.bold("CargoScope comparison (baseline -> current)")
+    );
     let new: Vec<String> = comparison
         .new_advisories
         .iter()
@@ -307,44 +321,61 @@ pub fn render_comparison_text(comparison: &Comparison) -> String {
             } else {
                 kind.clone()
             };
+            let bracketed = format!("[{label}]");
+            let styled_label = if kind == "vulnerability" {
+                match severity.as_deref() {
+                    Some("critical" | "high") => paint.red(&bracketed),
+                    _ => paint.yellow(&bracketed),
+                }
+            } else {
+                paint.dim(&bracketed)
+            };
             let note = format_relevance_note(relevance.as_deref(), reason.as_deref());
+            let styled_note = paint.dim(&note);
             format!(
-                "{} [{label}] {} {}: {title}{note}",
-                key.id, key.package, key.version
+                "{} {styled_label} {} {}: {title}{styled_note}",
+                key.id,
+                paint.bold(&key.package),
+                key.version
             )
         })
         .collect();
-    section(&mut out, "New advisories", &new);
+    section(&mut out, "New advisories", &new, paint);
     let resolved: Vec<String> = comparison
         .resolved_advisories
         .iter()
-        .map(|key| format!("{} {} {}", key.id, key.package, key.version))
+        .map(|key| paint.green(&format!("{} {} {}", key.id, key.package, key.version)))
         .collect();
-    section(&mut out, "Resolved advisories", &resolved);
+    section(&mut out, "Resolved advisories", &resolved, paint);
     section(
         &mut out,
         "New yanked versions in use",
         &comparison.new_yanked,
+        paint,
     );
     section(
         &mut out,
         "New likely-unused dependencies",
         &comparison.new_unused,
+        paint,
     );
     section(
         &mut out,
         "Resolved likely-unused dependencies",
-        &comparison.resolved_unused,
+        &green_items(&comparison.resolved_unused, paint),
+        paint,
     );
     section(
         &mut out,
         "New crates in several versions",
         &comparison.new_duplicates,
+        paint,
     );
     section(
         &mut out,
         "Crates no longer in several versions",
-        &comparison.resolved_duplicates,
+        &green_items(&comparison.resolved_duplicates, paint),
+        paint,
     );
     let changed: Vec<String> = comparison
         .changed_versions
@@ -353,9 +384,19 @@ pub fn render_comparison_text(comparison: &Comparison) -> String {
             format!("{name} {} -> {}", before.join(", "), after.join(", "))
         })
         .collect();
-    section(&mut out, "Changed versions", &changed);
-    section(&mut out, "Added packages", &comparison.added_packages);
-    section(&mut out, "Removed packages", &comparison.removed_packages);
+    section(&mut out, "Changed versions", &changed, paint);
+    section(
+        &mut out,
+        "Added packages",
+        &comparison.added_packages,
+        paint,
+    );
+    section(
+        &mut out,
+        "Removed packages",
+        &comparison.removed_packages,
+        paint,
+    );
     out
 }
 

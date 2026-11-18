@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use crate::scan::ColorChoice;
 use crate::{FailOn, parse_fail_on, parse_severity, read_report};
 
 /// Output formats of `cargoscope compare`.
@@ -19,6 +20,7 @@ struct CompareOptions {
     format: CompareFormat,
     fail_on: FailOn,
     ignore_unlikely: bool,
+    color: ColorChoice,
 }
 
 fn parse_compare_options(
@@ -29,6 +31,7 @@ fn parse_compare_options(
         format: CompareFormat::Text,
         fail_on: FailOn::AnyVulnerability,
         ignore_unlikely: false,
+        color: ColorChoice::Auto,
     };
     let mut arguments = arguments.peekable();
     while let Some(argument) = arguments.next() {
@@ -58,6 +61,7 @@ fn parse_compare_options(
                 };
             }
             "--fail-on" => options.fail_on = parse_fail_on(&value()?)?,
+            "--color" => options.color = ColorChoice::parse(&value()?)?,
             "--ignore-unlikely" if inline.is_none() => options.ignore_unlikely = true,
             other if other.starts_with('-') => return Err(format!("Unknown option: {other}")),
             _ => options.files.push(PathBuf::from(argument)),
@@ -92,7 +96,10 @@ pub fn compare_command(arguments: impl Iterator<Item = String>) -> ExitCode {
         CompareFormat::Markdown => {
             cargoscope_report::compare::render_comparison_markdown(&comparison)
         }
-        CompareFormat::Text => cargoscope_report::compare::render_comparison_text(&comparison),
+        CompareFormat::Text => cargoscope_report::compare::render_comparison_text_colored(
+            &comparison,
+            options.color.enabled(false),
+        ),
     };
     print!("{rendered}");
 

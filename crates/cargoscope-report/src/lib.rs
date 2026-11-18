@@ -6,6 +6,8 @@ pub mod html;
 pub mod sarif;
 mod terminal;
 
+pub use terminal::Paint;
+
 use std::fmt::Write;
 use std::path::Path;
 

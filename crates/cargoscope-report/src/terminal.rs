@@ -15,13 +15,21 @@ use cargoscope_core::{
 
 /// ANSI styling, or none.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Paint {
+pub struct Paint {
     on: bool,
 }
 
 impl Paint {
-    pub(crate) const fn new(on: bool) -> Self {
+    /// Creates a styling helper enabled only when `on` is `true`.
+    #[must_use]
+    pub const fn new(on: bool) -> Self {
         Self { on }
+    }
+
+    /// Returns whether ANSI styling is enabled.
+    #[must_use]
+    pub const fn is_enabled(self) -> bool {
+        self.on
     }
 
     fn style(self, code: &str, text: &str) -> String {
@@ -32,27 +40,39 @@ impl Paint {
         }
     }
 
-    pub(crate) fn red(self, text: &str) -> String {
+    /// Styles `text` red when enabled.
+    #[must_use]
+    pub fn red(self, text: &str) -> String {
         self.style("31", text)
     }
 
-    pub(crate) fn yellow(self, text: &str) -> String {
+    /// Styles `text` yellow when enabled.
+    #[must_use]
+    pub fn yellow(self, text: &str) -> String {
         self.style("33", text)
     }
 
-    pub(crate) fn green(self, text: &str) -> String {
+    /// Styles `text` green when enabled.
+    #[must_use]
+    pub fn green(self, text: &str) -> String {
         self.style("32", text)
     }
 
-    pub(crate) fn blue(self, text: &str) -> String {
+    /// Styles `text` blue when enabled.
+    #[must_use]
+    pub fn blue(self, text: &str) -> String {
         self.style("34", text)
     }
 
-    pub(crate) fn dim(self, text: &str) -> String {
+    /// Dims `text` when enabled.
+    #[must_use]
+    pub fn dim(self, text: &str) -> String {
         self.style("2", text)
     }
 
-    pub(crate) fn bold(self, text: &str) -> String {
+    /// Bolds `text` when enabled.
+    #[must_use]
+    pub fn bold(self, text: &str) -> String {
         self.style("1", text)
     }
 }

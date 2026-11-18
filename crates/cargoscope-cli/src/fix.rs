@@ -11,7 +11,9 @@ use cargoscope_cargo::fix::{
     Outcome, remove_dependencies, remove_workspace_dependencies, workspace_references,
 };
 use cargoscope_core::{UnusedConfidence, UnusedFinding};
+use cargoscope_report::Paint;
 
+use crate::scan::ColorChoice;
 use crate::{execution_error, find_unused_dependencies};
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -28,6 +30,8 @@ struct FixOptions {
     breaking: bool,
     /// `--format markdown|json`, with `--advisories` or `--updates`.
     format: crate::fix_advisories::Format,
+    /// ANSI color preference for text output.
+    color: ColorChoice,
 }
 
 fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptions, String> {
@@ -45,6 +49,15 @@ fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptio
                 .filter(|list| !list.trim().is_empty())
                 .ok_or("Missing value for --only.")?;
             options.only = Some(list.split(',').map(|name| name.trim().to_owned()).collect());
+            continue;
+        }
+        if argument == "--color" || argument.starts_with("--color=") {
+            let value = match argument.strip_prefix("--color=") {
+                Some(value) => Some(value.to_owned()),
+                None => arguments.next(),
+            }
+            .ok_or("Missing value for --color.")?;
+            options.color = ColorChoice::parse(&value)?;
             continue;
         }
         match argument.as_str() {
@@ -121,6 +134,7 @@ pub fn fix_command(arguments: impl Iterator<Item = String>) -> ExitCode {
 
 fn run_fix(options: &FixOptions) -> Result<ExitCode, ExitCode> {
     let root = options.path.as_deref().unwrap_or(Path::new("."));
+    let paint = Paint::new(options.color.enabled(false));
     if options.updates {
         return crate::fix_updates::run(
             root,
@@ -128,6 +142,7 @@ fn run_fix(options: &FixOptions) -> Result<ExitCode, ExitCode> {
             options.apply,
             options.format,
             options.only.as_deref(),
+            paint,
         );
     }
     if options.advisories {
@@ -136,6 +151,7 @@ fn run_fix(options: &FixOptions) -> Result<ExitCode, ExitCode> {
             options.apply,
             options.format,
             options.only.as_deref(),
+            paint,
         );
     }
     let inventory = cargoscope_cargo::scan_cargo_project(root)
@@ -144,14 +160,15 @@ fn run_fix(options: &FixOptions) -> Result<ExitCode, ExitCode> {
 
     let plan = plan_removals(&unused, options.only.as_deref());
     if plan.is_empty() {
-        println!("No likely-unused dependency to remove.");
+        println!("{}", paint.green("No likely-unused dependency to remove."));
         return Ok(ExitCode::SUCCESS);
     }
     let mut manifests = read_manifests(root, &plan)?;
     let inherited_before = inherited(&manifests, |(original, _)| original);
-    let mut removed = edit_manifests(root, &plan, &mut manifests)?;
-    removed += remove_orphaned_workspace_dependencies(root, &inherited_before, &mut manifests)?;
-    finish(&manifests, removed, options.apply)?;
+    let mut removed = edit_manifests(root, &plan, &mut manifests, paint)?;
+    removed +=
+        remove_orphaned_workspace_dependencies(root, &inherited_before, &mut manifests, paint)?;
+    finish(&manifests, removed, options.apply, paint)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -221,6 +238,7 @@ fn edit_manifests(
     root: &Path,
     plan: &Plan<'_>,
     manifests: &mut Manifests,
+    paint: Paint,
 ) -> Result<usize, ExitCode> {
     let mut removed = 0;
     for (manifest, removals) in plan {
@@ -233,14 +251,23 @@ fn edit_manifests(
             ExitCode::from(2)
         })?;
         *current = new_contents;
-        println!("{manifest}");
+        println!("{}", paint.bold(manifest));
         for ((section, key), outcome) in removals.iter().zip(&outcomes) {
             match outcome {
                 Outcome::Removed(tables) => {
                     removed += 1;
-                    println!("  - remove `{key}` from [{}]", tables.join("], ["));
+                    println!(
+                        "  {} `{}` from [{}]",
+                        paint.green("- remove"),
+                        paint.bold(key),
+                        tables.join("], [")
+                    );
                 }
-                Outcome::Skipped(reason) => println!("  = keep `{key}` [{section}]: {reason}"),
+                Outcome::Skipped(reason) => println!(
+                    "  {} `{}` [{section}]: {reason}",
+                    paint.yellow("= keep"),
+                    paint.bold(key)
+                ),
             }
         }
     }
@@ -253,6 +280,7 @@ fn remove_orphaned_workspace_dependencies(
     root: &Path,
     inherited_before: &BTreeSet<String>,
     manifests: &mut Manifests,
+    paint: Paint,
 ) -> Result<usize, ExitCode> {
     let inherited_after = inherited(manifests, |(_, current)| current);
     let orphans: Vec<&str> = inherited_before
@@ -274,20 +302,30 @@ fn remove_orphaned_workspace_dependencies(
         return Ok(0);
     }
     *current = new_contents;
-    println!("Cargo.toml");
+    println!("{}", paint.bold("Cargo.toml"));
     for key in &gone {
-        println!("  - remove `{key}` from [workspace.dependencies]: no member uses it anymore");
+        println!(
+            "  {} `{}` from [workspace.dependencies]: no member uses it anymore",
+            paint.green("- remove"),
+            paint.bold(key)
+        );
     }
     Ok(gone.len())
 }
 
 /// Writes the edited manifests with `--apply`, or only says what a run with
 /// `--apply` would do.
-fn finish(manifests: &Manifests, removed: usize, apply: bool) -> Result<(), ExitCode> {
+fn finish(
+    manifests: &Manifests,
+    removed: usize,
+    apply: bool,
+    paint: Paint,
+) -> Result<(), ExitCode> {
     let plural = if removed == 1 { "y" } else { "ies" };
     if !apply {
         println!(
-            "\nDry run: nothing was written. Run `cargoscope fix --apply` to remove {removed} dependenc{plural}."
+            "\n{} nothing was written. Run `cargoscope fix --apply` to remove {removed} dependenc{plural}.",
+            paint.bold("Dry run:")
         );
         return Ok(());
     }
@@ -302,7 +340,10 @@ fn finish(manifests: &Manifests, removed: usize, apply: bool) -> Result<(), Exit
         }
     }
     println!(
-        "\nRemoved {removed} dependenc{plural} from {edited} manifest(s). Run `cargo check` to update Cargo.lock and confirm the build."
+        "\n{} Run `cargo check` to update Cargo.lock and confirm the build.",
+        paint.green(&format!(
+            "Removed {removed} dependenc{plural} from {edited} manifest(s)."
+        ))
     );
     Ok(())
 }
@@ -350,5 +391,9 @@ mod tests {
         assert_eq!(advisories.only, Some(vec!["chrono".to_owned()]));
         assert_eq!(advisories.format, crate::fix_advisories::Format::Json);
         assert!(parse(&["--format", "json"]).is_err());
+        assert_eq!(
+            parse(&["--color", "always"]).expect("valid").color,
+            super::ColorChoice::Always
+        );
     }
 }

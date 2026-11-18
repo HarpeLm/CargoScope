@@ -756,7 +756,7 @@ fn render_json(rows: &[Row], config: &UpdatesConfig) -> String {
     text
 }
 
-fn print_row(row: &Row) {
+fn print_row(row: &Row, paint: cargoscope_report::Paint) {
     match &row.plan {
         Plan::Update {
             to,
@@ -768,23 +768,39 @@ fn print_row(row: &Row) {
             let place = if manifests.is_empty() {
                 String::new()
             } else {
-                format!(" (in {})", manifests.join(", "))
+                paint.dim(&format!(" (in {})", manifests.join(", ")))
+            };
+            let kind_label = format!("({})", kind.as_str());
+            let styled_kind = if *kind == Kind::Compatible {
+                paint.blue(&kind_label)
+            } else {
+                paint.yellow(&kind_label)
             };
             println!(
-                "{} {} -> {to} ({}){place}",
-                row.name,
-                row.from,
-                kind.as_str()
+                "{} {} -> {} {styled_kind}{place}",
+                paint.bold(&row.name),
+                paint.dim(&row.from),
+                paint.green(to)
             );
             if let Some((to, why)) = breaking_blocked {
-                println!("  = {to} refused: {why}");
+                println!("  {}", paint.yellow(&format!("= {to} refused: {why}")));
             }
         }
         Plan::Blocked { to, reason } => {
-            println!("{} {} -> {to}: cannot update: {reason}", row.name, row.from);
+            println!(
+                "{} {} -> {to}: {}: {reason}",
+                paint.bold(&row.name),
+                paint.dim(&row.from),
+                paint.yellow("cannot update")
+            );
         }
         Plan::Ignored { to, reason } => {
-            println!("{} {} -> {to}: {reason}", row.name, row.from);
+            println!(
+                "{} {} -> {to}: {}",
+                paint.bold(&row.name),
+                paint.dim(&row.from),
+                paint.dim(reason)
+            );
         }
     }
 }
@@ -964,6 +980,7 @@ pub fn run(
     apply_changes: bool,
     format: Format,
     only: Option<&[String]>,
+    paint: cargoscope_report::Paint,
 ) -> Result<ExitCode, ExitCode> {
     let inventory: Inventory = cargoscope_cargo::scan_cargo_project(root)
         .map_err(|error| execution_error(root, &error))?;
@@ -1020,7 +1037,7 @@ pub fn run(
                 repository: info.repository.clone(),
             };
             if format == Format::Text {
-                print_row(&row);
+                print_row(&row, paint);
             }
             rows.push(row);
         }
@@ -1040,12 +1057,16 @@ pub fn run(
                 .filter(|row| matches!(row.plan, Plan::Update { .. }))
                 .count();
             if rows.is_empty() {
-                println!("Every direct dependency is up to date.");
+                println!("{}", paint.green("Every direct dependency is up to date."));
             } else if apply_changes {
-                println!("\nUpdated {updates} dependency(ies). Build and test before committing.");
+                println!(
+                    "\n{} Build and test before committing.",
+                    paint.green(&format!("Updated {updates} dependency(ies)."))
+                );
             } else {
                 println!(
-                    "\nDry run: nothing was changed. Run `cargoscope fix --updates{} --apply` to make {updates} update(s).",
+                    "\n{} nothing was changed. Run `cargoscope fix --updates{} --apply` to make {updates} update(s).",
+                    paint.bold("Dry run:"),
                     if breaking { " --breaking" } else { "" }
                 );
             }

@@ -1431,6 +1431,44 @@ fn audit_bin_reads_cargo_auditable_data_and_falls_back_to_registry_paths() {
             .expect("valid JSON");
     assert_eq!(json["advisories"][0]["id"], "CARGOSCOPE-TEST-0001");
 
+    let sarif: serde_json::Value =
+        serde_json::from_slice(&audit_bin("auditable.bin", &["--format", "sarif"]).stdout)
+            .expect("valid SARIF");
+    assert_eq!(sarif["version"], "2.1.0");
+    assert_eq!(
+        sarif["runs"][0]["results"][0]["ruleId"],
+        "CARGOSCOPE-TEST-0001"
+    );
+
+    let cdx: serde_json::Value =
+        serde_json::from_slice(&audit_bin("auditable.bin", &["--format", "cyclonedx"]).stdout)
+            .expect("valid CycloneDX");
+    assert_eq!(cdx["bomFormat"], "CycloneDX");
+    assert_eq!(cdx["vulnerabilities"][0]["id"], "CARGOSCOPE-TEST-0001");
+
+    let html_file =
+        std::env::temp_dir().join(format!("cargoscope-audit-bin-{}.html", std::process::id()));
+    let html_out = audit_bin(
+        "auditable.bin",
+        &[
+            "--format",
+            "html",
+            "--fail-on",
+            "none",
+            "--output",
+            html_file.to_str().expect("utf-8"),
+        ],
+    );
+    assert_eq!(html_out.status.code(), Some(0));
+    let html = std::fs::read_to_string(&html_file).expect("html file written");
+    assert!(html.contains("CARGOSCOPE-TEST-0001"), "{html}");
+    let _ = std::fs::remove_file(&html_file);
+
+    let colored = stdout(&audit_bin("auditable.bin", &["--color", "always"]));
+    assert!(colored.contains("\u{1b}["), "{colored}");
+    let plain = stdout(&audit_bin("auditable.bin", &["--color", "never"]));
+    assert!(!plain.contains("\u{1b}["), "{plain}");
+
     let partial = audit_bin("paths.bin", &["--fail-on", "none", "--verbose"]);
     assert_eq!(partial.status.code(), Some(0));
     let text = stdout(&partial);
@@ -2704,6 +2742,129 @@ fn ranks_advisories_by_dev_platform_and_uncalled_functions() {
         html.contains("only used by dev-dependencies (tests or benchmarks)"),
         "{html}"
     );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn color_flag_styles_why_fix_and_compare_only_when_enabled() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-color-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+
+    // 1. why --color always vs --color never
+    let why_project = fixture("multi-version");
+    let why_colored = stdout(
+        &Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .args([
+                "why",
+                "bitflags",
+                why_project.to_str().expect("utf-8"),
+                "--color",
+                "always",
+            ])
+            .output()
+            .expect("why always"),
+    );
+    let why_plain = stdout(
+        &Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .args([
+                "why",
+                "bitflags",
+                why_project.to_str().expect("utf-8"),
+                "--color",
+                "never",
+            ])
+            .output()
+            .expect("why never"),
+    );
+    assert!(why_colored.contains("\u{1b}["), "{why_colored}");
+    assert!(!why_plain.contains("\u{1b}["), "{why_plain}");
+
+    // 2. fix --color always vs --color never (unused, --advisories, --updates)
+    let fix_colored = stdout(&fix(&fixture("unused"), &["--color", "always"]));
+    let fix_plain = stdout(&fix(&fixture("unused"), &["--color", "never"]));
+    assert!(fix_colored.contains("\u{1b}["), "{fix_colored}");
+    assert!(!fix_plain.contains("\u{1b}["), "{fix_plain}");
+
+    let fake_src = dir.join("fake_cargo_update.rs");
+    let fake_cargo = dir.join(format!("fake-cargo-update{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(&fake_src, "fn main() {}\n").expect("write fake cargo");
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    assert!(
+        Command::new(rustc)
+            .arg(&fake_src)
+            .arg("-o")
+            .arg(&fake_cargo)
+            .status()
+            .expect("rustc runs")
+            .success()
+    );
+    let adv_dir = dir.join("adv-proj");
+    copy_dir(&fixture("simple"), &adv_dir);
+    let fix_adv_colored = stdout(
+        &Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+            .env("CARGO_HOME", fixture("empty-cargo-home"))
+            .env("CARGO", &fake_cargo)
+            .args(["fix", "--advisories", "--color", "always"])
+            .arg(&adv_dir)
+            .output()
+            .expect("fix advisories always"),
+    );
+    let fix_adv_plain = stdout(
+        &Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+            .env("CARGO_HOME", fixture("empty-cargo-home"))
+            .env("CARGO", &fake_cargo)
+            .args(["fix", "--advisories", "--color", "never"])
+            .arg(&adv_dir)
+            .output()
+            .expect("fix advisories never"),
+    );
+    assert!(fix_adv_colored.contains("\u{1b}["), "{fix_adv_colored}");
+    assert!(!fix_adv_plain.contains("\u{1b}["), "{fix_adv_plain}");
+
+    let fix_upd_colored = stdout(
+        &Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+            .env("CARGO_HOME", fixture("empty-cargo-home"))
+            .env("CARGO", &fake_cargo)
+            .args(["fix", "--updates", "--color", "always"])
+            .arg(&adv_dir)
+            .output()
+            .expect("fix updates always"),
+    );
+    let fix_upd_plain = stdout(
+        &Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+            .env("CARGO_HOME", fixture("empty-cargo-home"))
+            .env("CARGO", &fake_cargo)
+            .args(["fix", "--updates", "--color", "never"])
+            .arg(&adv_dir)
+            .output()
+            .expect("fix updates never"),
+    );
+    assert!(fix_upd_colored.contains("\u{1b}["), "{fix_upd_colored}");
+    assert!(!fix_upd_plain.contains("\u{1b}["), "{fix_upd_plain}");
+
+    // 3. compare --color always vs --color never
+    let baseline = write_report("color-base", "workspace");
+    let current = write_report("color-curr", "simple");
+    let cmp_colored = stdout(&compare(&[
+        baseline.to_str().expect("utf-8"),
+        current.to_str().expect("utf-8"),
+        "--color",
+        "always",
+    ]));
+    let cmp_plain = stdout(&compare(&[
+        baseline.to_str().expect("utf-8"),
+        current.to_str().expect("utf-8"),
+        "--color",
+        "never",
+    ]));
+    assert!(cmp_colored.contains("\u{1b}["), "{cmp_colored}");
+    assert!(!cmp_plain.contains("\u{1b}["), "{cmp_plain}");
 
     let _ = std::fs::remove_dir_all(dir);
 }

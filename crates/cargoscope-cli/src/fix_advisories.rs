@@ -602,8 +602,12 @@ fn apply_updates(
     Ok(())
 }
 
-fn print_step(name: &str, from: &str, ids: &[&str], step: &Step) {
-    println!("{name} {from} ({})", ids.join(", "));
+fn print_step(name: &str, from: &str, ids: &[&str], step: &Step, paint: cargoscope_report::Paint) {
+    println!(
+        "{} {from} ({})",
+        paint.bold(name),
+        paint.yellow(&ids.join(", "))
+    );
     match step {
         Step::Update {
             version,
@@ -611,16 +615,20 @@ fn print_step(name: &str, from: &str, ids: &[&str], step: &Step) {
             ..
         } => {
             if target_labels.is_empty() {
-                println!("  - update to {version}");
+                println!("  {}", paint.green(&format!("- update to {version}")));
             } else {
-                println!("  - update to {version} (in {})", target_labels.join(", "));
+                println!(
+                    "  {} {}",
+                    paint.green(&format!("- update to {version}")),
+                    paint.dim(&format!("(in {})", target_labels.join(", ")))
+                );
             }
         }
-        Step::Blocked(why) => println!("  = cannot update: {why}"),
+        Step::Blocked(why) => println!("  {} {why}", paint.yellow("= cannot update:")),
     }
 }
 
-fn print_summary(apply: bool, rows: &[Row]) {
+fn print_summary(apply: bool, rows: &[Row], paint: cargoscope_report::Paint) {
     let updates = rows
         .iter()
         .filter(|row| matches!(row.step, Step::Update { .. }))
@@ -638,22 +646,28 @@ fn print_summary(apply: bool, rows: &[Row]) {
     if !apply {
         if manifest_count == 0 {
             println!(
-                "\nDry run: Cargo.lock was not changed. Run `cargoscope fix --advisories --apply` to make {updates} update(s); {blocked} package(s) need a manifest change or a newer dependent."
+                "\n{} Cargo.lock was not changed. Run `cargoscope fix --advisories --apply` to make {updates} update(s); {blocked} package(s) need a manifest change or a newer dependent.",
+                paint.bold("Dry run:")
             );
         } else {
             println!(
-                "\nDry run: nothing was changed. Run `cargoscope fix --advisories --apply` to make {updates} update(s) (and edit {manifest_count} manifest(s)); {blocked} package(s) still need a newer dependent."
+                "\n{} nothing was changed. Run `cargoscope fix --advisories --apply` to make {updates} update(s) (and edit {manifest_count} manifest(s)); {blocked} package(s) still need a newer dependent.",
+                paint.bold("Dry run:")
             );
         }
         return;
     }
     if manifest_count == 0 {
         println!(
-            "\nUpdated {updates} package(s) in Cargo.lock; {blocked} could not be updated without a manifest change. Run `cargoscope scan` to check the result."
+            "\n{} {blocked} could not be updated without a manifest change. Run `cargoscope scan` to check the result.",
+            paint.green(&format!("Updated {updates} package(s) in Cargo.lock;"))
         );
     } else {
         println!(
-            "\nUpdated {updates} package(s) in Cargo.lock and {manifest_count} manifest(s); {blocked} could not be updated. Run `cargoscope scan` to check the result."
+            "\n{} {blocked} could not be updated. Run `cargoscope scan` to check the result.",
+            paint.green(&format!(
+                "Updated {updates} package(s) in Cargo.lock and {manifest_count} manifest(s);"
+            ))
         );
     }
 }
@@ -711,6 +725,7 @@ pub fn run(
     apply: bool,
     format: Format,
     only: Option<&[String]>,
+    paint: cargoscope_report::Paint,
 ) -> Result<ExitCode, ExitCode> {
     let markdown = format != Format::Text;
     let inventory: Inventory = cargoscope_cargo::scan_cargo_project(root)
@@ -776,7 +791,7 @@ pub fn run(
         };
         let step = plan_package(root, package, &patched_sets, &vulnerable, &mut manifests)?;
         if !markdown {
-            print_step(&package.name, &package.version, &ids, &step);
+            print_step(&package.name, &package.version, &ids, &step, paint);
         }
         rows.push(Row {
             name: package.name.clone(),
@@ -787,7 +802,7 @@ pub fn run(
     }
     if rows.is_empty() {
         match format {
-            Format::Text => println!("No vulnerable package to update."),
+            Format::Text => println!("{}", paint.green("No vulnerable package to update.")),
             Format::Json => print!("{}", render_json(&rows)),
             Format::Markdown => {}
         }
@@ -799,7 +814,7 @@ pub fn run(
     match format {
         Format::Markdown => print!("{}", render_markdown(&rows)),
         Format::Json => print!("{}", render_json(&rows)),
-        Format::Text => print_summary(apply, &rows),
+        Format::Text => print_summary(apply, &rows, paint),
     }
     Ok(ExitCode::SUCCESS)
 }

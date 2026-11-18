@@ -32,35 +32,37 @@ const INIT_USAGE: &str = "  cargoscope init [PATH] [--ci] [--policy] [--dry-run]
       --policy, creates cargoscope.toml. Never overwrites existing files unless
       --force is given; --dry-run prints what would be written.";
 
-const COMPARE_USAGE: &str = "  cargoscope compare BASELINE CURRENT [--format text|json|markdown] [--fail-on THRESHOLD] [--ignore-unlikely]
+const COMPARE_USAGE: &str = "  cargoscope compare BASELINE CURRENT [--format text|json|markdown] [--fail-on THRESHOLD] [--ignore-unlikely] [--color WHEN]
       Compare two JSON reports (markdown: for a pull request comment). Exit code 1 when new advisories reach the threshold.";
 
 const AUDIT_BIN_USAGE: &str =
-    "  cargoscope audit-bin FILE... [--format text|json] [--fail-on THRESHOLD] [--verbose]
+    "  cargoscope audit-bin FILE... [--format text|json|sarif|cyclonedx|html] [--output FILE] [--fail-on THRESHOLD] [--color WHEN] [--verbose]
       Report the advisories of the crates compiled into Rust binaries. Exact
       with binaries built by `cargo auditable build`; otherwise the crates
       named by panic message paths only (incomplete). The files are only read.
       --verbose lists every advisory in full and every crate found.";
 
-const WHY_USAGE: &str = "  cargoscope why CRATE[@VERSION] [PATH] [--format text|json]
+const WHY_USAGE: &str =
+    "  cargoscope why CRATE[@VERSION] [PATH] [--format text|json] [--color WHEN]
       Show every dependency chain from the project's root packages to CRATE,
       its direct dependents, and how many packages would leave the tree
       without it. Offline and read-only.";
 
-const FIX_USAGE: &str = "  cargoscope fix [PATH] [--dry-run | --apply] [--only NAMES] [--precise]
+const FIX_USAGE: &str =
+    "  cargoscope fix [PATH] [--dry-run | --apply] [--only NAMES] [--precise] [--color WHEN]
       Remove likely-unused dependencies from the Cargo.toml files, and the
       [workspace.dependencies] entries no member uses anymore. Without
       --apply, only shows what would be removed (dry run). --only limits it
       to a comma-separated list of dependencies. Possibly-unused and ignored
       dependencies are never removed. Formatting and comments of the
       manifests are kept; run cargo check afterwards.
-  cargoscope fix --advisories [PATH] [--dry-run | --apply] [--format text|markdown]
+  cargoscope fix --advisories [PATH] [--dry-run | --apply] [--format text|markdown] [--color WHEN]
       Update vulnerable packages to the smallest fixed version Cargo accepts
       (in Cargo.lock, and in Cargo.toml when a direct requirement blocks the
       fix), and say which dependency blocks the others. Runs cargo update,
       which may read the registry index; it compiles nothing.
   cargoscope fix --updates [PATH] [--breaking] [--dry-run | --apply] [--only NAMES]
-                 [--format text|markdown|json]
+                 [--format text|markdown|json] [--color WHEN]
       Update direct dependencies to their newest SemVer-compatible version in
       Cargo.lock, as Dependabot version updates do. With --breaking, try the
       newest major version first, raising the requirement in Cargo.toml.

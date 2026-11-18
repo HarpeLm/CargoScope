@@ -45,15 +45,16 @@ pub struct ScanOptions {
 }
 
 /// When the text report uses colors (`--color`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ColorChoice {
+    #[default]
     Auto,
     Always,
     Never,
 }
 
 impl ColorChoice {
-    fn parse(value: &str) -> Result<Self, String> {
+    pub(crate) fn parse(value: &str) -> Result<Self, String> {
         match value {
             "auto" => Ok(Self::Auto),
             "always" => Ok(Self::Always),
@@ -145,7 +146,7 @@ pub fn parse_scan_options(
     Ok(options)
 }
 
-fn parse_output_format(value: &str) -> Result<OutputFormat, String> {
+pub(crate) fn parse_output_format(value: &str) -> Result<OutputFormat, String> {
     match value {
         "text" => Ok(OutputFormat::Text),
         "json" => Ok(OutputFormat::Json),
@@ -822,7 +823,7 @@ fn exit_code(
 }
 
 /// Repository-relative URI with forward slashes, as SARIF consumers expect.
-fn sarif_uri(path: &Path) -> String {
+pub(crate) fn sarif_uri(path: &Path) -> String {
     let text = path.to_string_lossy().replace('\\', "/");
     let mut text = text.as_str();
     while let Some(rest) = text.strip_prefix("./") {

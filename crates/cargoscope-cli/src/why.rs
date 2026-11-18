@@ -6,9 +6,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use cargoscope_core::{DependencyKind, Inventory, Package};
+use cargoscope_report::Paint;
 use serde_json::json;
 
 use crate::execution_error;
+use crate::scan::ColorChoice;
 
 const MAX_PATHS: usize = 25;
 
@@ -17,12 +19,14 @@ struct WhyOptions {
     crate_spec: String,
     path: PathBuf,
     json: bool,
+    color: ColorChoice,
 }
 
 fn parse_why_options(arguments: impl Iterator<Item = String>) -> Result<WhyOptions, String> {
     let mut crate_spec: Option<String> = None;
     let mut path: Option<PathBuf> = None;
     let mut json = false;
+    let mut color = ColorChoice::Auto;
     let mut arguments = arguments.peekable();
 
     while let Some(argument) = arguments.next() {
@@ -50,6 +54,7 @@ fn parse_why_options(arguments: impl Iterator<Item = String>) -> Result<WhyOptio
                     }
                 };
             }
+            "--color" => color = ColorChoice::parse(&value()?)?,
             other if other.starts_with('-') => return Err(format!("Unknown option: {other}")),
             _ if crate_spec.is_none() => crate_spec = Some(argument),
             _ if path.is_none() => path = Some(PathBuf::from(argument)),
@@ -63,10 +68,11 @@ fn parse_why_options(arguments: impl Iterator<Item = String>) -> Result<WhyOptio
         crate_spec,
         path: path.unwrap_or_else(|| PathBuf::from(".")),
         json,
+        color,
     })
 }
 
-/// `cargoscope why CRATE[@VERSION] [PATH] [--format text|json]`.
+/// `cargoscope why CRATE[@VERSION] [PATH] [--format text|json] [--color WHEN]`.
 pub fn why_command(arguments: impl Iterator<Item = String>) -> ExitCode {
     let options = match parse_why_options(arguments) {
         Ok(options) => options,
@@ -90,7 +96,12 @@ pub fn why_command(arguments: impl Iterator<Item = String>) -> ExitCode {
     let rendered = if options.json {
         render_json(&inventory, &matches, &options.crate_spec)
     } else {
-        render_text(&inventory, &matches, &direct_kinds)
+        render_text(
+            &inventory,
+            &matches,
+            &direct_kinds,
+            Paint::new(options.color.enabled(false)),
+        )
     };
     print!("{rendered}");
     ExitCode::SUCCESS
@@ -161,6 +172,7 @@ fn render_text(
     inventory: &Inventory,
     matches: &[usize],
     direct_kinds: &BTreeMap<String, BTreeSet<DependencyKind>>,
+    paint: Paint,
 ) -> String {
     let mut out = String::new();
     for (position, &index) in matches.iter().enumerate() {
@@ -175,10 +187,11 @@ fn render_text(
         };
         let _ = writeln!(
             out,
-            "{} {} [{}]{header_note}",
-            package.name,
+            "{} {} {}{}",
+            paint.bold(&package.name),
             package.version,
-            scope(package)
+            paint.dim(&format!("[{}]", scope(package))),
+            paint.dim(header_note)
         );
 
         let dependents = inventory.dependents_of(index);
@@ -186,13 +199,15 @@ fn render_text(
             let (exclusive, tree) = inventory.package_weight(index);
             let _ = writeln!(
                 out,
-                "  weight: {exclusive} exclusive of {tree} package{} in its subtree",
+                "  {} {} of {tree} package{} in its subtree",
+                paint.bold("weight:"),
+                paint.yellow(&format!("{exclusive} exclusive")),
                 if tree == 1 { "" } else { "s" }
             );
         }
 
         if dependents.is_empty() {
-            out.push_str("  dependents (0): none\n");
+            let _ = writeln!(out, "  {} none", paint.bold("dependents (0):"));
         } else {
             let names: Vec<String> = dependents
                 .iter()
@@ -203,8 +218,8 @@ fn render_text(
                 .collect();
             let _ = writeln!(
                 out,
-                "  dependents ({}): {}",
-                dependents.len(),
+                "  {} {}",
+                paint.bold(&format!("dependents ({}):", dependents.len())),
                 names.join(", ")
             );
         }
@@ -212,21 +227,35 @@ fn render_text(
         if !package.root {
             let paths = inventory.paths_to(index, MAX_PATHS);
             if paths.is_empty() {
-                out.push_str("  paths from root (0): not reachable from any root package\n");
+                let _ = writeln!(
+                    out,
+                    "  {} not reachable from any root package",
+                    paint.bold("paths from root (0):")
+                );
             } else {
-                let _ = writeln!(out, "  paths from root ({}):", paths.len());
+                let _ = writeln!(
+                    out,
+                    "  {}",
+                    paint.bold(&format!("paths from root ({}):", paths.len()))
+                );
+                let arrow = paint.dim(" -> ");
                 for path in paths {
                     let chain: Vec<String> = path
                         .iter()
                         .map(|&step| {
                             let pkg = &inventory.packages[step];
-                            format!("{} {}", pkg.name, pkg.version)
+                            let label = format!("{} {}", pkg.name, pkg.version);
+                            if step == index {
+                                paint.bold(&label)
+                            } else {
+                                label
+                            }
                         })
                         .collect();
                     let note = path.get(1).map_or("", |&first| {
                         kind_note(direct_kinds, &inventory.packages[first].name)
                     });
-                    let _ = writeln!(out, "    {}{note}", chain.join(" -> "));
+                    let _ = writeln!(out, "    {}{}", chain.join(&arrow), paint.dim(note));
                 }
             }
         }
@@ -291,6 +320,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{WhyOptions, parse_why_options};
+    use crate::scan::ColorChoice;
 
     fn parse(arguments: &[&str]) -> Result<WhyOptions, String> {
         parse_why_options(arguments.iter().map(|argument| (*argument).to_owned()))
@@ -304,11 +334,13 @@ mod tests {
                 crate_spec: "serde_json".to_owned(),
                 path: PathBuf::from("."),
                 json: false,
+                color: ColorChoice::Auto,
             }
         );
         assert_eq!(
             parse(&[
                 "--format=json",
+                "--color=always",
                 "bitflags@1.3.2",
                 "tests/fixtures/multi-version"
             ])
@@ -317,6 +349,7 @@ mod tests {
                 crate_spec: "bitflags@1.3.2".to_owned(),
                 path: PathBuf::from("tests/fixtures/multi-version"),
                 json: true,
+                color: ColorChoice::Always,
             }
         );
         assert!(parse(&[]).is_err());

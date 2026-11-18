@@ -6,23 +6,29 @@ use std::process::ExitCode;
 use cargoscope_advisory::AdvisoryDatabase;
 use cargoscope_cargo::binary::{BinarySource, inventory_of};
 use cargoscope_core::{Checks, PackageInfo, Report};
+use cargoscope_report::sarif::SarifLocations;
 
+use crate::scan::{ColorChoice, OutputFormat, parse_output_format, sarif_uri};
 use crate::{FailOn, parse_fail_on};
 
 #[derive(Debug, PartialEq, Eq)]
 struct AuditBinOptions {
     files: Vec<PathBuf>,
-    json: bool,
+    format: OutputFormat,
+    output: Option<PathBuf>,
     verbose: bool,
     fail_on: FailOn,
+    color: ColorChoice,
 }
 
 fn parse_options(arguments: impl Iterator<Item = String>) -> Result<AuditBinOptions, String> {
     let mut options = AuditBinOptions {
         files: Vec::new(),
-        json: false,
+        format: OutputFormat::Text,
+        output: None,
         verbose: false,
         fail_on: FailOn::AnyVulnerability,
+        color: ColorChoice::Auto,
     };
     let mut arguments = arguments.peekable();
     while let Some(argument) = arguments.next() {
@@ -39,18 +45,10 @@ fn parse_options(arguments: impl Iterator<Item = String>) -> Result<AuditBinOpti
                 .ok_or_else(|| format!("Missing value for {flag}."))
         };
         match flag.as_str() {
-            "--format" => {
-                options.json = match value()?.as_str() {
-                    "text" => false,
-                    "json" => true,
-                    other => {
-                        return Err(format!(
-                            "Unsupported output format: {other}. Use text or json."
-                        ));
-                    }
-                };
-            }
+            "--format" => options.format = parse_output_format(&value()?)?,
+            "--output" | "-o" => options.output = Some(PathBuf::from(value()?)),
             "--fail-on" => options.fail_on = parse_fail_on(&value()?)?,
+            "--color" => options.color = ColorChoice::parse(&value()?)?,
             "--verbose" | "-v" if inline.is_none() => options.verbose = true,
             other if other.starts_with('-') => return Err(format!("Unknown option: {other}")),
             _ => options.files.push(PathBuf::from(argument)),
@@ -59,10 +57,13 @@ fn parse_options(arguments: impl Iterator<Item = String>) -> Result<AuditBinOpti
     if options.files.is_empty() {
         return Err("audit-bin needs at least one binary".to_owned());
     }
+    if options.files.len() > 1 && options.output.is_some() {
+        return Err("--output cannot be used with multiple binaries.".to_owned());
+    }
     Ok(options)
 }
 
-/// `cargoscope audit-bin FILE... [--format text|json] [--fail-on THRESHOLD]`.
+/// `cargoscope audit-bin FILE... [--format text|json|sarif|cyclonedx|html] [--output FILE] [--fail-on THRESHOLD] [--color WHEN]`.
 pub fn audit_bin_command(arguments: impl Iterator<Item = String>) -> ExitCode {
     let options = match parse_options(arguments) {
         Ok(options) => options,
@@ -133,20 +134,33 @@ fn audit(
         warnings,
         direct_kinds: std::collections::BTreeMap::new(),
     };
-    let rendered = if options.json {
-        cargoscope_report::render_json(file, &report)
-    } else {
-        cargoscope_report::render_text(
+    let rendered = match options.format {
+        OutputFormat::Text => cargoscope_report::render_text(
             file,
             &report,
             cargoscope_report::TextOptions {
                 verbose: options.verbose,
-                color: crate::scan::ColorChoice::Auto.enabled(false),
+                color: options.color.enabled(options.output.is_some()),
                 ..cargoscope_report::TextOptions::default()
             },
-        )
+        ),
+        OutputFormat::Json => cargoscope_report::render_json(file, &report),
+        OutputFormat::Sarif => cargoscope_report::sarif::render_sarif(
+            &report,
+            &SarifLocations {
+                lockfile_uri: sarif_uri(file),
+                package_lines: vec![None; report.inventory.packages.len()],
+                unused_locations: Vec::new(),
+            },
+            false,
+        ),
+        OutputFormat::CycloneDx => cargoscope_report::cyclonedx::render_cyclonedx(file, &report),
+        OutputFormat::Html => cargoscope_report::html::render_html(file, &report, false),
     };
-    print!("{rendered}");
+    match &options.output {
+        Some(path) => std::fs::write(path, rendered).map_err(|error| error.to_string())?,
+        None => print!("{rendered}"),
+    }
     Ok(report
         .advisories
         .iter()
@@ -156,14 +170,35 @@ fn audit(
 #[cfg(test)]
 mod tests {
     use super::parse_options;
+    use crate::scan::{ColorChoice, OutputFormat};
 
     #[test]
     fn needs_a_file_and_known_options() {
         let parse = |arguments: &[&str]| parse_options(arguments.iter().map(|a| (*a).to_owned()));
         let options = parse(&["a", "b", "--format=json", "--fail-on", "high"]).expect("valid");
         assert_eq!(options.files.len(), 2);
-        assert!(options.json);
+        assert_eq!(options.format, OutputFormat::Json);
+        assert_eq!(options.color, ColorChoice::Auto);
+        assert_eq!(
+            parse(&["a", "--format", "sarif", "--color", "always"])
+                .expect("valid")
+                .format,
+            OutputFormat::Sarif
+        );
+        assert_eq!(
+            parse(&["a", "--format", "cyclonedx"])
+                .expect("valid")
+                .format,
+            OutputFormat::CycloneDx
+        );
+        assert_eq!(
+            parse(&["a", "--format", "html", "--output", "out.html"])
+                .expect("valid")
+                .format,
+            OutputFormat::Html
+        );
+        assert!(parse(&["a", "b", "--output", "out.json"]).is_err());
         assert!(parse(&[]).is_err());
-        assert!(parse(&["a", "--format", "sarif"]).is_err());
+        assert!(parse(&["a", "--format", "xml"]).is_err());
     }
 }
