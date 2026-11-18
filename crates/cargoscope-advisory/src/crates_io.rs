@@ -206,6 +206,17 @@ pub fn refresh(
     inventory: &Inventory,
     cargo_home: Option<&Path>,
 ) -> Result<RefreshSummary, AdvisoryError> {
+    refresh_with_options(cache_dir, inventory, cargo_home, true)
+}
+
+/// Like [`refresh`], optionally skipping the `1 req/s` crates.io maintenance
+/// requests (`include_maintenance = false`).
+pub fn refresh_with_options(
+    cache_dir: &Path,
+    inventory: &Inventory,
+    cargo_home: Option<&Path>,
+    include_maintenance: bool,
+) -> Result<RefreshSummary, AdvisoryError> {
     let root = cache_dir.join(DIR);
     let versions_dir = root.join("versions");
     let licenses_dir = root.join("licenses");
@@ -277,33 +288,35 @@ pub fn refresh(
         }
     }
 
-    // The repository is read from the newest release: a crate that moved
-    // (to an organisation, say) still names its old, often archived,
-    // repository in older versions.
-    let mut direct: Vec<(&str, String, String)> = inventory
-        .packages
-        .iter()
-        .filter(|package| {
-            package.direct
-                && !package.root
-                && is_crates_io(package.source.as_deref())
-                && is_valid_name(&package.name)
-                && is_valid_version(&package.version)
-        })
-        .map(|package| {
-            let newest = fs::read_to_string(versions_dir.join(&package.name))
-                .ok()
-                .and_then(|text| latest(&read_versions(&text)).map(|v| v.version.clone()))
-                .unwrap_or_else(|| package.version.clone());
-            (package.name.as_str(), newest, package.version.clone())
-        })
-        .collect();
-    direct.sort_unstable();
-    direct.dedup_by(|a, b| a.0 == b.0);
-    let maintenance =
-        crate::maintenance::refresh(&root, &direct, &api_agent, &mut clock, &local_sources)?;
-    summary.maintenance = maintenance.crates;
-    summary.failures.extend(maintenance.failures);
+    if include_maintenance {
+        // The repository is read from the newest release: a crate that moved
+        // (to an organisation, say) still names its old, often archived,
+        // repository in older versions.
+        let mut direct: Vec<(&str, String, String)> = inventory
+            .packages
+            .iter()
+            .filter(|package| {
+                package.direct
+                    && !package.root
+                    && is_crates_io(package.source.as_deref())
+                    && is_valid_name(&package.name)
+                    && is_valid_version(&package.version)
+            })
+            .map(|package| {
+                let newest = fs::read_to_string(versions_dir.join(&package.name))
+                    .ok()
+                    .and_then(|text| latest(&read_versions(&text)).map(|v| v.version.clone()))
+                    .unwrap_or_else(|| package.version.clone());
+                (package.name.as_str(), newest, package.version.clone())
+            })
+            .collect();
+        direct.sort_unstable();
+        direct.dedup_by(|a, b| a.0 == b.0);
+        let maintenance =
+            crate::maintenance::refresh(&root, &direct, &api_agent, &mut clock, &local_sources)?;
+        summary.maintenance = maintenance.crates;
+        summary.failures.extend(maintenance.failures);
+    }
 
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)

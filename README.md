@@ -96,10 +96,14 @@ On a pull request, the action also scans the base branch and comments with only 
 ## Quick Start
 
 ```sh
-# Download the RustSec database and this project's crates.io data (the only command that uses the network)
-cargoscope update .
+# Instant zero-network check (inventory and likely-unused dependencies)
+cargoscope scan . --checks inventory,unused
 
-# Scan the current project, offline
+# Fast first full scan (downloads advisories + crates.io versions/licenses in a few seconds, then scans)
+cargoscope scan . --update --fast
+
+# Or download everything first (including 1 req/s maintenance indicators) then scan offline:
+cargoscope update .            # use --fast / --no-maintenance to skip 1 req/s maintenance requests
 cargoscope scan .
 ```
 
@@ -187,8 +191,8 @@ cargoscope/
 │   ├── cargoscope-cli/        # commands, options, exit codes
 │   ├── cargoscope-core/       # data model, orchestration, configuration
 │   ├── cargoscope-cargo/      # Cargo parsing, resolution, unused analysis
-│   ├── cargoscope-advisory/   # RustSec database and cache (skeleton)
-│   └── cargoscope-report/     # text, JSON, SARIF and CycloneDX SBOM
+│   ├── cargoscope-advisory/   # RustSec database, crates.io cache and maintenance
+│   └── cargoscope-report/     # text, JSON, SARIF, CycloneDX and HTML
 └── tests/                     # fixtures and integration tests
 ```
 
@@ -240,7 +244,7 @@ Maintenance: 3 of 18 direct dependencies to watch
 - **Stale**: no release of any version for 2 years or more before the data was downloaded. Many finished crates are stale and fine; it is a question to ask, not a verdict.
 - **Single owner**: one crates.io owner and no team. If that person leaves, nobody can publish a fix. The `rust-lang-owner` account counts as a team.
 
-`cargoscope update` downloads this data for direct dependencies only: the owners from the crates.io API (one request per second, as its crawler policy asks), the repository from the local registry sources or the API, and the archived status from the GitHub API, with `GITHUB_TOKEN` or `GH_TOKEN` when set (60 requests an hour without one; if the limit is reached, the archived status stays unknown and is fetched at the next update). The data is kept for a week, so later updates are quick. The JSON report has it on each package (`last_release`, `owners`, `repository`, `archived`, `maintenance`). These indicators never fail the scan.
+`cargoscope update` downloads this data for direct dependencies only: the owners from the crates.io API (one request per second, as its crawler policy asks), the repository from the local registry sources or the API, and the archived status from the GitHub API, with `GITHUB_TOKEN` or `GH_TOKEN` when set (60 requests an hour without one; if the limit is reached, the archived status stays unknown and is fetched at the next update). The data is kept for a week, so later updates are quick. Pass `--fast` (or `--no-maintenance`) to `cargoscope update` to skip this data when you want a quick first update. The JSON report has it on each package (`last_release`, `owners`, `repository`, `archived`, `maintenance`). These indicators never fail the scan.
 
 ## Comparing Reports and Baselines
 

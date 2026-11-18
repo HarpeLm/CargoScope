@@ -63,7 +63,7 @@ impl fmt::Display for AdvisoryError {
             ),
             Self::Missing { path } => write!(
                 formatter,
-                "no advisory database at {}; run `cargoscope update` first",
+                "no advisory database at {}; run `cargoscope update` first (or `cargoscope scan --update`, or `cargoscope scan --checks inventory,unused` for an instant offline check)",
                 path.display()
             ),
             Self::Download(message) => write!(formatter, "download failed: {message}"),

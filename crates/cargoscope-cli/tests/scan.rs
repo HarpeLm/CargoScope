@@ -1380,6 +1380,18 @@ fn every_subcommand_has_its_own_help() {
     assert!(
         String::from_utf8_lossy(&wrong.stderr).contains("Run cargoscope fix --help for usage.")
     );
+    let update_help = stdout(&help(&["update", "--help"]));
+    assert!(update_help.contains("--fast"), "{update_help}");
+    assert!(update_help.contains("--no-maintenance"), "{update_help}");
+    let scan_help = stdout(&help(&["scan", "--help"]));
+    assert!(scan_help.contains("--update"), "{scan_help}");
+    assert!(scan_help.contains("--fast"), "{scan_help}");
+    let bad_update = help(&["update", "--nope"]);
+    assert_eq!(bad_update.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&bad_update.stderr)
+            .contains("Run cargoscope update --help for usage.")
+    );
 }
 
 fn audit_bin(file: &str, extra: &[&str]) -> Output {

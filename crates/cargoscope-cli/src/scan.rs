@@ -34,6 +34,8 @@ pub struct ScanOptions {
     pub baseline: Option<PathBuf>,
     pub precise: bool,
     pub color: ColorChoice,
+    pub update: bool,
+    pub include_maintenance: bool,
 }
 
 /// When the text report uses colors (`--color`).
@@ -85,6 +87,8 @@ pub fn parse_scan_options(
         baseline: None,
         precise: false,
         color: ColorChoice::Auto,
+        update: false,
+        include_maintenance: true,
     };
     let mut path_given = false;
 
@@ -118,6 +122,10 @@ pub fn parse_scan_options(
             "--show-uncertain" if inline_value.is_none() => options.show_uncertain = true,
             "--verbose" | "-v" if inline_value.is_none() => options.verbose = true,
             "--precise" if inline_value.is_none() => options.precise = true,
+            "--update" if inline_value.is_none() => options.update = true,
+            "--no-maintenance" | "--fast" if inline_value.is_none() => {
+                options.include_maintenance = false;
+            }
             other if other.starts_with('-') => return Err(format!("Unknown option: {other}")),
             _ if path_given => return Err("Only one scan path may be provided.".to_owned()),
             _ => {
@@ -194,6 +202,9 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
     let root = options.path.as_path();
     let inventory = cargoscope_cargo::scan_cargo_project(root)
         .map_err(|error| execution_error(root, &error))?;
+    if options.update {
+        crate::update_for_scan(root, &inventory, options.include_maintenance)?;
+    }
     let checks = options.checks;
     let mut warnings = Vec::new();
 
@@ -655,6 +666,30 @@ mod tests {
         assert_eq!(cyclonedx.format, OutputFormat::CycloneDx);
         let html = parse(&["--format", "html", "."]).expect("valid");
         assert_eq!(html.format, OutputFormat::Html);
+        let updated = parse(&["--update", "--fast", "."]).expect("valid");
+        assert!(updated.update);
+        assert!(!updated.include_maintenance);
+        let no_maint = parse(&["--update", "--no-maintenance"]).expect("valid");
+        assert!(no_maint.update);
+        assert!(!no_maint.include_maintenance);
+    }
+
+    #[test]
+    fn parses_update_command_options() {
+        let defaults = crate::parse_update_options(std::iter::empty()).expect("valid");
+        assert_eq!(defaults.path, PathBuf::from("."));
+        assert!(defaults.include_maintenance);
+        let fast =
+            crate::parse_update_options(["crates/app", "--fast"].into_iter().map(str::to_owned))
+                .expect("valid");
+        assert_eq!(fast.path, PathBuf::from("crates/app"));
+        assert!(!fast.include_maintenance);
+        let no_maint =
+            crate::parse_update_options(["--no-maintenance", "."].into_iter().map(str::to_owned))
+                .expect("valid");
+        assert!(!no_maint.include_maintenance);
+        assert!(crate::parse_update_options(["--nope"].into_iter().map(str::to_owned)).is_err());
+        assert!(crate::parse_update_options(["a", "b"].into_iter().map(str::to_owned)).is_err());
     }
 
     #[test]

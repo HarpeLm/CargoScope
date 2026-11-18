@@ -20,9 +20,10 @@ use cargoscope_advisory::DEFAULT_ARCHIVE_URL;
 use cargoscope_advisory::crates_io;
 use cargoscope_core::{AdvisoryFinding, AdvisoryKind, Inventory, Severity, UnusedFinding, VERSION};
 
-const UPDATE_USAGE: &str = "  cargoscope update [PATH]
+const UPDATE_USAGE: &str = "  cargoscope update [PATH] [--no-maintenance | --fast]
       Download the RustSec advisory database and the crates.io data (versions,
-      licenses) of the project at PATH. The only command that uses the network.";
+      licenses, maintenance) of the project at PATH. The only command that uses the network.
+        --no-maintenance, --fast  Skip the 1 req/s crates.io maintenance requests.";
 
 const COMPARE_USAGE: &str = "  cargoscope compare BASELINE CURRENT [--format text|json|markdown] [--fail-on THRESHOLD]
       Compare two JSON reports (markdown: for a pull request comment). Exit code 1 when new advisories reach the threshold.";
@@ -58,10 +59,14 @@ const FIX_USAGE: &str = "  cargoscope fix [PATH] [--dry-run | --apply] [--only N
       newest major version first, raising the requirement in Cargo.toml.
       Needs the crates.io data of `cargoscope update`; compiles nothing.";
 
-const SCAN_USAGE: &str = "  cargoscope scan [PATH] [--format text|json|sarif|cyclonedx|html] [--output FILE] [--fail-on THRESHOLD] [--show-uncertain] [--verbose] [--precise] [--color WHEN]
-      Report on a Cargo project, read-only and offline.
+const SCAN_USAGE: &str = "  cargoscope scan [PATH] [--update] [--no-maintenance | --fast] [--format text|json|sarif|cyclonedx|html] [--output FILE] [--fail-on THRESHOLD] [--show-uncertain] [--verbose] [--precise] [--color WHEN]
+      Report on a Cargo project, read-only and offline (unless --update is given).
 
 Options for scan:
+  --update             Download or refresh the advisory database and crates.io
+                       data before scanning.
+  --no-maintenance, --fast
+                       With --update, skip the 1 req/s crates.io maintenance requests.
   --format text|json|sarif|cyclonedx|html
                        Output format (default: text; cyclonedx: CycloneDX 1.5 SBOM;
                        html: self-contained offline report).
@@ -135,11 +140,10 @@ fn main() -> ExitCode {
         Some("why") => why::why_command(rest.into_iter()),
         Some("fix") => fix::fix_command(rest.into_iter()),
         Some("audit-bin") => audit_bin::audit_bin_command(rest.into_iter()),
-        Some("update") => match rest.as_slice() {
-            [] => update(Path::new(".")),
-            [path] => update(Path::new(path)),
-            [_, extra, ..] => {
-                eprintln!("Unexpected argument for update: {extra}");
+        Some("update") => match parse_update_options(rest.into_iter()) {
+            Ok(options) => update(&options),
+            Err(error) => {
+                eprintln!("{error}\nRun cargoscope update --help for usage.");
                 ExitCode::from(2)
             }
         },
@@ -238,44 +242,107 @@ fn parse_fail_on(value: &str) -> Result<FailOn, String> {
     })
 }
 
-fn update(project_root: &Path) -> ExitCode {
-    let cache = match cargoscope_advisory::cache_dir() {
-        Ok(cache) => cache,
-        Err(error) => {
-            eprintln!("CargoScope could not update: {error}");
-            return ExitCode::from(2);
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct UpdateOptions {
+    pub path: PathBuf,
+    pub include_maintenance: bool,
+}
+
+pub(crate) fn parse_update_options(
+    arguments: impl Iterator<Item = String>,
+) -> Result<UpdateOptions, String> {
+    let mut options = UpdateOptions {
+        path: PathBuf::from("."),
+        include_maintenance: true,
+    };
+    let mut path_given = false;
+    for argument in arguments {
+        match argument.as_str() {
+            "--no-maintenance" | "--fast" => options.include_maintenance = false,
+            other if other.starts_with('-') => {
+                return Err(format!("Unknown option for update: {other}"));
+            }
+            _ if path_given => {
+                return Err(format!("Unexpected argument for update: {argument}"));
+            }
+            _ => {
+                options.path = PathBuf::from(argument);
+                path_given = true;
+            }
+        }
+    }
+    Ok(options)
+}
+
+fn update(options: &UpdateOptions) -> ExitCode {
+    match run_update(&options.path, None, options.include_maintenance, false) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(code) => code,
+    }
+}
+
+pub(crate) fn update_for_scan(
+    project_root: &Path,
+    inventory: &Inventory,
+    include_maintenance: bool,
+) -> Result<(), ExitCode> {
+    run_update(project_root, Some(inventory), include_maintenance, true)
+}
+
+fn run_update(
+    project_root: &Path,
+    inventory: Option<&Inventory>,
+    include_maintenance: bool,
+    to_stderr: bool,
+) -> Result<(), ExitCode> {
+    let say = |line: &str| {
+        if to_stderr {
+            eprintln!("{line}");
+        } else {
+            println!("{line}");
         }
     };
+    let cache = cargoscope_advisory::cache_dir().map_err(|error| {
+        eprintln!("CargoScope could not update: {error}");
+        ExitCode::from(2)
+    })?;
     match cargoscope_advisory::update(&cache, DEFAULT_ARCHIVE_URL) {
-        Ok(summary) => println!(
+        Ok(summary) => say(&format!(
             "RustSec advisory database updated: {} advisories in {}",
             summary.advisories,
             summary.path.display()
-        ),
+        )),
         Err(error) => {
             eprintln!("CargoScope could not update the advisory database: {error}");
-            return ExitCode::from(2);
+            return Err(ExitCode::from(2));
         }
     }
 
-    let inventory = match cargoscope_cargo::scan_cargo_project(project_root) {
-        Ok(inventory) => inventory,
-        Err(error) => {
-            println!(
-                "crates.io data not refreshed: no Cargo project read at {} ({error})",
-                project_root.display()
-            );
-            return ExitCode::SUCCESS;
-        }
+    let loaded_inventory;
+    let inventory = match inventory {
+        Some(inventory) => inventory,
+        None => match cargoscope_cargo::scan_cargo_project(project_root) {
+            Ok(inventory) => {
+                loaded_inventory = inventory;
+                &loaded_inventory
+            }
+            Err(error) => {
+                say(&format!(
+                    "crates.io data not refreshed: no Cargo project read at {} ({error})",
+                    project_root.display()
+                ));
+                return Ok(());
+            }
+        },
     };
     let cargo_home = std::env::var_os("CARGO_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))
         .or_else(|| std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join(".cargo")));
-    println!(
+    say(&format!(
         "Refreshing crates.io data for {} (licenses not found locally are fetched at most once per second)...",
         project_root.display()
-    );
+    ));
     let direct = inventory
         .packages
         .iter()
@@ -285,25 +352,40 @@ fn update(project_root: &Path) -> ExitCode {
         .map(|package| package.name.as_str())
         .collect::<std::collections::BTreeSet<_>>()
         .len();
-    if direct > 30 {
-        println!(
-            "Maintenance data of {direct} direct dependencies: up to {direct} s the first time (crates.io asks for one request per second), then kept for a week."
-        );
+    if include_maintenance && direct > 30 {
+        say(&format!(
+            "Maintenance data of {direct} direct dependencies: up to {direct} s the first time (crates.io asks for one request per second; use --fast to skip), then kept for a week."
+        ));
     }
-    match crates_io::refresh(&cache, &inventory, cargo_home.as_deref()) {
+    match crates_io::refresh_with_options(
+        &cache,
+        inventory,
+        cargo_home.as_deref(),
+        include_maintenance,
+    ) {
         Ok(summary) => {
-            println!(
-                "crates.io data updated: {} crates, {} licenses from local sources, {} from the crates.io API, maintenance data of {} direct dependencies",
-                summary.crates, summary.licenses_local, summary.licenses_api, summary.maintenance
-            );
+            if include_maintenance {
+                say(&format!(
+                    "crates.io data updated: {} crates, {} licenses from local sources, {} from the crates.io API, maintenance data of {} direct dependencies",
+                    summary.crates,
+                    summary.licenses_local,
+                    summary.licenses_api,
+                    summary.maintenance
+                ));
+            } else {
+                say(&format!(
+                    "crates.io data updated: {} crates, {} licenses from local sources, {} from the crates.io API (maintenance skipped)",
+                    summary.crates, summary.licenses_local, summary.licenses_api
+                ));
+            }
             for failure in &summary.failures {
                 eprintln!("warning: {failure}");
             }
-            ExitCode::SUCCESS
+            Ok(())
         }
         Err(error) => {
             eprintln!("CargoScope could not update crates.io data: {error}");
-            ExitCode::from(2)
+            Err(ExitCode::from(2))
         }
     }
 }
