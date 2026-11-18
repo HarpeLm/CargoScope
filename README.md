@@ -15,7 +15,7 @@ CargoScope is an open-source CLI, written in Rust, for Rust/Cargo projects. One 
 
 - **Local, no account**: the first scan needs no account and no online service.
 - **Your code never leaves your machine**: nothing is uploaded.
-- **No silent writes**: CargoScope never modifies your files, except `cargoscope fix --apply`, which you run on purpose.
+- **No silent writes**: CargoScope never modifies your files, except `cargoscope fix --apply` and `cargoscope init`, which you run on purpose.
 - **Evidence first**: every finding shows its evidence, its source and the date of its data.
 - **No code execution**: CargoScope reads files directly and never runs `cargo`, build scripts or project code by default.
 
@@ -77,11 +77,22 @@ Tags: `<version>` and `latest`, `<version>-full` and `full`. The images are buil
 
 On the GitHub Marketplace the action is listed as [**CargoScope-Bot**](https://github.com/marketplace/actions/cargoscope-bot) (the name CargoScope belongs to another GitHub account; it was listed as Dep Scout up to 0.7.0); it runs CargoScope.
 
+Minimal step you can drop into an existing CI job (no extra `permissions:` needed):
+
+```yaml
+      - uses: HarpeLm/CargoScope@v0.7.5
+        with:
+          fail-on: high
+          upload-sarif: false
+```
+
+Or generate a full workflow with `cargoscope init --ci` (which also enables SARIF code scanning and PR comments when permissions allow):
+
 ```yaml
 permissions:
   contents: read
-  security-events: write   # to upload SARIF to code scanning
-  pull-requests: write     # to comment on pull requests
+  security-events: write   # optional: to upload SARIF to code scanning
+  pull-requests: write     # optional: to comment on pull requests
 
 jobs:
   cargoscope:
@@ -93,7 +104,7 @@ jobs:
           fail-on: high        # or none, to report without failing
 ```
 
-The action downloads the prebuilt binary (no compilation), caches advisory data for a day, prints the report in the log, and uploads SARIF results to the Security tab. Inputs: `version`, `path`, `fail-on`, `checks`, `sarif`, `upload-sarif`, `comment`, `new-only`.
+The action downloads the prebuilt binary (no compilation), caches advisory data for a day, prints the report in the log, and uploads SARIF results to the Security tab when permissions and Code Scanning are available (missing permissions do not fail the job). Inputs: `version`, `path`, `fail-on`, `checks`, `sarif`, `upload-sarif`, `comment`, `new-only`.
 
 On a pull request, the action also scans the base branch and comments with only what the pull request changes: new and resolved advisories, new yanked versions, new likely-unused dependencies, and added, removed or changed packages. A later run updates the same comment. Advisories already on the base branch do not fail the pull request (`new-only: false` to fail on all of them). Pull requests from forks get a read-only token: the comparison then goes to the job summary instead of a comment. The comment needs CargoScope 0.2.0 or later.
 
@@ -411,7 +422,7 @@ Ignored advisories stay visible with their reason, but never fail the scan; in S
 
 ## Dependency Policy
 
-Already using cargo-deny? Without a `cargoscope.toml`, CargoScope reads your `deny.toml` and lists what it cannot translate. A `cargoscope.toml` next to `Cargo.toml` enforces allowed licenses (with per-crate exceptions and clarifications), allowed sources, banned crates and features (`[bans] features`), and, optionally, a single version per crate, in the spirit of cargo-deny. With `[graph]` (`targets`, `features`, `all-features`, `no-default-features`, `exclude-dev`), the rules only apply to the packages that build uses. Violations fail the scan. See [docs/policy.md](docs/policy.md).
+Already using cargo-deny? Without a `cargoscope.toml`, CargoScope reads your `deny.toml` and lists what it cannot translate. Run `cargoscope init` to generate a starter `cargoscope.toml` (or migrate an existing `deny.toml` and `.cargo/audit.toml` into `cargoscope.toml`), and `cargoscope init --ci` to create `.github/workflows/cargoscope.yml`. A `cargoscope.toml` next to `Cargo.toml` enforces allowed licenses (with per-crate exceptions and clarifications), allowed sources, banned crates and features (`[bans] features`), and, optionally, a single version per crate, in the spirit of cargo-deny. With `[graph]` (`targets`, `features`, `all-features`, `no-default-features`, `exclude-dev`), the rules only apply to the packages that build uses. Violations fail the scan. See [docs/policy.md](docs/policy.md).
 
 ## Compiler-Accurate Mode
 

@@ -73,6 +73,8 @@ cargoscope fix --advisories .          # show which vulnerable packages Cargo ca
 cargoscope fix --advisories . --apply  # apply the smallest fixed versions (Cargo.lock, and Cargo.toml if needed)
 cargoscope fix --updates .             # show newer compatible versions for direct dependencies (add --breaking for major)
 cargoscope audit-bin target/release/my-app  # audit dependencies embedded in a compiled binary
+cargoscope init .                      # create cargoscope.toml (translates deny.toml if present)
+cargoscope init --ci .                 # create .github/workflows/cargoscope.yml
 ```
 
 `--precise` runs `cargo check`, so your build scripts and proc macros run: use it only on code you trust.

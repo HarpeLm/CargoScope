@@ -837,6 +837,24 @@ fn read_config(project_root: &Path) -> Result<Option<String>, String> {
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
+/// Reads advisory ignores from cargo-deny's `deny.toml` and cargo-audit's
+/// `.cargo/audit.toml` in `project_root`.
+///
+/// # Errors
+///
+/// Returns a message when `deny.toml` cannot be read or is invalid TOML.
+pub fn external_advisory_ignores(project_root: &Path) -> Result<Vec<AdvisoryIgnore>, String> {
+    let mut ignores = crate::deny::load(project_root)?
+        .map(|translation| translation.ignores)
+        .unwrap_or_default();
+    for ignore in audit_toml_ignores(project_root) {
+        if !ignores.iter().any(|known| known.id == ignore.id) {
+            ignores.push(ignore);
+        }
+    }
+    Ok(ignores)
+}
+
 /// Reads `[advisories] ignore` from `project_root/cargoscope.toml`, or,
 /// without one, from cargo-deny's `deny.toml` and cargo-audit's
 /// `.cargo/audit.toml`.
@@ -846,17 +864,7 @@ fn read_config(project_root: &Path) -> Result<Option<String>, String> {
 /// Returns a message naming the file for unreadable or invalid content.
 pub fn load_advisory_ignores(project_root: &Path) -> Result<Vec<AdvisoryIgnore>, String> {
     match read_config(project_root)? {
-        None => {
-            let mut ignores = crate::deny::load(project_root)?
-                .map(|translation| translation.ignores)
-                .unwrap_or_default();
-            for ignore in audit_toml_ignores(project_root) {
-                if !ignores.iter().any(|known| known.id == ignore.id) {
-                    ignores.push(ignore);
-                }
-            }
-            Ok(ignores)
-        }
+        None => external_advisory_ignores(project_root),
         Some(text) => parse_advisory_ignores(&text)
             .map_err(|error| format!("{}: {error}", project_root.join(FILE_NAME).display())),
     }

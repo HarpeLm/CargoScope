@@ -1346,6 +1346,7 @@ fn every_subcommand_has_its_own_help() {
         ("scan", "--show-uncertain", "cargoscope fix"),
         ("why", "CRATE[@VERSION]", "cargoscope scan"),
         ("fix", "--only NAMES", "--show-uncertain"),
+        ("init", "--ci", "cargoscope compare"),
         ("compare", "--format text|json|markdown", "cargoscope scan"),
         (
             "update",
@@ -1372,7 +1373,7 @@ fn every_subcommand_has_its_own_help() {
         Some(0)
     );
     let all = stdout(&help(&["--help"]));
-    for command in ["scan", "fix", "compare", "update"] {
+    for command in ["init", "scan", "fix", "compare", "update"] {
         assert!(all.contains(&format!("cargoscope {command}")), "{all}");
     }
     let wrong = help(&["fix", "--force"]);
@@ -2253,6 +2254,95 @@ fn warn_level_policies_emit_warnings_without_failing_scan() {
 
     let sarif: serde_json::Value = serde_json::from_slice(&run("sarif").stdout).expect("sarif");
     assert_eq!(sarif["runs"][0]["results"][0]["level"], "warning");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn init_creates_policy_from_deny_toml_and_ci_workflow() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-init-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    copy_dir(&fixture("policy"), &dir);
+    std::fs::remove_file(dir.join("cargoscope.toml")).expect("remove");
+    std::fs::create_dir_all(dir.join(".cargo")).expect("mkdir .cargo");
+    std::fs::write(
+        dir.join("deny.toml"),
+        r#"[licenses]
+allow = ["MIT", "Apache-2.0"]
+
+[bans]
+deny = [{ crate = "itoa", reason = "test ban from deny.toml" }]
+
+[sources]
+unknown-git = "deny"
+
+[advisories]
+ignore = [{ id = "RUSTSEC-2020-0071", reason = "from deny" }]
+"#,
+    )
+    .expect("write deny.toml");
+    std::fs::write(
+        dir.join(".cargo/audit.toml"),
+        "[advisories]\nignore = [\"CARGOSCOPE-TEST-0001\"]\n",
+    )
+    .expect("write audit.toml");
+
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .arg("init")
+            .args(args)
+            .arg(&dir)
+            .output()
+            .expect("cargoscope binary runs")
+    };
+
+    // --dry-run previews without writing files.
+    let dry = run(&["--dry-run"]);
+    assert_eq!(dry.status.code(), Some(0));
+    assert!(!dir.join("cargoscope.toml").exists());
+    let dry_text = stdout(&dry);
+    assert!(dry_text.contains("[licenses]"), "{dry_text}");
+    assert!(dry_text.contains("CARGOSCOPE-TEST-0001"), "{dry_text}");
+
+    // --ci --policy writes both cargoscope.toml and .github/workflows/cargoscope.yml.
+    let init = run(&["--ci", "--policy"]);
+    assert_eq!(
+        init.status.code(),
+        Some(0),
+        "stdout: {}\nstderr: {}",
+        stdout(&init),
+        String::from_utf8_lossy(&init.stderr)
+    );
+    assert!(dir.join("cargoscope.toml").is_file());
+    let workflow = std::fs::read_to_string(dir.join(".github/workflows/cargoscope.yml"))
+        .expect("workflow written");
+    assert!(workflow.contains("HarpeLm/CargoScope@v0.7.5"));
+
+    // Refuses to overwrite without --force, overwrites with --force.
+    let second = run(&[]);
+    assert_eq!(second.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&second.stderr).contains("already exists"));
+    assert_eq!(run(&["--force"]).status.code(), Some(0));
+
+    // Scans using the generated cargoscope.toml without deny.toml fallback warnings.
+    let scan = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+        .env("CARGO_HOME", fixture("empty-cargo-home"))
+        .args([
+            "scan",
+            "--checks",
+            "inventory,licenses,policy",
+            "--fail-on",
+            "none",
+        ])
+        .arg(&dir)
+        .output()
+        .expect("cargoscope scan runs");
+    assert_eq!(scan.status.code(), Some(0));
+    let scan_text = stdout(&scan);
+    assert!(!scan_text.contains("no cargoscope.toml"), "{scan_text}");
+    assert!(scan_text.contains("- [ban] itoa"), "{scan_text}");
+    assert!(scan_text.contains("- [source] forked"), "{scan_text}");
 
     let _ = std::fs::remove_dir_all(dir);
 }

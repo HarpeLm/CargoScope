@@ -22,7 +22,7 @@ inputs:
     description: Path of the SARIF file to write.
     default: cargoscope.sarif
   upload-sarif:
-    description: "Upload the SARIF file to GitHub code scanning (needs `security-events: write`)."
+    description: "Upload the SARIF file to GitHub code scanning (needs `security-events: write`; skipped if unavailable)."
     default: "true"
   comment:
     description: "On pull requests, post a comment with what the pull request changes: new and resolved advisories, unused dependencies, packages (needs `pull-requests: write`)."
@@ -397,6 +397,7 @@ runs:
 
     - name: Upload SARIF to code scanning
       if: ${{ inputs.upload-sarif == 'true' && steps.scan.outputs.exit-code != '2' }}
+      continue-on-error: true
       uses: github/codeql-action/upload-sarif@v3
       with:
         sarif_file: ${{ inputs.sarif }}

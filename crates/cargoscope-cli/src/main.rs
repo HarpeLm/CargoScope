@@ -9,6 +9,7 @@ mod compare;
 mod fix;
 mod fix_advisories;
 mod fix_updates;
+mod init;
 mod scan;
 mod update_notes;
 mod why;
@@ -24,6 +25,12 @@ const UPDATE_USAGE: &str = "  cargoscope update [PATH] [--no-maintenance | --fas
       Download the RustSec advisory database and the crates.io data (versions,
       licenses, maintenance) of the project at PATH. The only command that uses the network.
         --no-maintenance, --fast  Skip the 1 req/s crates.io maintenance requests.";
+
+const INIT_USAGE: &str = "  cargoscope init [PATH] [--ci] [--policy] [--dry-run] [--force]
+      Create cargoscope.toml (translating deny.toml and .cargo/audit.toml when
+      present) and/or .github/workflows/cargoscope.yml (--ci). Without --ci or
+      --policy, creates cargoscope.toml. Never overwrites existing files unless
+      --force is given; --dry-run prints what would be written.";
 
 const COMPARE_USAGE: &str = "  cargoscope compare BASELINE CURRENT [--format text|json|markdown] [--fail-on THRESHOLD]
       Compare two JSON reports (markdown: for a pull request comment). Exit code 1 when new advisories reach the threshold.";
@@ -115,6 +122,7 @@ fn main() -> ExitCode {
         Some("why") => Some(WHY_USAGE),
         Some("compare") => Some(COMPARE_USAGE),
         Some("fix") => Some(FIX_USAGE),
+        Some("init") => Some(INIT_USAGE),
         Some("update") => Some(UPDATE_USAGE),
         Some("audit-bin") => Some(AUDIT_BIN_USAGE),
         _ => None,
@@ -139,6 +147,7 @@ fn main() -> ExitCode {
         Some("compare") => compare::compare_command(rest.into_iter()),
         Some("why") => why::why_command(rest.into_iter()),
         Some("fix") => fix::fix_command(rest.into_iter()),
+        Some("init") => init::init_command(rest.into_iter()),
         Some("audit-bin") => audit_bin::audit_bin_command(rest.into_iter()),
         Some("update") => match parse_update_options(rest.into_iter()) {
             Ok(options) => update(&options),
@@ -155,6 +164,7 @@ fn main() -> ExitCode {
             println!(
                 "{}",
                 usage(&[
+                    INIT_USAGE,
                     UPDATE_USAGE,
                     COMPARE_USAGE,
                     FIX_USAGE,

@@ -4,6 +4,8 @@ All notable changes to CargoScope are documented in this file.
 
 ## Unreleased
 
+- `cargoscope init` (`--ci`, `--policy`, `--dry-run`, `--force`) to create a starter `cargoscope.toml`, translate an existing `deny.toml` and `.cargo/audit.toml` into `cargoscope.toml`, and generate `.github/workflows/cargoscope.yml`.
+- Non-blocking SARIF upload in `action.yml` (`continue-on-error: true` when `security-events: write` or Code Scanning is unavailable) and minimal 5-line CI snippet in `README.md`.
 - `cargoscope update --fast` / `--no-maintenance` to skip the `1 req/s` crates.io maintenance requests on the first update.
 - `cargoscope scan --update` (`--fast` / `--no-maintenance`) to download advisory and crates.io data and scan in one command.
 
