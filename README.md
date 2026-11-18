@@ -21,7 +21,7 @@ CargoScope is an open-source CLI, written in Rust, for Rust/Cargo projects. One 
 
 ## Status
 
-**Version 0.7.6.** One offline `scan` covers RustSec advisories (with dependency chains and fix versions), static unused dependencies (with `--precise` rustc verification), `cargo-deny`-compatible license/ban/source policies (`deny.toml` supported out of the box), outdated and yanked crates (SemVer compatible vs breaking), maintenance risks (archived, stale, or single-owner crates), and duplicate versions — exported as text, JSON, SARIF, CycloneDX 1.5, or standalone HTML.
+**Version 0.7.6.** One offline `scan` covers RustSec advisories (ranked by relevance — `affects-you`, `possibly`, `unlikely` — with dependency chains and fix versions), static unused dependencies (with `--precise` rustc verification), `cargo-deny`-compatible license/ban/source policies (`deny.toml` supported out of the box), outdated and yanked crates (SemVer compatible vs breaking), maintenance risks (archived, stale, or single-owner crates), and duplicate versions — exported as text, JSON, SARIF, CycloneDX 1.5 (with VEX `not_affected` for `unlikely` advisories), or standalone HTML.
 
 - **Action & fixes**: `cargoscope fix` removes unused deps, patches advisories (`--advisories`), and opens Dependabot-style update PRs (`--updates` / [CargoScope-Bot](https://github.com/marketplace/actions/cargoscope-bot)) with changelogs, MSRV/license checks, and `Cargo.lock` diffs; `cargoscope audit-bin` checks compiled binaries, and container images live on `ghcr.io/harpelm/cargoscope`.
 - **Measured parity**: matches `cargo-audit` 0.23.0 on 1,376 advisories across 74 unseen repos, `cargo-deny` 0.20.2 on all 44 tested `deny.toml` projects, and reaches 98.9% post-fix precision on unused dependencies in an 80-repo rustc benchmark ([methodology & raw data](tests/corpus/README.md)).
@@ -157,7 +157,7 @@ Next steps
   › cargoscope scan --verbose    every advisory and package in full
 ```
 
-Each vulnerable crate takes one line, with the smallest version that fixes all its advisories and the shortest chain that pulls it in; informational advisories (unmaintained, unsound, yanked) are grouped by kind. `--verbose` gives the full report instead: every advisory with its ID, link and fix, every resolved package with its chain, and the lists the short report cuts. Colors are used only on a terminal; `--color never`, `--color always` or the `NO_COLOR` variable change that, and a report written with `--output` has none. The JSON report carries the same chains in a `path` field.
+Each vulnerable crate takes one line, with the smallest version that fixes all its advisories, the shortest chain that pulls it in, and whether it is likely to affect shipped code (advisories in dev-only crates, unbuilt `[graph]` targets, mismatched platforms, or uncalled `[affected.functions]` are ranked `possibly` or `unlikely` with the reason, and sorted after `affects-you`); informational advisories (unmaintained, unsound, yanked) are grouped by kind. `--verbose` gives the full report instead: every advisory with its ID, link and fix, every resolved package with its chain, and the lists the short report cuts. Colors are used only on a terminal; `--color never`, `--color always` or the `NO_COLOR` variable change that, and a report written with `--output` has none. The JSON report carries the same chains in a `path` field.
 
 ### Behind a Proxy
 
@@ -172,6 +172,7 @@ cargoscope scan . --format cyclonedx --output bom.cdx.json    # CycloneDX 1.5 SB
 cargoscope scan . --format html --output report.html          # self-contained offline HTML report
 cargoscope why serde_json                                     # all reverse chains & pruning weight for a crate
 cargoscope scan . --fail-on high                    # fail only on high or critical vulnerabilities
+cargoscope scan . --fail-on high --ignore-unlikely  # also skip unlikely advisories (dev-only, uncalled, unbuilt)
 cargoscope scan . --fail-on none                    # never fail CI on findings
 cargoscope scan . --checks inventory,unused          # run only some checks (no download needed)
 cargoscope scan . --show-uncertain                  # also list possibly-unused dependencies
@@ -415,10 +416,11 @@ Reports the advisories of the crates compiled into a Rust binary, with the chain
 ```toml
 # cargoscope.toml
 [advisories]
+ignore-unlikely = true   # do not fail --fail-on for unlikely advisories
 ignore = [{ id = "RUSTSEC-2020-0071", reason = "only used by a build tool", until = "2027-01-31" }]
 ```
 
-Ignored advisories stay visible with their reason, but never fail the scan; in SARIF they are suppressed. See [docs/policy.md](docs/policy.md).
+Ignored advisories stay visible with their reason, but never fail the scan; in SARIF they are suppressed, and in CycloneDX both ignored and `unlikely` advisories carry VEX `not_affected` analysis. See [docs/policy.md](docs/policy.md).
 
 ## Dependency Policy
 

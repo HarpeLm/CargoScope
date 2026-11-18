@@ -32,7 +32,7 @@ const INIT_USAGE: &str = "  cargoscope init [PATH] [--ci] [--policy] [--dry-run]
       --policy, creates cargoscope.toml. Never overwrites existing files unless
       --force is given; --dry-run prints what would be written.";
 
-const COMPARE_USAGE: &str = "  cargoscope compare BASELINE CURRENT [--format text|json|markdown] [--fail-on THRESHOLD]
+const COMPARE_USAGE: &str = "  cargoscope compare BASELINE CURRENT [--format text|json|markdown] [--fail-on THRESHOLD] [--ignore-unlikely]
       Compare two JSON reports (markdown: for a pull request comment). Exit code 1 when new advisories reach the threshold.";
 
 const AUDIT_BIN_USAGE: &str =
@@ -66,7 +66,7 @@ const FIX_USAGE: &str = "  cargoscope fix [PATH] [--dry-run | --apply] [--only N
       newest major version first, raising the requirement in Cargo.toml.
       Needs the crates.io data of `cargoscope update`; compiles nothing.";
 
-const SCAN_USAGE: &str = "  cargoscope scan [PATH] [--update] [--no-maintenance | --fast] [--format text|json|sarif|cyclonedx|html] [--output FILE] [--fail-on THRESHOLD] [--show-uncertain] [--verbose] [--precise] [--color WHEN]
+const SCAN_USAGE: &str = "  cargoscope scan [PATH] [--update] [--no-maintenance | --fast] [--format text|json|sarif|cyclonedx|html] [--output FILE] [--fail-on THRESHOLD] [--ignore-unlikely] [--show-uncertain] [--verbose] [--precise] [--color WHEN]
       Report on a Cargo project, read-only and offline (unless --update is given).
 
 Options for scan:
@@ -84,6 +84,8 @@ Options for scan:
                        Informational advisories (unmaintained, unsound) never fail.
                        Unused dependencies never fail. Policy violations
                        (cargoscope.toml) fail unless THRESHOLD is none.
+  --ignore-unlikely    Do not fail --fail-on for advisories ranked unlikely
+                       (dev-only, mismatched [graph] target, or uncalled function).
   --show-uncertain     Also list possibly-unused dependencies.
   --precise            Confirm unused dependencies with rustc (cargo check, all
                        targets and features). COMPILES THE PROJECT: build

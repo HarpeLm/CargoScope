@@ -6,7 +6,9 @@
 
 use std::collections::BTreeMap;
 
-use cargoscope_core::{AdvisoryFinding, AdvisoryKind, Report, Severity, UnusedConfidence, VERSION};
+use cargoscope_core::{
+    AdvisoryFinding, AdvisoryKind, AdvisoryRelevance, Report, Severity, UnusedConfidence, VERSION,
+};
 use serde_json::{Value, json};
 
 /// SARIF rule ID for unused dependencies.
@@ -104,11 +106,23 @@ pub fn render_sarif(report: &Report, locations: &SarifLocations, show_uncertain:
         } else {
             format!(" Fix: upgrade to {}.", finding.patched.join(" or "))
         };
+        let relevance_note = if finding.relevance == AdvisoryRelevance::AffectsYou {
+            String::new()
+        } else if let Some(reason) = &finding.relevance_reason {
+            format!(" Relevance: {} ({reason}).", finding.relevance.as_str())
+        } else {
+            format!(" Relevance: {}.", finding.relevance.as_str())
+        };
+        let mut properties = json!({ "relevance": finding.relevance.as_str() });
+        if let Some(reason) = &finding.relevance_reason {
+            properties["relevance_reason"] = json!(reason);
+        }
         let mut result = json!({
             "ruleId": finding.id,
             "level": level(finding),
-            "message": { "text": format!("{} {} is affected by {}: {}.{via}{fix}", package.name, package.version, finding.id, finding.title) },
+            "message": { "text": format!("{} {} is affected by {}: {}.{via}{fix}{relevance_note}", package.name, package.version, finding.id, finding.title) },
             "locations": [location(&locations.lockfile_uri, package_line(finding.package))],
+            "properties": properties,
         });
         // Ignored advisories are kept as suppressed results, so that code
         // scanning shows them as dismissed with the reason.

@@ -20,13 +20,24 @@ pub struct AdvisoryKey {
     pub version: String,
 }
 
+/// One newly added advisory in a [`Comparison`]: key, severity, kind, title,
+/// relevance (`affects-you`, `possibly`, `unlikely`), and optional reason.
+pub type NewAdvisory = (
+    AdvisoryKey,
+    Option<String>,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+);
+
 /// What changed between two reports.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Comparison {
     /// Advisories present now and not in the baseline, with their severity
     /// (`None` when unscored), their kind (`vulnerability`, `informational`
-    /// or `ignored`) and their title. Only vulnerabilities can fail.
-    pub new_advisories: Vec<(AdvisoryKey, Option<String>, String, String)>,
+    /// or `ignored`), their title, and optional relevance and reason.
+    pub new_advisories: Vec<NewAdvisory>,
     /// Advisories of the baseline that no longer appear.
     pub resolved_advisories: Vec<AdvisoryKey>,
     /// Packages (`name version`) added.
@@ -191,11 +202,26 @@ pub fn compare(baseline: &Value, current: &Value) -> Comparison {
                 } else {
                     "informational".to_owned()
                 };
-                (key, severity, kind, text(advisory, "title"))
+                let relevance = advisory
+                    .get("relevance")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                let relevance_reason = advisory
+                    .get("relevance_reason")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                (
+                    key,
+                    severity,
+                    kind,
+                    text(advisory, "title"),
+                    relevance,
+                    relevance_reason,
+                )
             })
         })
         .collect();
-    let mut new_advisories: Vec<(AdvisoryKey, Option<String>, String, String)> = new_advisories;
+    let mut new_advisories: Vec<NewAdvisory> = new_advisories;
     new_advisories.sort_by(|left, right| left.0.cmp(&right.0));
     let after = advisory_keys(current);
     let resolved_advisories = before.difference(&after).cloned().collect();
@@ -258,6 +284,14 @@ fn section(out: &mut String, title: &str, items: &[String]) {
     }
 }
 
+fn format_relevance_note(relevance: Option<&str>, reason: Option<&str>) -> String {
+    match (relevance, reason) {
+        (Some(rel), Some(reason)) if rel != "affects-you" => format!(" ({rel}: {reason})"),
+        (Some(rel), None) if rel != "affects-you" => format!(" ({rel})"),
+        _ => String::new(),
+    }
+}
+
 /// Renders a comparison as text.
 #[must_use]
 pub fn render_comparison_text(comparison: &Comparison) -> String {
@@ -265,7 +299,7 @@ pub fn render_comparison_text(comparison: &Comparison) -> String {
     let new: Vec<String> = comparison
         .new_advisories
         .iter()
-        .map(|(key, severity, kind, title)| {
+        .map(|(key, severity, kind, title, relevance, reason)| {
             let label = if kind == "vulnerability" {
                 severity
                     .clone()
@@ -273,8 +307,9 @@ pub fn render_comparison_text(comparison: &Comparison) -> String {
             } else {
                 kind.clone()
             };
+            let note = format_relevance_note(relevance.as_deref(), reason.as_deref());
             format!(
-                "{} [{label}] {} {}: {title}",
+                "{} [{label}] {} {}: {title}{note}",
                 key.id, key.package, key.version
             )
         })
@@ -359,7 +394,7 @@ pub fn render_comparison_markdown(comparison: &Comparison) -> String {
             "**New advisories: {}**\n\n| Advisory | Severity | Package | Title |\n|---|---|---|---|",
             comparison.new_advisories.len()
         );
-        for (key, severity, kind, title) in &comparison.new_advisories {
+        for (key, severity, kind, title, relevance, reason) in &comparison.new_advisories {
             let id = if key.id.starts_with("RUSTSEC-") {
                 format!("[{0}](https://rustsec.org/advisories/{0})", key.id)
             } else {
@@ -370,13 +405,14 @@ pub fn render_comparison_markdown(comparison: &Comparison) -> String {
             } else {
                 kind.clone()
             };
+            let note = format_relevance_note(relevance.as_deref(), reason.as_deref());
             let _ = writeln!(
                 out,
                 "| {id} | {} | `{} {}` | {} |",
                 cell(&label),
                 cell(&key.package),
                 cell(&key.version),
-                cell(title)
+                cell(&format!("{title}{note}"))
             );
         }
         out.push('\n');
@@ -484,11 +520,17 @@ pub fn render_comparison_json(comparison: &Comparison) -> String {
     let key = |key: &AdvisoryKey| json!({ "id": key.id, "package": { "name": key.package, "version": key.version } });
     let value = json!({
         "comparison_format_version": COMPARISON_FORMAT_VERSION,
-        "new_advisories": comparison.new_advisories.iter().map(|(k, severity, kind, title)| {
+        "new_advisories": comparison.new_advisories.iter().map(|(k, severity, kind, title, relevance, reason)| {
             let mut entry = key(k);
             entry["severity"] = json!(severity);
             entry["kind"] = json!(kind);
             entry["title"] = json!(title);
+            if let Some(rel) = relevance {
+                entry["relevance"] = json!(rel);
+            }
+            if let Some(reason) = reason {
+                entry["relevance_reason"] = json!(reason);
+            }
             entry
         }).collect::<Vec<_>>(),
         "resolved_advisories": comparison.resolved_advisories.iter().map(key).collect::<Vec<_>>(),
@@ -651,5 +693,60 @@ mod tests {
             json!([]),
         );
         assert_eq!(compare(&value, &value), super::Comparison::default());
+    }
+
+    #[test]
+    fn propagates_advisory_relevance_in_text_markdown_and_json() {
+        let baseline = report(json!([]), json!([]), json!([]));
+        let current = report(
+            json!([
+                {
+                    "id": "REL-1",
+                    "kind": "vulnerability",
+                    "severity": "high",
+                    "title": "Dev only vuln",
+                    "package": { "name": "a", "version": "1.0.0" },
+                    "relevance": "unlikely",
+                    "relevance_reason": "only used by dev-dependencies"
+                },
+                {
+                    "id": "REL-2",
+                    "kind": "vulnerability",
+                    "severity": "medium",
+                    "title": "Direct vuln",
+                    "package": { "name": "b", "version": "1.0.0" },
+                    "relevance": "affects-you",
+                    "relevance_reason": null
+                }
+            ]),
+            json!([]),
+            json!([]),
+        );
+        let comparison = compare(&baseline, &current);
+        let text = render_comparison_text(&comparison);
+        assert!(
+            text.contains(
+                "- REL-1 [high] a 1.0.0: Dev only vuln (unlikely: only used by dev-dependencies)\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("- REL-2 [medium] b 1.0.0: Direct vuln\n"),
+            "{text}"
+        );
+
+        let markdown = super::render_comparison_markdown(&comparison);
+        assert!(
+            markdown.contains("| REL-1 | high | `a 1.0.0` | Dev only vuln (unlikely: only used by dev-dependencies) |"),
+            "{markdown}"
+        );
+
+        let json_str = super::render_comparison_json(&comparison);
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("valid JSON");
+        assert_eq!(parsed["new_advisories"][0]["relevance"], "unlikely");
+        assert_eq!(
+            parsed["new_advisories"][0]["relevance_reason"],
+            "only used by dev-dependencies"
+        );
     }
 }

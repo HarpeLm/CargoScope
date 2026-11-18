@@ -2506,7 +2506,7 @@ fn ranks_advisories_by_dev_platform_and_uncalled_functions() {
         "{vuln_section}"
     );
 
-    // 2. Verbose + HTML with [graph]: unbuilt crate detection and configured target mismatch.
+    // 2. Standalone [graph] (no policy table), --ignore-unlikely, SARIF, CycloneDX VEX, and compare.
     std::fs::write(
         adv_db.join("crates/serde_json/CARGOSCOPE-REL-0005.md"),
         "```toml\n[advisory]\nid = \"CARGOSCOPE-REL-0005\"\npackage = \"serde_json\"\ndate = \"2025-01-05\"\ncvss = \"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L\"\n\n[versions]\npatched = [\">= 2.0.0\"]\n\n[affected]\nos = [\"plan9\"]\n```\n\n# Configured target mismatch\n",
@@ -2514,7 +2514,7 @@ fn ranks_advisories_by_dev_platform_and_uncalled_functions() {
     .expect("adv 5");
     std::fs::write(
         dir.join("cargoscope.toml"),
-        "[graph]\ntargets = [\"x86_64-unknown-linux-gnu\"]\n\n[bans]\n",
+        "[graph]\ntargets = [\"x86_64-unknown-linux-gnu\"]\n",
     )
     .expect("write cargoscope.toml");
     let fake_cargo = compile_fake_cargo_tree(
@@ -2529,14 +2529,20 @@ fn ranks_advisories_by_dev_platform_and_uncalled_functions() {
             "scan",
             "--verbose",
             "--checks",
-            "inventory,advisories,policy",
+            "inventory,advisories",
             "--fail-on",
-            "none",
+            "high",
+            "--ignore-unlikely",
         ])
         .arg(&dir)
         .output()
         .expect("cargoscope verbose scan");
-    assert_eq!(text_out.status.code(), Some(0));
+    assert_eq!(
+        text_out.status.code(),
+        Some(0),
+        "only high advisory is unlikely, so --ignore-unlikely passes: {}",
+        stdout(&text_out)
+    );
     let text = stdout(&text_out);
     assert!(
         text.contains("relevance: unlikely (`from_reader()` is never called in project sources)"),
@@ -2555,6 +2561,126 @@ fn ranks_advisories_by_dev_platform_and_uncalled_functions() {
         "{text}"
     );
 
+    let sarif_out = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", &cache)
+        .env("CARGO_HOME", fixture("empty-cargo-home"))
+        .env("CARGO", &fake_cargo)
+        .args([
+            "scan",
+            "--checks",
+            "inventory,advisories",
+            "--format",
+            "sarif",
+            "--fail-on",
+            "none",
+        ])
+        .arg(&dir)
+        .output()
+        .expect("cargoscope sarif scan");
+    assert_eq!(sarif_out.status.code(), Some(0));
+    let sarif: serde_json::Value =
+        serde_json::from_slice(&sarif_out.stdout).expect("valid SARIF JSON");
+    let sarif_results = sarif["runs"][0]["results"].as_array().expect("results");
+    let sarif_0002 = sarif_results
+        .iter()
+        .find(|item| item["ruleId"] == "CARGOSCOPE-REL-0002")
+        .expect("REL-0002 in SARIF");
+    assert_eq!(sarif_0002["properties"]["relevance"], "unlikely");
+    assert!(
+        sarif_0002["message"]["text"]
+            .as_str()
+            .is_some_and(|msg| msg.contains("Relevance: unlikely (`from_reader()`")),
+        "{sarif_0002}"
+    );
+
+    let cdx_out = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", &cache)
+        .env("CARGO_HOME", fixture("empty-cargo-home"))
+        .env("CARGO", &fake_cargo)
+        .args([
+            "scan",
+            "--checks",
+            "inventory,advisories",
+            "--format",
+            "cyclonedx",
+            "--fail-on",
+            "none",
+        ])
+        .arg(&dir)
+        .output()
+        .expect("cargoscope cyclonedx scan");
+    assert_eq!(cdx_out.status.code(), Some(0));
+    let cdx: serde_json::Value =
+        serde_json::from_slice(&cdx_out.stdout).expect("valid CycloneDX JSON");
+    let vulns = cdx["vulnerabilities"].as_array().expect("vulnerabilities");
+    let cdx_0002 = vulns
+        .iter()
+        .find(|item| item["id"] == "CARGOSCOPE-REL-0002")
+        .expect("REL-0002 in CycloneDX");
+    assert_eq!(cdx_0002["analysis"]["state"], "not_affected");
+    assert_eq!(cdx_0002["analysis"]["justification"], "code_not_reachable");
+    let cdx_0003 = vulns
+        .iter()
+        .find(|item| item["id"] == "CARGOSCOPE-REL-0003")
+        .expect("REL-0003 in CycloneDX");
+    assert_eq!(cdx_0003["analysis"]["state"], "not_affected");
+    assert_eq!(cdx_0003["analysis"]["justification"], "code_not_present");
+
+    // 3. [advisories] ignore-unlikely = true in cargoscope.toml + cargoscope compare --ignore-unlikely.
+    let report_json_path = dir.join("current.json");
+    let empty_baseline_path = dir.join("baseline.json");
+    std::fs::write(
+        &empty_baseline_path,
+        "{\"format_version\":1,\"advisories\":[],\"packages\":[],\"unused\":[]}\n",
+    )
+    .expect("write baseline");
+    std::fs::write(
+        dir.join("cargoscope.toml"),
+        "[graph]\ntargets = [\"x86_64-unknown-linux-gnu\"]\n\n[advisories]\nignore-unlikely = true\n",
+    )
+    .expect("write ignore-unlikely");
+    let config_out = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", &cache)
+        .env("CARGO_HOME", fixture("empty-cargo-home"))
+        .env("CARGO", &fake_cargo)
+        .args([
+            "scan",
+            "--checks",
+            "inventory,advisories",
+            "--format",
+            "json",
+            "--fail-on",
+            "high",
+            "--output",
+        ])
+        .arg(&report_json_path)
+        .arg(&dir)
+        .output()
+        .expect("cargoscope config ignore-unlikely scan");
+    assert_eq!(config_out.status.code(), Some(0));
+
+    let cmp_fail = compare(&[
+        empty_baseline_path.to_str().expect("utf-8"),
+        report_json_path.to_str().expect("utf-8"),
+        "--fail-on",
+        "high",
+    ]);
+    assert_eq!(cmp_fail.status.code(), Some(1));
+    assert!(
+        stdout(&cmp_fail).contains("(unlikely: only used by dev-dependencies"),
+        "{}",
+        stdout(&cmp_fail)
+    );
+
+    let cmp_pass = compare(&[
+        empty_baseline_path.to_str().expect("utf-8"),
+        report_json_path.to_str().expect("utf-8"),
+        "--fail-on",
+        "high",
+        "--ignore-unlikely",
+    ]);
+    assert_eq!(cmp_pass.status.code(), Some(0));
+
     let html_out = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
         .env("CARGOSCOPE_CACHE_DIR", &cache)
         .env("CARGO_HOME", fixture("empty-cargo-home"))
@@ -2562,7 +2688,7 @@ fn ranks_advisories_by_dev_platform_and_uncalled_functions() {
         .args([
             "scan",
             "--checks",
-            "inventory,advisories,policy",
+            "inventory,advisories",
             "--format",
             "html",
             "--fail-on",

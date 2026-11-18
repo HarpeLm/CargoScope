@@ -41,6 +41,7 @@ pub struct ScanOptions {
     pub color: ColorChoice,
     pub update: bool,
     pub include_maintenance: bool,
+    pub ignore_unlikely: bool,
 }
 
 /// When the text report uses colors (`--color`).
@@ -94,6 +95,7 @@ pub fn parse_scan_options(
         color: ColorChoice::Auto,
         update: false,
         include_maintenance: true,
+        ignore_unlikely: false,
     };
     let mut path_given = false;
 
@@ -131,6 +133,7 @@ pub fn parse_scan_options(
             "--no-maintenance" | "--fast" if inline_value.is_none() => {
                 options.include_maintenance = false;
             }
+            "--ignore-unlikely" if inline_value.is_none() => options.ignore_unlikely = true,
             other if other.starts_with('-') => return Err(format!("Unknown option: {other}")),
             _ if path_given => return Err("Only one scan path may be provided.".to_owned()),
             _ => {
@@ -218,6 +221,14 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
     } else {
         (Vec::new(), None)
     };
+    let config_ignore_unlikely = if checks.advisories {
+        cargoscope_cargo::config::load_advisory_ignore_unlikely(root).map_err(|error| {
+            eprintln!("CargoScope could not read the advisory ignores: {error}");
+            ExitCode::from(2)
+        })?
+    } else {
+        false
+    };
     let unused = if checks.unused {
         let (unused, unused_warnings) =
             find_unused_dependencies(root, &inventory, options.precise)?;
@@ -243,7 +254,7 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
     };
     // Clarified licenses (verified against on-disk license-files hashes when
     // specified) replace the registry's everywhere in the report.
-    let (violations, policy_active, policy_non_dev, policy_targets) = match &policy {
+    let (violations, mut policy_active, policy_non_dev, mut policy_targets) = match &policy {
         Some(policy) => {
             let (verified_clarifications, clarify_warnings) =
                 cargoscope_cargo::crate_sources::verify_clarifications(
@@ -293,6 +304,26 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
     };
     keep_checked_info(&mut package_info, checks);
 
+    if policy.is_none()
+        && !advisories.is_empty()
+        && let Some(graph) = cargoscope_cargo::config::load_graph_config(root).map_err(|error| {
+            eprintln!("CargoScope could not read the policy: {error}");
+            ExitCode::from(2)
+        })?
+    {
+        policy_targets = graph.targets.clone();
+        if let Ok((packages, _)) = cargoscope_cargo::targets::active_packages(
+            root,
+            &graph.targets,
+            graph.features.as_ref(),
+            graph.exclude_dev,
+            &[],
+            false,
+        ) {
+            policy_active = Some(packages);
+        }
+    }
+
     // Only labels in the report: a failure leaves the dependencies unlabelled.
     let direct_kinds = cargoscope_cargo::direct_dependency_kinds(root).unwrap_or_default();
     if !advisories.is_empty() {
@@ -328,7 +359,11 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
         warnings,
     };
     write_report(options, &report)?;
-    exit_code(options, &report)
+    exit_code(
+        options,
+        &report,
+        options.ignore_unlikely || config_ignore_unlikely,
+    )
 }
 
 /// Matching advisories, with the `[advisories] ignore` entries applied, and
@@ -733,8 +768,13 @@ fn write_report(options: &ScanOptions, report: &Report) -> Result<(), ExitCode> 
 }
 
 /// 1 when a policy violation or a new advisory reaches `--fail-on`;
-/// advisories already in `--baseline` do not count.
-fn exit_code(options: &ScanOptions, report: &Report) -> Result<ExitCode, ExitCode> {
+/// advisories already in `--baseline` (and `unlikely` advisories when
+/// `--ignore-unlikely` or `[advisories] ignore-unlikely` is enabled) do not count.
+fn exit_code(
+    options: &ScanOptions,
+    report: &Report,
+    ignore_unlikely: bool,
+) -> Result<ExitCode, ExitCode> {
     let known = match &options.baseline {
         Some(path) => read_report(path)
             .map(|baseline| cargoscope_report::compare::advisory_keys(&baseline))
@@ -772,6 +812,7 @@ fn exit_code(options: &ScanOptions, report: &Report) -> Result<ExitCode, ExitCod
         .advisories
         .iter()
         .filter(is_new)
+        .filter(|finding| !ignore_unlikely || finding.relevance != AdvisoryRelevance::Unlikely)
         .any(|finding| options.fail_on.is_triggered_by(finding));
     Ok(if policy_fails || advisory_fails {
         ExitCode::from(1)
@@ -860,6 +901,8 @@ mod tests {
         let no_maint = parse(&["--update", "--no-maintenance"]).expect("valid");
         assert!(no_maint.update);
         assert!(!no_maint.include_maintenance);
+        let ignore_unlikely = parse(&["--ignore-unlikely", "."]).expect("valid");
+        assert!(ignore_unlikely.ignore_unlikely);
     }
 
     #[test]

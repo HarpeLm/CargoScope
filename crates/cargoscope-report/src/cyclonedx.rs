@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use cargoscope_core::{
-    AdvisoryFinding, AdvisoryKind, Inventory, Package, Report, Severity, VERSION,
+    AdvisoryFinding, AdvisoryKind, AdvisoryRelevance, Inventory, Package, Report, Severity, VERSION,
 };
 use serde_json::{Map, Value, json};
 
@@ -221,6 +221,23 @@ fn vulnerability_json(finding: &AdvisoryFinding, refs: &[String]) -> Value {
                 "detail": reason,
             }),
         );
+    } else if finding.relevance == AdvisoryRelevance::Unlikely {
+        let justification = if finding
+            .relevance_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("never called in project sources"))
+        {
+            "code_not_reachable"
+        } else {
+            "code_not_present"
+        };
+        let mut analysis = Map::new();
+        analysis.insert("state".to_owned(), json!("not_affected"));
+        analysis.insert("justification".to_owned(), json!(justification));
+        if let Some(reason) = &finding.relevance_reason {
+            analysis.insert("detail".to_owned(), json!(reason));
+        }
+        object.insert("analysis".to_owned(), Value::Object(analysis));
     }
     Value::Object(object)
 }
@@ -236,7 +253,8 @@ mod tests {
     use std::path::Path;
 
     use cargoscope_core::{
-        AdvisoryFinding, AdvisoryKind, Checks, Inventory, Package, PackageInfo, Report, Severity,
+        AdvisoryFinding, AdvisoryKind, AdvisoryRelevance, Checks, Inventory, Package, PackageInfo,
+        Report, Severity,
     };
 
     use super::{SCHEMA_URL, render_cyclonedx};
@@ -302,7 +320,7 @@ mod tests {
                 affected_arch: Vec::new(),
                 affected_os: Vec::new(),
                 affected_functions: Vec::new(),
-                relevance: cargoscope_core::AdvisoryRelevance::AffectsYou,
+                relevance: AdvisoryRelevance::AffectsYou,
                 relevance_reason: None,
                 ignored: Some("unreachable code path".to_owned()),
             },
@@ -319,8 +337,46 @@ mod tests {
                 affected_arch: Vec::new(),
                 affected_os: Vec::new(),
                 affected_functions: Vec::new(),
-                relevance: cargoscope_core::AdvisoryRelevance::AffectsYou,
+                relevance: AdvisoryRelevance::AffectsYou,
                 relevance_reason: None,
+                ignored: None,
+            },
+            AdvisoryFinding {
+                package: 1,
+                id: "RUSTSEC-2026-0003".to_owned(),
+                aliases: vec![],
+                title: "Uncalled vuln".to_owned(),
+                date: "2026-02-02".to_owned(),
+                url: None,
+                kind: AdvisoryKind::Vulnerability,
+                severity: Some(Severity::Medium),
+                patched: vec![">= 1.0.200".to_owned()],
+                affected_arch: Vec::new(),
+                affected_os: Vec::new(),
+                affected_functions: vec!["serde_json::from_reader".to_owned()],
+                relevance: AdvisoryRelevance::Unlikely,
+                relevance_reason: Some(
+                    "`from_reader()` is never called in project sources".to_owned(),
+                ),
+                ignored: None,
+            },
+            AdvisoryFinding {
+                package: 1,
+                id: "RUSTSEC-2026-0004".to_owned(),
+                aliases: vec![],
+                title: "Dev-only vuln".to_owned(),
+                date: "2026-02-03".to_owned(),
+                url: None,
+                kind: AdvisoryKind::Vulnerability,
+                severity: Some(Severity::Low),
+                patched: vec![">= 1.0.200".to_owned()],
+                affected_arch: Vec::new(),
+                affected_os: Vec::new(),
+                affected_functions: Vec::new(),
+                relevance: AdvisoryRelevance::Unlikely,
+                relevance_reason: Some(
+                    "only used by dev-dependencies (tests or benchmarks)".to_owned(),
+                ),
                 ignored: None,
             },
         ];
@@ -354,7 +410,7 @@ mod tests {
         assert_eq!(deps[0]["dependsOn"][0], "pkg:cargo/serde_json@1.0.128");
 
         let vulns = bom["vulnerabilities"].as_array().expect("vulnerabilities");
-        assert_eq!(vulns.len(), 2);
+        assert_eq!(vulns.len(), 4);
         assert_eq!(vulns[0]["id"], "RUSTSEC-2026-0001");
         assert_eq!(vulns[0]["ratings"][0]["severity"], "high");
         assert_eq!(vulns[0]["published"], "2026-01-10T00:00:00Z");
@@ -366,6 +422,18 @@ mod tests {
         assert_eq!(vulns[0]["analysis"]["state"], "not_affected");
         assert_eq!(vulns[0]["analysis"]["detail"], "unreachable code path");
         assert_eq!(vulns[1]["ratings"][0]["severity"], "info");
+        assert_eq!(vulns[2]["analysis"]["state"], "not_affected");
+        assert_eq!(vulns[2]["analysis"]["justification"], "code_not_reachable");
+        assert_eq!(
+            vulns[2]["analysis"]["detail"],
+            "`from_reader()` is never called in project sources"
+        );
+        assert_eq!(vulns[3]["analysis"]["state"], "not_affected");
+        assert_eq!(vulns[3]["analysis"]["justification"], "code_not_present");
+        assert_eq!(
+            vulns[3]["analysis"]["detail"],
+            "only used by dev-dependencies (tests or benchmarks)"
+        );
     }
 
     #[test]

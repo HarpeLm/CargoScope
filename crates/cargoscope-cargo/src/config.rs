@@ -767,21 +767,33 @@ fn is_date(text: &str) -> bool {
             .all(|(index, byte)| index == 4 || index == 7 || byte.is_ascii_digit())
 }
 
-/// Parses `[advisories] ignore = [{ id, reason, until }]`.
-///
-/// # Errors
-///
-/// Returns a message for unknown keys, a missing `id` or `reason`, or an
-/// `until` that is not a `YYYY-MM-DD` date.
-pub fn parse_advisory_ignores(text: &str) -> Result<Vec<AdvisoryIgnore>, String> {
-    let value: toml::Table = toml::from_str(text).map_err(|error| error.to_string())?;
+fn advisories_table(value: &toml::Table) -> Result<Option<(&toml::Table, bool)>, String> {
     let Some(advisories) = value.get("advisories") else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
     let advisories = advisories
         .as_table()
         .ok_or("[advisories] must be a table")?;
-    check_keys(advisories, "advisories", &["ignore"])?;
+    check_keys(advisories, "advisories", &["ignore", "ignore-unlikely"])?;
+    let ignore_unlikely = match advisories.get("ignore-unlikely") {
+        None => false,
+        Some(toml::Value::Boolean(value)) => *value,
+        Some(_) => return Err("[advisories] ignore-unlikely must be true or false".to_owned()),
+    };
+    Ok(Some((advisories, ignore_unlikely)))
+}
+
+/// Parses `[advisories] ignore = [{ id, reason, until }]`.
+///
+/// # Errors
+///
+/// Returns a message for unknown keys, a missing `id` or `reason`, an
+/// `until` that is not a `YYYY-MM-DD` date, or a non-boolean `ignore-unlikely`.
+pub fn parse_advisory_ignores(text: &str) -> Result<Vec<AdvisoryIgnore>, String> {
+    let value: toml::Table = toml::from_str(text).map_err(|error| error.to_string())?;
+    let Some((advisories, _)) = advisories_table(&value)? else {
+        return Ok(Vec::new());
+    };
     let entries = match advisories.get("ignore") {
         None => return Ok(Vec::new()),
         Some(toml::Value::Array(entries)) => entries,
@@ -819,6 +831,95 @@ pub fn parse_advisory_ignores(text: &str) -> Result<Vec<AdvisoryIgnore>, String>
         });
     }
     Ok(ignores)
+}
+
+/// Parses `[advisories] ignore-unlikely` (whether advisories ranked `unlikely`
+/// should not fail `--fail-on`).
+///
+/// # Errors
+///
+/// Returns a message for invalid TOML, unknown `[advisories]` keys, or a
+/// non-boolean value.
+pub fn parse_advisory_ignore_unlikely(text: &str) -> Result<bool, String> {
+    let value: toml::Table = toml::from_str(text).map_err(|error| error.to_string())?;
+    Ok(advisories_table(&value)?.is_some_and(|(_, ignore_unlikely)| ignore_unlikely))
+}
+
+/// Standalone `[graph]` settings from `cargoscope.toml` (or `deny.toml`), used
+/// to scope advisory relevance even when no policy rule table is configured.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GraphConfig {
+    /// Target triples configured under `[graph] targets`.
+    pub targets: Vec<String>,
+    /// Feature selection configured under `[graph]`.
+    pub features: Option<cargoscope_core::policy::Features>,
+    /// Whether dev-dependencies are excluded (`[graph] exclude-dev`).
+    pub exclude_dev: bool,
+}
+
+/// Parses `[graph]` settings from `cargoscope.toml`, returning `None` when no
+/// `[graph]` restriction is set.
+///
+/// # Errors
+///
+/// Returns a message for invalid TOML, unknown keys, or invalid `[graph]` values.
+pub fn parse_graph_config(text: &str) -> Result<Option<GraphConfig>, String> {
+    let value: toml::Table = toml::from_str(text).map_err(|error| error.to_string())?;
+    check_keys(
+        &value,
+        "top level",
+        &[
+            "licenses",
+            "sources",
+            "bans",
+            "advisories",
+            "graph",
+            "updates",
+        ],
+    )?;
+    let (targets, features, exclude_dev) = parse_graph(&value)?;
+    Ok(
+        (!targets.is_empty() || features.is_some() || exclude_dev).then_some(GraphConfig {
+            targets,
+            features,
+            exclude_dev,
+        }),
+    )
+}
+
+/// Reads `[advisories] ignore-unlikely` from `project_root/cargoscope.toml`.
+///
+/// # Errors
+///
+/// Returns a message naming the file for unreadable or invalid content.
+pub fn load_advisory_ignore_unlikely(project_root: &Path) -> Result<bool, String> {
+    match read_config(project_root)? {
+        None => Ok(false),
+        Some(text) => parse_advisory_ignore_unlikely(&text)
+            .map_err(|error| format!("{}: {error}", project_root.join(FILE_NAME).display())),
+    }
+}
+
+/// Reads `[graph]` settings from `project_root/cargoscope.toml` (or `deny.toml`).
+///
+/// # Errors
+///
+/// Returns a message naming the file for unreadable or invalid content.
+pub fn load_graph_config(project_root: &Path) -> Result<Option<GraphConfig>, String> {
+    match read_config(project_root)? {
+        Some(text) => parse_graph_config(&text)
+            .map_err(|error| format!("{}: {error}", project_root.join(FILE_NAME).display())),
+        None => Ok(crate::deny::load(project_root)?
+            .and_then(|translation| translation.policy)
+            .and_then(|policy| {
+                (!policy.targets.is_empty() || policy.features.is_some() || policy.exclude_dev)
+                    .then_some(GraphConfig {
+                        targets: policy.targets,
+                        features: policy.features,
+                        exclude_dev: policy.exclude_dev,
+                    })
+            })),
+    }
 }
 
 fn read_config(project_root: &Path) -> Result<Option<String>, String> {
@@ -1235,6 +1336,39 @@ mod tests {
                 "[bans]\nfeatures = [{ name = \"a\", deny = [\"x\"], extra = 1, reason = \"r\" }]\n"
             )
             .contains("unknown key `extra`")
+        );
+    }
+
+    #[test]
+    fn parses_advisory_ignore_unlikely_and_standalone_graph_config() {
+        assert!(!super::parse_advisory_ignore_unlikely("").expect("empty"));
+        assert!(
+            super::parse_advisory_ignore_unlikely("[advisories]\nignore-unlikely = true\n")
+                .expect("true")
+        );
+        assert!(
+            super::parse_advisory_ignore_unlikely("[advisories]\nignore-unlikely = \"yes\"\n")
+                .expect_err("must be boolean")
+                .contains("must be true or false")
+        );
+        assert!(
+            super::parse_advisory_ignores("[advisories]\nignore-unlikely = true\n")
+                .expect("allowed key")
+                .is_empty()
+        );
+
+        let graph = super::parse_graph_config(
+            "[graph]\ntargets = [\"x86_64-unknown-linux-gnu\"]\nexclude-dev = true\n",
+        )
+        .expect("valid")
+        .expect("graph present");
+        assert_eq!(graph.targets, vec!["x86_64-unknown-linux-gnu"]);
+        assert!(graph.exclude_dev);
+        assert_eq!(graph.features, None);
+        assert!(
+            super::parse_graph_config("[bans]\n")
+                .expect("valid")
+                .is_none()
         );
     }
 }

@@ -105,7 +105,7 @@ How it works:
 - The packages come from `cargo tree --workspace --locked` with those targets, features and edges, which runs Cargo's own feature resolver. (`cargo metadata` is not used: its graph ignores the feature flags.) The sources of the dependencies must be on disk: run `cargo fetch` first (this is also what cargo-deny needs). Nothing is compiled or run.
 - If Cargo cannot answer (sources missing, unknown target or feature, outdated lockfile), the scan stops with exit code 2 and Cargo's reason, rather than silently checking too much or too little.
 - Targets are plain triples such as `x86_64-pc-windows-msvc`; anything else is an error.
-- Advisories, unused dependencies, the package list and the "crates in several versions" listing still cover the whole lockfile. `[graph]` alone sets no rule.
+- Advisories, unused dependencies, the package list and the "crates in several versions" listing still cover the whole lockfile, while `[graph]` also scopes **advisory relevance ranking** (marking unbuilt crates or mismatched platforms as `unlikely`), even if no license, ban or source rule is set. `[graph]` alone defines no policy violations.
 - On the 15 repositories of the [first blind benchmark](../tests/corpus/blind-benchmark.md), `[graph] exclude-dev = true` gives exactly the 4 license findings cargo-deny gives, against 8 for the whole lockfile.
 
 ## Executables and scripts inside crates
@@ -149,6 +149,9 @@ On the original 28-repository comparison against cargo-deny 0.20.2, CargoScope n
 
 ```toml
 [advisories]
+# Do not fail --fail-on when an advisory is ranked `unlikely`
+# (dev-only, unbuilt by [graph], mismatched target, or uncalled affected function).
+ignore-unlikely = true
 ignore = [
   # Matched by advisory ID or by alias (CVE, GHSA).
   { id = "RUSTSEC-2020-0071", reason = "time is only used by a build tool" },

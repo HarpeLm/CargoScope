@@ -18,6 +18,7 @@ struct CompareOptions {
     files: Vec<PathBuf>,
     format: CompareFormat,
     fail_on: FailOn,
+    ignore_unlikely: bool,
 }
 
 fn parse_compare_options(
@@ -27,6 +28,7 @@ fn parse_compare_options(
         files: Vec::new(),
         format: CompareFormat::Text,
         fail_on: FailOn::AnyVulnerability,
+        ignore_unlikely: false,
     };
     let mut arguments = arguments.peekable();
     while let Some(argument) = arguments.next() {
@@ -56,6 +58,7 @@ fn parse_compare_options(
                 };
             }
             "--fail-on" => options.fail_on = parse_fail_on(&value()?)?,
+            "--ignore-unlikely" if inline.is_none() => options.ignore_unlikely = true,
             other if other.starts_with('-') => return Err(format!("Unknown option: {other}")),
             _ => options.files.push(PathBuf::from(argument)),
         }
@@ -96,11 +99,12 @@ pub fn compare_command(arguments: impl Iterator<Item = String>) -> ExitCode {
     let fails = comparison
         .new_advisories
         .iter()
-        .any(|(_, severity, kind, _)| {
-            options.fail_on.triggers(
-                kind == "vulnerability",
-                severity.as_deref().and_then(parse_severity),
-            )
+        .any(|(_, severity, kind, _, relevance, _)| {
+            (!options.ignore_unlikely || relevance.as_deref() != Some("unlikely"))
+                && options.fail_on.triggers(
+                    kind == "vulnerability",
+                    severity.as_deref().and_then(parse_severity),
+                )
         });
     if fails {
         ExitCode::from(1)
