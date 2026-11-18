@@ -20,6 +20,7 @@ use crate::{execution_error, find_unused_dependencies};
 struct FixOptions {
     path: Option<PathBuf>,
     apply: bool,
+    include_uncertain: bool,
     precise: bool,
     only: Option<Vec<String>>,
     /// Update vulnerable packages instead of removing unused dependencies.
@@ -87,6 +88,7 @@ fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptio
         match argument.as_str() {
             "--apply" => options.apply = true,
             "--dry-run" => dry_run = true,
+            "--include-uncertain" | "--show-uncertain" => options.include_uncertain = true,
             "--precise" => options.precise = true,
             "--advisories" => options.advisories = true,
             "--updates" => options.updates = true,
@@ -126,6 +128,11 @@ fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptio
     }
     if (options.advisories || options.updates) && options.precise {
         return Err("--advisories and --updates cannot be combined with --precise".to_owned());
+    }
+    if (options.advisories || options.updates) && options.include_uncertain {
+        return Err(
+            "--advisories and --updates cannot be combined with --include-uncertain".to_owned(),
+        );
     }
     if options.advisories && options.updates {
         return Err("--advisories and --updates cannot be combined".to_owned());
@@ -197,7 +204,7 @@ fn run_fix(options: &FixOptions) -> Result<ExitCode, ExitCode> {
         .map_err(|error| execution_error(root, &error))?;
     let (unused, _) = find_unused_dependencies(root, &inventory, options.precise)?;
 
-    let plan = plan_removals(&unused, options.only.as_deref());
+    let plan = plan_removals(&unused, options.only.as_deref(), options.include_uncertain);
     if plan.is_empty() {
         println!("{}", paint.green("No likely-unused dependency to remove."));
         return Ok(ExitCode::SUCCESS);
@@ -211,16 +218,24 @@ fn run_fix(options: &FixOptions) -> Result<ExitCode, ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Likely-unused findings that are not ignored, grouped by manifest and
-/// restricted to `only` when given; names of `only` that are not candidates
-/// are reported.
-fn plan_removals<'a>(unused: &'a [UnusedFinding], only: Option<&[String]>) -> Plan<'a> {
+/// Unused findings that are not ignored, grouped by manifest and restricted
+/// to `only` when given (explicit `--only` targets both `likely-unused` and
+/// `possibly-unused` findings; otherwise `possibly-unused` requires
+/// `include_uncertain`); names of `only` that are not candidates are
+/// reported.
+fn plan_removals<'a>(
+    unused: &'a [UnusedFinding],
+    only: Option<&[String]>,
+    include_uncertain: bool,
+) -> Plan<'a> {
     let mut plan = Plan::new();
     for finding in unused {
-        if finding.confidence == UnusedConfidence::Likely
-            && finding.ignored.is_none()
-            && only.is_none_or(|names| names.contains(&finding.dependency))
-        {
+        let eligible = finding.ignored.is_none()
+            && match only {
+                Some(names) => names.contains(&finding.dependency),
+                None => finding.confidence == UnusedConfidence::Likely || include_uncertain,
+            };
+        if eligible {
             plan.entry(finding.manifest.as_str())
                 .or_default()
                 .push((finding.kind.section(), finding.dependency.as_str()));
@@ -434,5 +449,12 @@ mod tests {
             parse(&["--color", "always"]).expect("valid").color,
             super::ColorChoice::Always
         );
+        assert!(
+            parse(&["--include-uncertain"])
+                .expect("valid")
+                .include_uncertain
+        );
+        assert!(parse(&["--advisories", "--include-uncertain"]).is_err());
+        assert!(parse(&["--updates", "--include-uncertain"]).is_err());
     }
 }

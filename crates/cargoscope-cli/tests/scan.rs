@@ -1221,6 +1221,86 @@ fn fix_shows_then_removes_only_likely_unused_dependencies() {
 }
 
 #[test]
+fn fix_only_and_include_uncertain_remove_possibly_unused_and_dep_features() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-fix-uncertain-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    copy_dir(&fixture("unused"), &dir);
+
+    // Explicit --only removes a possibly-unused dependency, but never an ignored one.
+    let only_chrono = fix(&dir, &["--only", "chrono,once_cell", "--apply"]);
+    assert_eq!(only_chrono.status.code(), Some(0));
+    let only_text = stdout(&only_chrono);
+    assert!(
+        only_text.contains("  - remove `chrono` from [dependencies]\n"),
+        "{only_text}"
+    );
+    assert!(
+        only_text.contains("`once_cell` is not a likely-unused dependency: left alone."),
+        "{only_text}"
+    );
+    let edited = std::fs::read_to_string(dir.join("Cargo.toml")).expect("manifest");
+    assert!(!edited.contains("chrono"), "{edited}");
+    assert!(edited.contains("openssl-sys"), "{edited}");
+    assert!(edited.contains("once_cell"), "{edited}");
+
+    // --include-uncertain removes both likely-unused and remaining possibly-unused crates.
+    let uncertain = fix(&dir, &["--include-uncertain", "--apply"]);
+    assert_eq!(uncertain.status.code(), Some(0));
+    let edited = std::fs::read_to_string(dir.join("Cargo.toml")).expect("manifest");
+    for removed in [
+        "log = ",
+        "openssl-sys = ",
+        "idna = ",
+        "pretty_assertions = ",
+        "pkg-config = ",
+    ] {
+        assert!(!edited.contains(removed), "{removed} still in:\n{edited}");
+    }
+    assert!(edited.contains("once_cell = \"1\""), "{edited}");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Optional dependency wired only with `dep:` is likely-unused and cleanly removed.
+    let dep_dir = std::env::temp_dir().join(format!("cargoscope-fix-dep-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dep_dir);
+    std::fs::create_dir_all(dep_dir.join("src")).expect("dirs");
+    std::fs::write(
+        dep_dir.join("Cargo.toml"),
+        "[package]\nname = \"opt-dep\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nchrono = { version = \"0.4\", optional = true }\n\n[features]\ndates = [\"dep:chrono\"]\n",
+    )
+    .expect("manifest");
+    std::fs::write(dep_dir.join("src/lib.rs"), "pub fn ok() {}\n").expect("lib");
+    let registry = "source = \"registry+https://github.com/rust-lang/crates.io-index\"";
+    std::fs::write(
+        dep_dir.join("Cargo.lock"),
+        format!(
+            "version = 4\n\n[[package]]\nname = \"opt-dep\"\nversion = \"0.1.0\"\ndependencies = [\"chrono\"]\n\n[[package]]\nname = \"chrono\"\nversion = \"0.4.39\"\n{registry}\n"
+        ),
+    )
+    .expect("lock");
+
+    let scan_out = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+        .env("CARGO_HOME", fixture("empty-cargo-home"))
+        .args(["scan", "--checks", "inventory,unused", "--fail-on", "none"])
+        .arg(&dep_dir)
+        .output()
+        .expect("scan runs");
+    assert_eq!(scan_out.status.code(), Some(0));
+    let scan_text = stdout(&scan_out);
+    assert!(
+        scan_text.contains("- chrono [likely-unused] in [dependencies] of Cargo.toml"),
+        "{scan_text}"
+    );
+
+    let applied = fix(&dep_dir, &["--apply"]);
+    assert_eq!(applied.status.code(), Some(0));
+    let cleaned = std::fs::read_to_string(dep_dir.join("Cargo.toml")).expect("cleaned");
+    assert!(!cleaned.contains("chrono"), "{cleaned}");
+    assert!(cleaned.contains("dates = []"), "{cleaned}");
+    let _ = std::fs::remove_dir_all(&dep_dir);
+}
+
+#[test]
 fn fix_removes_workspace_dependencies_no_member_uses_anymore_and_honours_only() {
     let dir = std::env::temp_dir().join(format!("cargoscope-fix-ws-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

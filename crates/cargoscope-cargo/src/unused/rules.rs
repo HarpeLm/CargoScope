@@ -111,6 +111,8 @@ pub(super) struct PackageFacts<'a> {
     pub(super) declared_idents: Vec<String>,
     /// Dependencies named in `[features]` as `name/feature`.
     pub(super) forwarded_features: BTreeSet<&'a str>,
+    /// Optional dependencies referenced only with `dep:<key>` in `[features]`.
+    pub(super) dep_only_features: BTreeSet<&'a str>,
     pub(super) workspace_macros: &'a WorkspaceMacros,
 }
 
@@ -176,13 +178,26 @@ pub(super) fn rule_sys_crate(
 }
 
 pub(super) fn rule_optional(
-    _: &PackageFacts<'_>,
+    package: &PackageFacts<'_>,
     candidate: &DependencyFacts<'_>,
 ) -> Option<String> {
-    candidate
-        .dependency
-        .optional
-        .then(|| "optional dependency: may only be used to forward a feature".to_owned())
+    if !candidate.dependency.optional {
+        return None;
+    }
+    if package
+        .dep_only_features
+        .contains(candidate.dependency.key.as_str())
+        && !package
+            .transitive_names
+            .contains(candidate.dependency.package.as_str())
+        && !candidate
+            .dependency
+            .package
+            .starts_with("rustc-std-workspace-")
+    {
+        return None;
+    }
+    Some("optional dependency: may only be used to forward a feature".to_owned())
 }
 
 pub(super) fn rule_platform_specific(
@@ -471,6 +486,7 @@ mod tests {
             reachable_idents: reachable,
             declared_idents: vec![dependency.key.replace('-', "_")],
             forwarded_features: BTreeSet::new(),
+            dep_only_features: BTreeSet::new(),
             workspace_macros: &macros,
         };
         let ident = dependency.key.replace('-', "_");
@@ -509,6 +525,7 @@ mod tests {
             reachable_idents: &reachable,
             declared_idents: vec![dependency.key.replace('-', "_")],
             forwarded_features: BTreeSet::new(),
+            dep_only_features: BTreeSet::new(),
             workspace_macros: &macros,
         };
         let ident = dependency.key.replace('-', "_");
@@ -713,6 +730,52 @@ mod tests {
                 &tree
             ),
             ["nothing-searched"]
+        );
+    }
+
+    #[test]
+    fn dep_only_optional_feature_is_not_kept_unless_transitive() {
+        let sources = with_code();
+        let code = References::default();
+        let build_tree = BTreeSet::new();
+        let macros = WorkspaceMacros::default();
+        let reachable = BTreeSet::new();
+        let dep = DeclaredDependency {
+            optional: true,
+            ..dependency("chrono")
+        };
+        let empty = BTreeSet::new();
+        let transitive = BTreeSet::from(["chrono"]);
+        let mut package = PackageFacts {
+            sources: &sources,
+            code_refs: &code,
+            transitive_names: &empty,
+            build_tree: &build_tree,
+            build_reads_files: false,
+            reachable_idents: &reachable,
+            declared_idents: vec!["chrono".to_owned()],
+            forwarded_features: BTreeSet::new(),
+            dep_only_features: BTreeSet::from(["chrono"]),
+            workspace_macros: &macros,
+        };
+        let candidate = DependencyFacts {
+            dependency: &dep,
+            ident: "chrono",
+            renamed: false,
+            library_known: true,
+            references: &code,
+            searched: sources.code.len(),
+            searched_label: "src/",
+        };
+        assert!(reasons_to_keep(&package, &candidate).is_empty());
+
+        package.transitive_names = &transitive;
+        assert_eq!(
+            reasons_to_keep(&package, &candidate)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
+            vec!["optional"]
         );
     }
 }

@@ -312,21 +312,41 @@ pub(super) fn declared_modules(tokens: TokenStream) -> Vec<(String, Option<Strin
     modules
 }
 
-pub(super) fn path_attribute(token: &TokenTree) -> Option<String> {
-    let TokenTree::Group(group) = token else {
-        return None;
-    };
-    let inner: Vec<TokenTree> = group.stream().into_iter().collect();
-    match inner.as_slice() {
+fn collect_meta_item_paths(tokens: &[TokenTree], out: &mut Vec<String>) {
+    match tokens {
         [
             TokenTree::Ident(attribute),
             TokenTree::Punct(eq),
             TokenTree::Literal(path),
         ] if attribute == "path" && eq.as_char() == '=' => {
-            Some(path.to_string().trim_matches('"').to_owned())
+            let text = path.to_string();
+            if let Some(path) = text.strip_prefix('"').and_then(|t| t.strip_suffix('"')) {
+                out.push(path.to_owned());
+            }
         }
-        _ => None,
+        [TokenTree::Ident(attribute), TokenTree::Group(arguments)]
+            if attribute == "cfg_attr"
+                && arguments.delimiter() == proc_macro2::Delimiter::Parenthesis =>
+        {
+            let inner: Vec<TokenTree> = arguments.stream().into_iter().collect();
+            for item in inner
+                .split(|token| matches!(token, TokenTree::Punct(p) if p.as_char() == ','))
+                .skip(1)
+            {
+                collect_meta_item_paths(item, out);
+            }
+        }
+        _ => {}
     }
+}
+
+pub(super) fn path_attributes(token: &TokenTree) -> Vec<String> {
+    let mut paths = Vec::new();
+    if let TokenTree::Group(group) = token {
+        let inner: Vec<TokenTree> = group.stream().into_iter().collect();
+        collect_meta_item_paths(&inner, &mut paths);
+    }
+    paths
 }
 
 pub(super) fn collect_modules(
@@ -352,27 +372,41 @@ pub(super) fn collect_modules(
                 // Look through the attributes right before this `mod`
                 // (`#[path = "..."] #[expect(dead_code)] mod args;`), and
                 // only those: a `#[path]` of an earlier item does not count.
-                let mut explicit_path = None;
                 let mut position = index;
+                if position >= 1
+                    && matches!(&tokens[position - 1], TokenTree::Ident(vis) if vis == "pub")
+                {
+                    position -= 1;
+                } else if position >= 2
+                    && matches!(&tokens[position - 2], TokenTree::Ident(vis) if vis == "pub")
+                    && matches!(&tokens[position - 1], TokenTree::Group(group) if group.delimiter() == proc_macro2::Delimiter::Parenthesis)
+                {
+                    position -= 2;
+                }
+                let mut explicit_paths = Vec::new();
                 while position >= 2 {
                     let is_attribute = matches!(&tokens[position - 2], TokenTree::Punct(hash) if hash.as_char() == '#')
                         && matches!(&tokens[position - 1], TokenTree::Group(group) if group.delimiter() == proc_macro2::Delimiter::Bracket);
                     if !is_attribute {
                         break;
                     }
-                    if let Some(path) = path_attribute(&tokens[position - 1]) {
-                        explicit_path = Some(path);
-                        break;
-                    }
+                    let mut paths = path_attributes(&tokens[position - 1]);
+                    paths.reverse();
+                    explicit_paths.extend(paths);
                     position -= 2;
                 }
-                if top_level || explicit_path.is_some() {
-                    let module_name = name.to_string();
-                    let module_name = module_name
-                        .strip_prefix("r#")
-                        .unwrap_or(&module_name)
-                        .to_owned();
-                    modules.push((module_name, explicit_path));
+                explicit_paths.reverse();
+                let module_name = name.to_string();
+                let module_name = module_name
+                    .strip_prefix("r#")
+                    .unwrap_or(&module_name)
+                    .to_owned();
+                if !explicit_paths.is_empty() {
+                    for path in explicit_paths {
+                        modules.push((module_name.clone(), Some(path)));
+                    }
+                } else if top_level {
+                    modules.push((module_name, None));
                 }
             }
             _ => {}

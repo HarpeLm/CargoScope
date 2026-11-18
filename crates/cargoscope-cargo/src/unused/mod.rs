@@ -304,6 +304,32 @@ fn features_forwarded_to(manifest: &toml::Value) -> BTreeSet<&str> {
         .collect()
 }
 
+/// Optional dependencies referenced only via `"dep:<key>"` in `[features]`
+/// (never as a feature key, bare `"<key>"`, `"<key>/..."`, or `"<key>?/..."`).
+fn dep_only_features(manifest: &toml::Value) -> BTreeSet<&str> {
+    let Some(features) = manifest.get("features").and_then(toml::Value::as_table) else {
+        return BTreeSet::new();
+    };
+    let mut has_dep = BTreeSet::new();
+    let mut blocked = BTreeSet::new();
+    for (feature_name, value) in features {
+        blocked.insert(feature_name.as_str());
+        let Some(array) = value.as_array() else {
+            continue;
+        };
+        for entry in array.iter().filter_map(toml::Value::as_str) {
+            if let Some(key) = entry.strip_prefix("dep:") {
+                has_dep.insert(key);
+            } else if let Some((dependency, _)) = entry.split_once('/') {
+                blocked.insert(dependency.trim_end_matches('?'));
+            } else {
+                blocked.insert(entry);
+            }
+        }
+    }
+    has_dep.difference(&blocked).copied().collect()
+}
+
 /// Names the library of `crate_name` plausibly uses when its `[lib] name`
 /// is unknown: `atuin-vt100` → `vt100`, `tui-textarea-2` → `tui_textarea`.
 fn library_name_guesses(crate_name: &str) -> Vec<String> {
@@ -495,6 +521,7 @@ pub fn check_package(
             .map(|declared| declared.key.replace('-', "_"))
             .collect(),
         forwarded_features: features_forwarded_to(package.manifest),
+        dep_only_features: dep_only_features(package.manifest),
         workspace_macros,
     };
 
@@ -776,6 +803,48 @@ mod tests {
             .collect();
         names.sort();
         assert_eq!(names, vec!["build.rs", "src/cli.rs", "src/cmd/cmd.rs"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn follows_cfg_attr_paths_on_module_declarations() {
+        let root = std::env::temp_dir().join(format!("cargoscope-cfg-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src/sys")).expect("dirs");
+        std::fs::write(
+            root.join("src/lib.rs"),
+            r#"
+#[cfg_attr(unix, path = "sys/unix.rs")]
+#[cfg_attr(windows, path = "sys/windows.rs")]
+pub mod sys;
+"#,
+        )
+        .expect("write lib");
+        std::fs::write(root.join("src/sys/unix.rs"), "").expect("write unix");
+        std::fs::write(root.join("src/sys/windows.rs"), "").expect("write windows");
+        let mut files = Vec::new();
+        let mut skipped = 0;
+        let bound = root.canonicalize().expect("root");
+        super::follow_modules(
+            &root.join("src/lib.rs"),
+            &bound,
+            0,
+            &mut files,
+            &mut skipped,
+        );
+        let names: Vec<String> = files
+            .iter()
+            .map(|file| {
+                file.strip_prefix(&root)
+                    .expect("inside")
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec!["src/lib.rs", "src/sys/unix.rs", "src/sys/windows.rs"]
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

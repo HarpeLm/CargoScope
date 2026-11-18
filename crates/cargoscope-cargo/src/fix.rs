@@ -16,30 +16,6 @@ pub enum Outcome {
     Skipped(String),
 }
 
-fn entry_dependency_name(entry: &str) -> &str {
-    let name = entry.strip_prefix("dep:").unwrap_or(entry);
-    let name = name.split('/').next().unwrap_or(name);
-    name.trim_end_matches('?')
-}
-
-/// The dependency names a `[features]` table refers to: `name`, `dep:name`,
-/// `name/feature` and `name?/feature`.
-fn feature_references(document: &DocumentMut) -> Vec<String> {
-    let Some(features) = document.get("features").and_then(Item::as_table_like) else {
-        return Vec::new();
-    };
-    let mut names = Vec::new();
-    for (_, value) in features.iter() {
-        let Some(array) = value.as_array() else {
-            continue;
-        };
-        for entry in array.iter().filter_map(|entry| entry.as_str()) {
-            names.push(entry_dependency_name(entry).to_owned());
-        }
-    }
-    names
-}
-
 fn is_optional_dependency(document: &DocumentMut, key: &str, targets: &[String]) -> bool {
     let sections = [
         "dependencies",
@@ -73,22 +49,44 @@ fn is_optional_dependency(document: &DocumentMut, key: &str, targets: &[String])
     })
 }
 
-fn has_blocking_feature_reference(document: &DocumentMut, key: &str, is_optional: bool) -> bool {
-    if is_optional {
-        return feature_references(document).iter().any(|name| name == key);
-    }
+fn has_dep_reference(document: &DocumentMut, key: &str) -> bool {
     let Some(features) = document.get("features").and_then(Item::as_table_like) else {
         return false;
     };
-    if features.contains_key(key) {
-        return true;
-    }
+    let dep_entry = format!("dep:{key}");
     features.iter().any(|(_, value)| {
         value.as_array().is_some_and(|array| {
             array
                 .iter()
                 .filter_map(|entry| entry.as_str())
-                .any(|entry| entry == key || entry.strip_prefix("dep:") == Some(key))
+                .any(|entry| entry == dep_entry)
+        })
+    })
+}
+
+fn has_blocking_feature_reference(document: &DocumentMut, key: &str, is_optional: bool) -> bool {
+    let Some(features) = document.get("features").and_then(Item::as_table_like) else {
+        return false;
+    };
+    let has_dep = has_dep_reference(document, key);
+    if features.contains_key(key) && !has_dep {
+        return true;
+    }
+    let dep_entry = format!("dep:{key}");
+    let prefix = format!("{key}/");
+    let weak_prefix = format!("{key}?/");
+    features.iter().any(|(_, value)| {
+        value.as_array().is_some_and(|array| {
+            array
+                .iter()
+                .filter_map(|entry| entry.as_str())
+                .any(|entry| {
+                    (entry == key && !(features.contains_key(key) && has_dep))
+                        || (is_optional
+                            && !has_dep
+                            && (entry.starts_with(&prefix) || entry.starts_with(&weak_prefix)))
+                        || (!is_optional && entry == dep_entry)
+                })
         })
     })
 }
@@ -100,6 +98,7 @@ fn clean_feature_subfeatures(document: &mut DocumentMut, key: &str) -> bool {
     else {
         return false;
     };
+    let dep_entry = format!("dep:{key}");
     let prefix = format!("{key}/");
     let weak_prefix = format!("{key}?/");
     let mut cleaned = false;
@@ -109,8 +108,11 @@ fn clean_feature_subfeatures(document: &mut DocumentMut, key: &str) -> bool {
         };
         let before = array.len();
         array.retain(|item| {
-            item.as_str()
-                .is_none_or(|entry| !entry.starts_with(&prefix) && !entry.starts_with(&weak_prefix))
+            item.as_str().is_none_or(|entry| {
+                entry != dep_entry
+                    && !entry.starts_with(&prefix)
+                    && !entry.starts_with(&weak_prefix)
+            })
         });
         if array.len() != before {
             cleaned = true;
@@ -146,9 +148,9 @@ fn remove_from(document: &mut DocumentMut, path: &[&str], key: &str) -> bool {
 ///
 /// `section` is `dependencies`, `dev-dependencies` or `build-dependencies`;
 /// the underscore spelling and target-specific tables are handled too. An
-/// optional dependency named in `[features]` (or a key matching a feature name
-/// or bare/dep entry) is skipped; non-optional `key/feature` and `key?/feature`
-/// entries are cleaned from `[features]`.
+/// implicit feature reference in `[features]` (without `dep:key`) is skipped;
+/// `dep:key`, `key/feature` and `key?/feature` entries are cleaned from
+/// `[features]`.
 ///
 /// # Errors
 ///
@@ -401,7 +403,7 @@ regex = "1"
 libc = "0.2"
 
 [features]
-extra = ["dep:optional-thing"]
+extra = ["optional-thing"]
 "#;
 
     #[test]
@@ -532,35 +534,44 @@ extra = ["dep:optional-thing"]
     }
 
     #[test]
-    fn removes_subfeature_references_of_non_optional_dependencies() {
+    fn removes_subfeature_and_dep_references_from_features() {
         let manifest = r#"[package]
 name = "demo"
 
 [dependencies]
 foo = "1"
 bar = { version = "1", optional = true }
+baz = { version = "1", optional = true }
 serde = "1"
 
 [features]
 std = ["foo/std", "serde?/std", "foo?/alloc"]
 extra = ["dep:bar", "bar/extra"]
+other = ["baz"]
 "#;
         let (edited, outcomes) = remove_dependencies(
             manifest,
-            &[("dependencies", "foo"), ("dependencies", "bar")],
+            &[
+                ("dependencies", "foo"),
+                ("dependencies", "bar"),
+                ("dependencies", "baz"),
+            ],
         )
         .expect("valid manifest");
         assert_eq!(
             outcomes,
             vec![
                 Outcome::Removed(vec!["dependencies".to_owned(), "features".to_owned()]),
-                Outcome::Skipped("`bar` is named in [features]".to_owned()),
+                Outcome::Removed(vec!["dependencies".to_owned(), "features".to_owned()]),
+                Outcome::Skipped("`baz` is named in [features]".to_owned()),
             ]
         );
         assert!(!edited.contains("foo"), "{edited}");
+        assert!(!edited.contains("bar"), "{edited}");
         assert!(edited.contains("std = [\"serde?/std\"]"), "{edited}");
+        assert!(edited.contains("extra = []"), "{edited}");
         assert!(
-            edited.contains("bar = { version = \"1\", optional = true }"),
+            edited.contains("baz = { version = \"1\", optional = true }"),
             "{edited}"
         );
     }
