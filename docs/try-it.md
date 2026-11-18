@@ -18,7 +18,7 @@ Windows (PowerShell):
 irm https://github.com/HarpeLm/CargoScope/releases/latest/download/cargoscope-installer.ps1 | iex
 ```
 
-Or with a Rust toolchain: `cargo install cargoscope`, or with Homebrew: `brew install HarpeLm/tap/cargoscope`.
+Or with a Rust toolchain: `cargo install cargoscope`, with Homebrew: `brew install HarpeLm/tap/cargoscope`, without installing via npm: `npx cargoscope scan .`, or in a container: `docker run --rm -v "$PWD:/src" ghcr.io/harpelm/cargoscope scan . --checks inventory,unused`.
 
 ## 2. Instant check or download the advisory data
 

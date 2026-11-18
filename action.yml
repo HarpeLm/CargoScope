@@ -16,7 +16,7 @@ inputs:
     description: none, low, medium, high or critical. Empty means the CargoScope default (any vulnerability).
     default: ""
   checks:
-    description: Comma-separated checks (inventory, advisories, unused, licenses, versions). Empty means all.
+    description: Comma-separated checks (inventory, advisories, unused, licenses, versions, policy). Empty means all.
     default: ""
   sarif:
     description: Path of the SARIF file to write.
