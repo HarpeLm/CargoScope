@@ -5,12 +5,13 @@ Thank you for your interest in contributing! CargoScope welcomes contributions o
 ## Getting Started
 
 1. **Fork and clone** the repository.
-2. Make sure you have Rust 1.85+ installed.
+2. Make sure you have Rust 1.90+ installed.
 3. Run the test suite to confirm everything works:
 
 ```sh
-cargo test
-cargo clippy -- -W clippy::pedantic
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
 ## Development Guidelines
