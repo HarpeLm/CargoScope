@@ -46,6 +46,29 @@ npx cargoscope scan .
 
 From a clone of this repository: `cargo install --path crates/cargoscope-cli`.
 
+### Container image
+
+`ghcr.io/harpelm/cargoscope` runs CargoScope without installing anything (linux/amd64 and linux/arm64). The default image is enough for `scan`, `update`, `why` and `audit-bin`; the `full` tag adds Cargo, which `fix` and `scan --precise` need.
+
+```sh
+docker run --rm -v "$PWD:/src" -v cargoscope-cache:/cache ghcr.io/harpelm/cargoscope update .
+docker run --rm -v "$PWD:/src" -v cargoscope-cache:/cache ghcr.io/harpelm/cargoscope scan .
+```
+
+The `cargoscope-cache` volume keeps the downloaded advisory and crates.io data between runs. In GitLab CI, where the image's entrypoint must be cleared:
+
+```yaml
+cargoscope:
+  image:
+    name: ghcr.io/harpelm/cargoscope:0.7.5
+    entrypoint: [""]
+  script:
+    - cargoscope update .
+    - cargoscope scan . --format sarif --output cargoscope.sarif --fail-on high
+```
+
+Tags: `<version>` and `latest`, `<version>-full` and `full`. The images are built after each release from its Linux binaries ([docker.yml](.github/workflows/docker.yml)).
+
 ## GitHub Action
 
 On the GitHub Marketplace the action is listed as [**CargoScope-Bot**](https://github.com/marketplace/actions/cargoscope-bot) (the name CargoScope belongs to another GitHub account; it was listed as Dep Scout up to 0.7.0); it runs CargoScope.
