@@ -299,6 +299,11 @@ mod tests {
                 kind: AdvisoryKind::Vulnerability,
                 severity: Some(Severity::High),
                 patched: vec![">= 1.0.200".to_owned()],
+                affected_arch: Vec::new(),
+                affected_os: Vec::new(),
+                affected_functions: Vec::new(),
+                relevance: cargoscope_core::AdvisoryRelevance::AffectsYou,
+                relevance_reason: None,
                 ignored: Some("unreachable code path".to_owned()),
             },
             AdvisoryFinding {
@@ -311,6 +316,11 @@ mod tests {
                 kind: AdvisoryKind::Informational("unmaintained".to_owned()),
                 severity: None,
                 patched: vec![],
+                affected_arch: Vec::new(),
+                affected_os: Vec::new(),
+                affected_functions: Vec::new(),
+                relevance: cargoscope_core::AdvisoryRelevance::AffectsYou,
+                relevance_reason: None,
                 ignored: None,
             },
         ];

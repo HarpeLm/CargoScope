@@ -8,7 +8,9 @@ use std::fmt::Write;
 use std::path::Path;
 
 use cargoscope_core::policy::ViolationLevel;
-use cargoscope_core::{AdvisoryKind, OutdatedKind, Report, UnusedConfidence, VERSION};
+use cargoscope_core::{
+    AdvisoryKind, AdvisoryRelevance, OutdatedKind, Report, UnusedConfidence, VERSION,
+};
 
 use crate::{
     chain, format_outdated_targets, kind_names, kind_note, label, registry_packages, scope,
@@ -464,6 +466,24 @@ fn render_advisories_section(out: &mut String, report: &Report) {
                 escape_html(&c)
             )
         });
+        let relevance_html = if finding.relevance != AdvisoryRelevance::AffectsYou {
+            let badge_class = match finding.relevance {
+                AdvisoryRelevance::AffectsYou => "badge-danger",
+                AdvisoryRelevance::Possibly => "badge-info",
+                AdvisoryRelevance::Unlikely => "badge-muted",
+            };
+            let reason = finding
+                .relevance_reason
+                .as_deref()
+                .map(|r| format!(" <span class=\"muted\">{}</span>", escape_html(r)))
+                .unwrap_or_default();
+            format!(
+                "<div class=\"small\"><span class=\"badge {badge_class}\">{}</span>{reason}</div>",
+                escape_html(finding.relevance.as_str())
+            )
+        } else {
+            String::new()
+        };
         let fix_html = if let Some(reason) = &finding.ignored {
             format!(
                 "<span class=\"badge badge-muted\">ignored</span> <span class=\"small\">{}</span>",
@@ -483,7 +503,7 @@ fn render_advisories_section(out: &mut String, report: &Report) {
 <td>{id_cell}{aliases_html}</td>\
 <td><span class=\"badge {sev_class}\">{}</span></td>\
 <td><code>{}</code> <span class=\"muted\">{}</span></td>\
-<td>{}{chain_html}</td>\
+<td>{}{chain_html}{relevance_html}</td>\
 <td>{fix_html}</td>\
 </tr>",
             escape_html(sev_text),
@@ -1139,8 +1159,8 @@ mod tests {
 
     use cargoscope_core::policy::{Rule, Violation, ViolationLevel};
     use cargoscope_core::{
-        AdvisoryFinding, AdvisoryKind, Checks, DependencyKind, Inventory, Package, PackageInfo,
-        Report, Severity, UnusedConfidence, UnusedFinding,
+        AdvisoryFinding, AdvisoryKind, AdvisoryRelevance, Checks, DependencyKind, Inventory,
+        Package, PackageInfo, Report, Severity, UnusedConfidence, UnusedFinding,
     };
 
     use super::{escape_html, render_html};
@@ -1198,6 +1218,11 @@ mod tests {
                     kind: AdvisoryKind::Vulnerability,
                     severity: Some(Severity::High),
                     patched: vec!["^1.0.128".to_owned()],
+                    affected_arch: Vec::new(),
+                    affected_os: Vec::new(),
+                    affected_functions: Vec::new(),
+                    relevance: AdvisoryRelevance::AffectsYou,
+                    relevance_reason: None,
                     ignored: None,
                 },
                 AdvisoryFinding {
@@ -1210,6 +1235,11 @@ mod tests {
                     kind: AdvisoryKind::Informational("unmaintained".to_owned()),
                     severity: None,
                     patched: Vec::new(),
+                    affected_arch: Vec::new(),
+                    affected_os: Vec::new(),
+                    affected_functions: Vec::new(),
+                    relevance: AdvisoryRelevance::AffectsYou,
+                    relevance_reason: None,
                     ignored: Some("tracked upstream".to_owned()),
                 },
             ],

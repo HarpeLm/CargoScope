@@ -12,7 +12,7 @@ use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cargoscope_core::{AdvisoryFinding, AdvisoryKind, Inventory, Severity};
+use cargoscope_core::{AdvisoryFinding, AdvisoryKind, AdvisoryRelevance, Inventory, Severity};
 
 pub mod crate_files;
 pub mod crates_io;
@@ -295,7 +295,7 @@ impl AdvisoryDatabase {
                     continue;
                 }
                 if advisory.affects(&version) {
-                    check.findings.push(advisory.into_finding(index));
+                    check.findings.push(advisory.into_finding(index, &version));
                 }
             }
         }
@@ -319,6 +319,9 @@ struct Advisory {
     patched: Vec<semver::VersionReq>,
     patched_text: Vec<String>,
     unaffected: Vec<semver::VersionReq>,
+    affected_arch: Vec<String>,
+    affected_os: Vec<String>,
+    affected_functions: Vec<(String, Vec<semver::VersionReq>)>,
 }
 
 impl Advisory {
@@ -352,6 +355,7 @@ impl Advisory {
                 .unwrap_or_default()
         };
         let versions = value.get("versions");
+        let affected = value.get("affected");
         let requirements = |items: &[String]| -> Option<Vec<semver::VersionReq>> {
             items
                 .iter()
@@ -361,6 +365,27 @@ impl Advisory {
 
         let patched_text = list(versions, "patched");
         let unaffected_text = list(versions, "unaffected");
+        let affected_arch = list(affected, "arch");
+        let affected_os = list(affected, "os");
+        let mut affected_functions = Vec::new();
+        if let Some(functions) = affected
+            .and_then(|table| table.get("functions"))
+            .and_then(toml::Value::as_table)
+        {
+            for (path, reqs) in functions {
+                let Some(items) = reqs.as_array() else {
+                    continue;
+                };
+                let parsed: Vec<semver::VersionReq> = items
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .filter_map(|req| semver::VersionReq::parse(req).ok())
+                    .collect();
+                if !parsed.is_empty() {
+                    affected_functions.push((path.clone(), parsed));
+                }
+            }
+        }
         let title = body
             .lines()
             .find_map(|line| line.strip_prefix("# "))
@@ -382,6 +407,9 @@ impl Advisory {
             patched: requirements(&patched_text)?,
             patched_text,
             unaffected: requirements(&unaffected_text)?,
+            affected_arch,
+            affected_os,
+            affected_functions,
         })
     }
 
@@ -394,7 +422,15 @@ impl Advisory {
         !matches(&self.patched) && !matches(&self.unaffected)
     }
 
-    fn into_finding(self, package: usize) -> AdvisoryFinding {
+    fn into_finding(self, package: usize, version: &semver::Version) -> AdvisoryFinding {
+        let mut affected_functions: Vec<String> = self
+            .affected_functions
+            .into_iter()
+            .filter(|(_, reqs)| reqs.iter().any(|req| in_advisory_range(req, version)))
+            .map(|(path, _)| path)
+            .collect();
+        affected_functions.sort();
+        affected_functions.dedup();
         AdvisoryFinding {
             package,
             id: self.id,
@@ -407,6 +443,11 @@ impl Advisory {
                 .map_or(AdvisoryKind::Vulnerability, AdvisoryKind::Informational),
             severity: self.severity,
             patched: self.patched_text,
+            affected_arch: self.affected_arch,
+            affected_os: self.affected_os,
+            affected_functions,
+            relevance: AdvisoryRelevance::AffectsYou,
+            relevance_reason: None,
             ignored: None,
         }
     }
@@ -678,5 +719,36 @@ Details.
         let cache = temp_cache("missing");
         let error = AdvisoryDatabase::open(&cache).expect_err("no database");
         assert!(error.to_string().contains("cargoscope update"));
+    }
+
+    #[test]
+    fn parses_affected_os_arch_and_version_matched_functions() {
+        let text = r#"```toml
+[advisory]
+id = "RUSTSEC-0000-0099"
+package = "demo"
+date = "2026-01-01"
+
+[versions]
+patched = [">= 2.0.0"]
+
+[affected]
+arch = ["wasm32"]
+os = ["windows"]
+
+[affected.functions]
+"demo::Old::parse" = ["< 1.5.0"]
+"demo::New::extract" = ["< 2.0.0"]
+```
+
+# Platform and function specific bug
+"#;
+        let advisory = Advisory::parse(text).expect("parses");
+        assert_eq!(advisory.affected_arch, vec!["wasm32"]);
+        assert_eq!(advisory.affected_os, vec!["windows"]);
+        let finding = advisory.into_finding(0, &version("1.8.0"));
+        assert_eq!(finding.affected_functions, vec!["demo::New::extract"]);
+        assert_eq!(finding.relevance, super::AdvisoryRelevance::AffectsYou);
+        assert_eq!(finding.relevance_reason, None);
     }
 }

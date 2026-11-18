@@ -46,6 +46,38 @@ pub(super) fn scan_files(files: &[PathBuf]) -> References {
     references
 }
 
+/// Collects every Rust identifier token in `files` (skipping comments and
+/// string literals when tokenization succeeds, and falling back to identifier
+/// characters otherwise).
+pub(super) fn scan_idents(files: &[PathBuf], out: &mut BTreeSet<String>) {
+    fn visit(tokens: TokenStream, out: &mut BTreeSet<String>) {
+        for token in tokens {
+            match token {
+                TokenTree::Group(group) => visit(group.stream(), out),
+                TokenTree::Ident(ident) => {
+                    let text = ident.to_string();
+                    out.insert(text.strip_prefix("r#").unwrap_or(&text).to_owned());
+                }
+                TokenTree::Punct(_) | TokenTree::Literal(_) => {}
+            }
+        }
+    }
+    for file in files {
+        let Ok(text) = fs::read_to_string(file) else {
+            continue;
+        };
+        if let Ok(tokens) = TokenStream::from_str(&text) {
+            visit(tokens, out);
+        } else {
+            for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                if !word.is_empty() {
+                    out.insert(word.to_owned());
+                }
+            }
+        }
+    }
+}
+
 /// Records identifiers that appear as the first segment of a path
 /// (`name::...`), after `extern crate`, or after `use`.
 pub(super) fn collect_references(tokens: TokenStream, names: &mut BTreeSet<String>) {

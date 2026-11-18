@@ -9,7 +9,9 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::Path;
 
-use cargoscope_core::{AdvisoryFinding, AdvisoryKind, Report, Severity, UnusedConfidence, VERSION};
+use cargoscope_core::{
+    AdvisoryFinding, AdvisoryKind, AdvisoryRelevance, Report, Severity, UnusedConfidence, VERSION,
+};
 
 /// ANSI styling, or none.
 #[derive(Debug, Clone, Copy)]
@@ -258,9 +260,17 @@ pub(crate) fn advisories(out: &mut String, report: &Report, paint: Paint) {
         let worst = |findings: &Vec<&AdvisoryFinding>| {
             findings.iter().filter_map(|finding| finding.severity).max()
         };
+        let best_relevance = |findings: &Vec<&AdvisoryFinding>| {
+            findings
+                .iter()
+                .map(|finding| finding.relevance)
+                .min()
+                .unwrap_or(AdvisoryRelevance::AffectsYou)
+        };
         entries.sort_by(|left, right| {
-            worst(&right.1)
-                .cmp(&worst(&left.1))
+            best_relevance(&left.1)
+                .cmp(&best_relevance(&right.1))
+                .then(worst(&right.1).cmp(&worst(&left.1)))
                 .then(right.1.len().cmp(&left.1.len()))
         });
         let name_width = entries
@@ -308,6 +318,18 @@ pub(crate) fn advisories(out: &mut String, report: &Report, paint: Paint) {
             );
             if let Some(chain) = short_chain(report, *index) {
                 let _ = writeln!(out, "      {}", paint.dim(&format!("via {chain}")));
+            }
+            let crate_relevance = best_relevance(findings);
+            if crate_relevance != AdvisoryRelevance::AffectsYou
+                && let Some(reason) = findings
+                    .iter()
+                    .find_map(|finding| finding.relevance_reason.as_deref())
+            {
+                let _ = writeln!(
+                    out,
+                    "      {}",
+                    paint.dim(&format!("{}: {reason}", crate_relevance.as_str()))
+                );
             }
         }
     }
@@ -483,7 +505,7 @@ pub(crate) fn style_sections(text: &str, paint: Paint) -> String {
 #[cfg(test)]
 mod tests {
     use super::{Paint, crate_fix, plural, style_sections, truncate};
-    use cargoscope_core::{AdvisoryFinding, AdvisoryKind};
+    use cargoscope_core::{AdvisoryFinding, AdvisoryKind, AdvisoryRelevance};
 
     fn finding(patched: &[&str]) -> AdvisoryFinding {
         AdvisoryFinding {
@@ -496,6 +518,11 @@ mod tests {
             kind: AdvisoryKind::Vulnerability,
             severity: None,
             patched: patched.iter().map(|range| (*range).to_owned()).collect(),
+            affected_arch: Vec::new(),
+            affected_os: Vec::new(),
+            affected_functions: Vec::new(),
+            relevance: AdvisoryRelevance::AffectsYou,
+            relevance_reason: None,
             ignored: None,
         }
     }

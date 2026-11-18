@@ -2346,3 +2346,238 @@ ignore = [{ id = "RUSTSEC-2020-0071", reason = "from deny" }]
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn ranks_advisories_by_dev_platform_and_uncalled_functions() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-relevance-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    copy_dir(&fixture("renamed"), &dir);
+
+    std::fs::create_dir_all(dir.join("src")).expect("mkdir src");
+    std::fs::write(
+        dir.join("src/lib.rs"),
+        "pub fn parse() {\n    let _ = json::from_str::<()>(\"null\");\n}\n",
+    )
+    .expect("write lib.rs");
+
+    let cache = dir.join("cache");
+    copy_dir(
+        &fixture("advisory-cache/crates-io"),
+        &cache.join("crates-io"),
+    );
+    let adv_db = cache.join("advisory-db");
+    std::fs::create_dir_all(adv_db.join("crates/serde_json")).expect("mkdir serde_json adv");
+    std::fs::create_dir_all(adv_db.join("crates/cc")).expect("mkdir cc adv");
+    std::fs::create_dir_all(adv_db.join("crates/tempfile")).expect("mkdir tempfile adv");
+    std::fs::write(adv_db.join("fetched-at"), "2026-01-01\n").expect("write fetched-at");
+
+    std::fs::write(
+        adv_db.join("crates/serde_json/CARGOSCOPE-REL-0001.md"),
+        "```toml\n[advisory]\nid = \"CARGOSCOPE-REL-0001\"\npackage = \"serde_json\"\ndate = \"2025-01-01\"\ncvss = \"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L\"\n\n[versions]\npatched = [\">= 2.0.0\"]\n```\n\n# Direct advisory\n",
+    )
+    .expect("adv 1");
+    std::fs::write(
+        adv_db.join("crates/serde_json/CARGOSCOPE-REL-0002.md"),
+        "```toml\n[advisory]\nid = \"CARGOSCOPE-REL-0002\"\npackage = \"serde_json\"\ndate = \"2025-01-02\"\ncvss = \"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N\"\n\n[versions]\npatched = [\">= 2.0.0\"]\n\n[affected.functions]\n\"serde_json::from_reader\" = [\"< 2.0.0\"]\n```\n\n# Uncalled function\n",
+    )
+    .expect("adv 2");
+    std::fs::write(
+        adv_db.join("crates/cc/CARGOSCOPE-REL-0003.md"),
+        "```toml\n[advisory]\nid = \"CARGOSCOPE-REL-0003\"\npackage = \"cc\"\ndate = \"2025-01-03\"\ncvss = \"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N\"\n\n[versions]\npatched = [\">= 2.0.0\"]\n\n[affected]\nos = [\"plan9\"]\n```\n\n# Wrong platform\n",
+    )
+    .expect("adv 3");
+    std::fs::write(
+        adv_db.join("crates/tempfile/CARGOSCOPE-REL-0004.md"),
+        "```toml\n[advisory]\nid = \"CARGOSCOPE-REL-0004\"\npackage = \"tempfile\"\ndate = \"2025-01-04\"\ncvss = \"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N\"\n\n[versions]\npatched = [\">= 4.0.0\"]\n```\n\n# Dev-only\n",
+    )
+    .expect("adv 4");
+
+    // 1. JSON mode without [graph]: validates schema, relevance signals, and --fail-on behavior.
+    let json_out = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", &cache)
+        .env("CARGO_HOME", fixture("empty-cargo-home"))
+        .args([
+            "scan",
+            "--checks",
+            "inventory,advisories",
+            "--format",
+            "json",
+            "--fail-on",
+            "high",
+        ])
+        .arg(&dir)
+        .output()
+        .expect("cargoscope json scan");
+    assert_eq!(
+        json_out.status.code(),
+        Some(1),
+        "unlikely high advisory must still fail --fail-on high: {}",
+        String::from_utf8_lossy(&json_out.stderr)
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&json_out.stdout).expect("valid JSON output");
+
+    let schema_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/schema/report-v1.json");
+    let schema: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(schema_path).expect("schema file"))
+            .expect("schema parses");
+    let validator = jsonschema::validator_for(&schema).expect("schema is valid");
+    let errors: Vec<String> = validator
+        .iter_errors(&report)
+        .map(|error| error.to_string())
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
+
+    let advisories = report["advisories"].as_array().expect("advisories array");
+    let by_id = |id: &str| {
+        advisories
+            .iter()
+            .find(|item| item["id"].as_str() == Some(id))
+            .unwrap_or_else(|| panic!("missing advisory {id}: {advisories:?}"))
+    };
+    assert_eq!(by_id("CARGOSCOPE-REL-0001")["relevance"], "affects-you");
+    assert!(by_id("CARGOSCOPE-REL-0001")["relevance_reason"].is_null());
+
+    assert_eq!(by_id("CARGOSCOPE-REL-0002")["relevance"], "unlikely");
+    assert!(
+        by_id("CARGOSCOPE-REL-0002")["relevance_reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("`from_reader()` is never called in project sources")),
+        "{}",
+        by_id("CARGOSCOPE-REL-0002")
+    );
+
+    assert_eq!(by_id("CARGOSCOPE-REL-0003")["relevance"], "possibly");
+    assert!(
+        by_id("CARGOSCOPE-REL-0003")["relevance_reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("only affects plan9")),
+        "{}",
+        by_id("CARGOSCOPE-REL-0003")
+    );
+
+    assert_eq!(by_id("CARGOSCOPE-REL-0004")["relevance"], "unlikely");
+    assert!(
+        by_id("CARGOSCOPE-REL-0004")["relevance_reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("only used by dev-dependencies")),
+        "{}",
+        by_id("CARGOSCOPE-REL-0004")
+    );
+
+    // Terminal mode without [graph]: sorts crates affects-you -> possibly -> unlikely.
+    let text_no_graph = stdout(
+        &Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .env("CARGOSCOPE_CACHE_DIR", &cache)
+            .env("CARGO_HOME", fixture("empty-cargo-home"))
+            .args([
+                "scan",
+                "--checks",
+                "inventory,advisories",
+                "--fail-on",
+                "none",
+            ])
+            .arg(&dir)
+            .output()
+            .expect("cargoscope text scan without graph"),
+    );
+    let vuln_section = text_no_graph
+        .split("Vulnerabilities")
+        .nth(1)
+        .expect("Vulnerabilities section");
+    let pos_serde_json = vuln_section
+        .find("serde_json")
+        .expect("serde_json in terminal output");
+    let pos_cc = vuln_section.find("cc").expect("cc in terminal output");
+    let pos_tempfile = vuln_section
+        .find("tempfile")
+        .expect("tempfile in terminal output");
+    assert!(
+        pos_serde_json < pos_cc && pos_cc < pos_tempfile,
+        "unexpected crate order (expected affects-you -> possibly -> unlikely):\n{vuln_section}"
+    );
+    assert!(
+        vuln_section.contains("possibly: only affects plan9"),
+        "{vuln_section}"
+    );
+    assert!(
+        vuln_section.contains("unlikely: only used by dev-dependencies (tests or benchmarks)"),
+        "{vuln_section}"
+    );
+
+    // 2. Verbose + HTML with [graph]: unbuilt crate detection and configured target mismatch.
+    std::fs::write(
+        adv_db.join("crates/serde_json/CARGOSCOPE-REL-0005.md"),
+        "```toml\n[advisory]\nid = \"CARGOSCOPE-REL-0005\"\npackage = \"serde_json\"\ndate = \"2025-01-05\"\ncvss = \"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L\"\n\n[versions]\npatched = [\">= 2.0.0\"]\n\n[affected]\nos = [\"plan9\"]\n```\n\n# Configured target mismatch\n",
+    )
+    .expect("adv 5");
+    std::fs::write(
+        dir.join("cargoscope.toml"),
+        "[graph]\ntargets = [\"x86_64-unknown-linux-gnu\"]\n\n[bans]\n",
+    )
+    .expect("write cargoscope.toml");
+    let fake_cargo = compile_fake_cargo_tree(
+        &dir,
+        "renamed v0.1.0 (/work)\nserde_json v1.0.128\ntempfile v3.13.0\n",
+    );
+    let text_out = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", &cache)
+        .env("CARGO_HOME", fixture("empty-cargo-home"))
+        .env("CARGO", &fake_cargo)
+        .args([
+            "scan",
+            "--verbose",
+            "--checks",
+            "inventory,advisories,policy",
+            "--fail-on",
+            "none",
+        ])
+        .arg(&dir)
+        .output()
+        .expect("cargoscope verbose scan");
+    assert_eq!(text_out.status.code(), Some(0));
+    let text = stdout(&text_out);
+    assert!(
+        text.contains("relevance: unlikely (`from_reader()` is never called in project sources)"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "relevance: unlikely (cc is not built by the configured [graph] targets or features)"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "relevance: unlikely (only affects plan9, not configured targets (x86_64-unknown-linux-gnu))"
+        ),
+        "{text}"
+    );
+
+    let html_out = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", &cache)
+        .env("CARGO_HOME", fixture("empty-cargo-home"))
+        .env("CARGO", &fake_cargo)
+        .args([
+            "scan",
+            "--checks",
+            "inventory,advisories,policy",
+            "--format",
+            "html",
+            "--fail-on",
+            "none",
+        ])
+        .arg(&dir)
+        .output()
+        .expect("cargoscope html scan");
+    assert_eq!(html_out.status.code(), Some(0));
+    let html = stdout(&html_out);
+    assert!(html.contains("unlikely"), "{html}");
+    assert!(
+        html.contains("only used by dev-dependencies (tests or benchmarks)"),
+        "{html}"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}

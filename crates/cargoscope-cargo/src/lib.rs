@@ -208,6 +208,20 @@ pub fn direct_dependency_kinds(
     Ok(kinds)
 }
 
+/// Identifier tokens found across the Rust sources of all packages in
+/// `project_root` (used for best-effort affected-function checks).
+#[must_use]
+pub fn project_ident_tokens(project_root: &Path) -> BTreeSet<String> {
+    let Ok(ProjectPackages { packages, .. }) = project_packages(project_root) else {
+        return BTreeSet::new();
+    };
+    let mut idents = BTreeSet::new();
+    for (dir, _, manifest) in &packages {
+        unused::collect_package_idents(dir, manifest, &mut idents);
+    }
+    idents
+}
+
 /// Looks for likely-unused dependencies in the root package and explicit
 /// workspace members of a project (SPEC.md section 5.2).
 ///

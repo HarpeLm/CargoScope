@@ -2,13 +2,18 @@
 //! dependencies, policy, registry data), rendered, then turned into an exit
 //! code.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use cargoscope_advisory::AdvisoryDatabase;
 use cargoscope_advisory::crates_io::{self, RegistryCache};
-use cargoscope_core::policy::{GraphContext, LintLevel, Policy, Violation, ViolationLevel};
-use cargoscope_core::{AdvisoryFinding, Checks, Inventory, PackageInfo, Report};
+use cargoscope_core::policy::{
+    ActivePackages, GraphContext, LintLevel, Policy, Violation, ViolationLevel,
+};
+use cargoscope_core::{
+    AdvisoryFinding, AdvisoryRelevance, Checks, DependencyKind, Inventory, PackageInfo, Report,
+};
 use cargoscope_report::sarif::SarifLocations;
 
 use crate::{FailOn, execution_error, find_unused_dependencies, parse_fail_on, read_report};
@@ -208,7 +213,7 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
     let checks = options.checks;
     let mut warnings = Vec::new();
 
-    let (advisories, advisory_db_date) = if checks.advisories {
+    let (mut advisories, advisory_db_date) = if checks.advisories {
         check_advisories(root, &inventory, &mut warnings)?
     } else {
         (Vec::new(), None)
@@ -238,7 +243,7 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
     };
     // Clarified licenses (verified against on-disk license-files hashes when
     // specified) replace the registry's everywhere in the report.
-    let violations = match policy {
+    let (violations, policy_active, policy_non_dev, policy_targets) = match &policy {
         Some(policy) => {
             let (verified_clarifications, clarify_warnings) =
                 cargoscope_cargo::crate_sources::verify_clarifications(
@@ -253,7 +258,7 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
             let gathered = cargoscope_cargo::licenses::gather(
                 root,
                 &inventory,
-                &policy,
+                policy,
                 &package_info,
                 &verified_clarifications,
             );
@@ -267,23 +272,48 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
                 }
             }
             warnings.extend(gathered.warnings);
-            Some(check_policy(
+            let checked = check_policy(
                 root,
-                &policy,
+                policy,
                 &inventory,
                 &package_info,
                 registry_date.as_deref(),
                 &verified_clarifications,
                 &gathered.facts,
                 &mut warnings,
-            )?)
+            )?;
+            (
+                Some(checked.violations),
+                checked.active,
+                checked.non_dev_active,
+                policy.targets.clone(),
+            )
         }
-        None => None,
+        None => (None, None, None, Vec::new()),
     };
     keep_checked_info(&mut package_info, checks);
 
     // Only labels in the report: a failure leaves the dependencies unlabelled.
     let direct_kinds = cargoscope_cargo::direct_dependency_kinds(root).unwrap_or_default();
+    if !advisories.is_empty() {
+        let ident_tokens = if advisories
+            .iter()
+            .any(|finding| !finding.affected_functions.is_empty())
+        {
+            cargoscope_cargo::project_ident_tokens(root)
+        } else {
+            BTreeSet::new()
+        };
+        evaluate_advisory_relevance(
+            &inventory,
+            &direct_kinds,
+            &policy_targets,
+            policy_active.as_ref(),
+            policy_non_dev.as_ref(),
+            &ident_tokens,
+            &mut advisories,
+        );
+    }
     let report = Report {
         direct_kinds,
         checks,
@@ -379,6 +409,12 @@ pub(crate) fn registry_data(
     (package_info, registry_date)
 }
 
+struct PolicyOutcome {
+    violations: Vec<Violation>,
+    active: Option<ActivePackages>,
+    non_dev_active: Option<ActivePackages>,
+}
+
 #[allow(clippy::too_many_arguments)] // each argument is a separate input of the policy
 fn check_policy(
     root: &Path,
@@ -389,7 +425,7 @@ fn check_policy(
     verified_clarifications: &[Option<usize>],
     license_facts: &[cargoscope_core::policy::LicenseFacts],
     warnings: &mut Vec<String>,
-) -> Result<Vec<Violation>, ExitCode> {
+) -> Result<PolicyOutcome, ExitCode> {
     if policy.check_licenses && registry_date.is_none() {
         warnings.push("license rules of the policy were skipped: no crates.io data".to_owned());
     }
@@ -489,7 +525,158 @@ fn check_policy(
     );
     violations.extend(inspected.violations);
     warnings.extend(inspected.warnings);
-    Ok(violations)
+    Ok(PolicyOutcome {
+        violations,
+        active,
+        non_dev_active,
+    })
+}
+
+fn target_matches_os(triple: &str, os: &str) -> bool {
+    if os.eq_ignore_ascii_case("macos") {
+        return triple.contains("-apple-darwin")
+            || triple.split('-').any(|part| part.eq_ignore_ascii_case(os));
+    }
+    triple.split('-').any(|part| {
+        part.eq_ignore_ascii_case(os)
+            || (os.eq_ignore_ascii_case("wasi") && part.to_ascii_lowercase().starts_with("wasi"))
+    })
+}
+
+fn target_matches_arch(triple: &str, arch: &str) -> bool {
+    triple
+        .split('-')
+        .next()
+        .is_some_and(|head| head.eq_ignore_ascii_case(arch))
+}
+
+fn format_platforms(os: &[String], arch: &[String]) -> String {
+    match (os.is_empty(), arch.is_empty()) {
+        (false, true) => os.join(", "),
+        (true, false) => arch.join(", "),
+        (false, false) => format!("{} ({})", os.join(", "), arch.join(", ")),
+        (true, true) => String::new(),
+    }
+}
+
+fn short_function_name(path: &str) -> &str {
+    path.trim()
+        .trim_end_matches("()")
+        .rsplit("::")
+        .next()
+        .unwrap_or(path)
+}
+
+fn format_functions(functions: &[String]) -> String {
+    let mut shown: Vec<String> = functions
+        .iter()
+        .take(2)
+        .map(|path| format!("`{}()`", short_function_name(path)))
+        .collect();
+    if functions.len() > 2 {
+        shown.push(format!("+{} more", functions.len() - 2));
+    }
+    shown.join(", ")
+}
+
+/// Evaluates how likely each advisory is to affect the scanned project's shipped
+/// code (not built, dev-only, target platform mismatch, uncalled functions).
+pub(crate) fn evaluate_advisory_relevance(
+    inventory: &Inventory,
+    direct_kinds: &BTreeMap<String, BTreeSet<DependencyKind>>,
+    targets: &[String],
+    active: Option<&ActivePackages>,
+    non_dev_active: Option<&ActivePackages>,
+    ident_tokens: &BTreeSet<String>,
+    findings: &mut [AdvisoryFinding],
+) {
+    let non_dev_lockfile = inventory.non_dev_reachable(direct_kinds);
+    for finding in findings {
+        let Some(pkg) = inventory.packages.get(finding.package) else {
+            continue;
+        };
+        let pkg_key = (pkg.name.clone(), pkg.version.clone());
+
+        if active.is_some_and(|set| !set.contains(&pkg_key)) {
+            finding.relevance = AdvisoryRelevance::Unlikely;
+            finding.relevance_reason = Some(if targets.is_empty() {
+                format!("{} is not built by workspace targets or features", pkg.name)
+            } else {
+                format!(
+                    "{} is not built by the configured [graph] targets or features",
+                    pkg.name
+                )
+            });
+            continue;
+        }
+
+        if non_dev_active.is_some_and(|set| !set.contains(&pkg_key))
+            || !non_dev_lockfile
+                .get(finding.package)
+                .copied()
+                .unwrap_or(true)
+        {
+            finding.relevance = AdvisoryRelevance::Unlikely;
+            finding.relevance_reason =
+                Some("only used by dev-dependencies (tests or benchmarks)".to_owned());
+            continue;
+        }
+
+        if !finding.affected_os.is_empty() || !finding.affected_arch.is_empty() {
+            let platform_list = format_platforms(&finding.affected_os, &finding.affected_arch);
+            if !targets.is_empty() {
+                let matches_any = targets.iter().any(|triple| {
+                    (finding.affected_os.is_empty()
+                        || finding
+                            .affected_os
+                            .iter()
+                            .any(|os| target_matches_os(triple, os)))
+                        && (finding.affected_arch.is_empty()
+                            || finding
+                                .affected_arch
+                                .iter()
+                                .any(|arch| target_matches_arch(triple, arch)))
+                });
+                if !matches_any {
+                    finding.relevance = AdvisoryRelevance::Unlikely;
+                    finding.relevance_reason = Some(format!(
+                        "only affects {platform_list}, not configured targets ({})",
+                        targets.join(", ")
+                    ));
+                    continue;
+                }
+            } else {
+                finding.relevance = AdvisoryRelevance::Possibly;
+                finding.relevance_reason = Some(format!("only affects {platform_list}"));
+                continue;
+            }
+        }
+
+        if !finding.affected_functions.is_empty() && !ident_tokens.is_empty() {
+            let any_called = finding
+                .affected_functions
+                .iter()
+                .map(|path| short_function_name(path))
+                .any(|name| ident_tokens.contains(name));
+            if !any_called {
+                let used_by_other_dep = inventory
+                    .dependents_of(finding.package)
+                    .into_iter()
+                    .any(|idx| !inventory.packages[idx].root);
+                let list = format_functions(&finding.affected_functions);
+                if pkg.direct && !used_by_other_dep {
+                    finding.relevance = AdvisoryRelevance::Unlikely;
+                    finding.relevance_reason =
+                        Some(format!("{list} is never called in project sources"));
+                } else {
+                    finding.relevance = AdvisoryRelevance::Possibly;
+                    finding.relevance_reason = Some(format!(
+                        "{list} is not called directly in project sources (used transitively)"
+                    ));
+                }
+            }
+        }
+    }
 }
 
 /// Clears the registry data of checks that did not run, so the report only
@@ -645,9 +832,10 @@ fn sarif_locations(root: &Path, report: &Report) -> SarifLocations {
 
 #[cfg(test)]
 mod tests {
-    use super::{OutputFormat, parse_scan_options};
+    use super::{ActivePackages, OutputFormat, parse_scan_options};
     use crate::FailOn;
-    use cargoscope_core::{AdvisoryFinding, AdvisoryKind, Severity};
+    use cargoscope_core::{AdvisoryFinding, AdvisoryKind, Inventory, Severity};
+    use std::collections::{BTreeMap, BTreeSet};
     use std::path::PathBuf;
 
     fn parse(arguments: &[&str]) -> Result<super::ScanOptions, String> {
@@ -717,6 +905,11 @@ mod tests {
             kind,
             severity,
             patched: Vec::new(),
+            affected_arch: Vec::new(),
+            affected_os: Vec::new(),
+            affected_functions: Vec::new(),
+            relevance: cargoscope_core::AdvisoryRelevance::AffectsYou,
+            relevance_reason: None,
             ignored: None,
         }
     }
@@ -770,5 +963,130 @@ mod tests {
         assert!(FailOn::AtLeast(Severity::Medium).is_triggered_by(&medium));
         assert!(!FailOn::AtLeast(Severity::High).is_triggered_by(&medium));
         assert!(FailOn::AtLeast(Severity::Critical).is_triggered_by(&unscored));
+    }
+
+    #[test]
+    fn evaluates_advisory_relevance_for_unbuilt_dev_platform_and_uncalled_functions() {
+        use cargoscope_core::{AdvisoryRelevance, DependencyKind, Package};
+        let inventory = Inventory {
+            packages: vec![
+                Package {
+                    name: "app".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    source: None,
+                    root: true,
+                    direct: false,
+                    dependencies: vec![1, 2, 3, 4],
+                },
+                Package {
+                    name: "unbuilt".to_owned(),
+                    version: "1.0.0".to_owned(),
+                    source: None,
+                    root: false,
+                    direct: true,
+                    dependencies: Vec::new(),
+                },
+                Package {
+                    name: "dev_only".to_owned(),
+                    version: "1.0.0".to_owned(),
+                    source: None,
+                    root: false,
+                    direct: true,
+                    dependencies: Vec::new(),
+                },
+                Package {
+                    name: "wasm_only".to_owned(),
+                    version: "1.0.0".to_owned(),
+                    source: None,
+                    root: false,
+                    direct: true,
+                    dependencies: Vec::new(),
+                },
+                Package {
+                    name: "zip_like".to_owned(),
+                    version: "1.0.0".to_owned(),
+                    source: None,
+                    root: false,
+                    direct: true,
+                    dependencies: Vec::new(),
+                },
+            ],
+        };
+        let mut direct_kinds = BTreeMap::new();
+        direct_kinds.insert(
+            "unbuilt".to_owned(),
+            BTreeSet::from([DependencyKind::Normal]),
+        );
+        direct_kinds.insert("dev_only".to_owned(), BTreeSet::from([DependencyKind::Dev]));
+        direct_kinds.insert(
+            "wasm_only".to_owned(),
+            BTreeSet::from([DependencyKind::Normal]),
+        );
+        direct_kinds.insert(
+            "zip_like".to_owned(),
+            BTreeSet::from([DependencyKind::Normal]),
+        );
+
+        let active = ActivePackages::from([
+            ("app".to_owned(), "0.1.0".to_owned()),
+            ("dev_only".to_owned(), "1.0.0".to_owned()),
+            ("wasm_only".to_owned(), "1.0.0".to_owned()),
+            ("zip_like".to_owned(), "1.0.0".to_owned()),
+        ]);
+        let non_dev = ActivePackages::from([
+            ("app".to_owned(), "0.1.0".to_owned()),
+            ("wasm_only".to_owned(), "1.0.0".to_owned()),
+            ("zip_like".to_owned(), "1.0.0".to_owned()),
+        ]);
+        let idents = BTreeSet::from(["used_fn".to_owned()]);
+
+        let mut f_unbuilt = finding(AdvisoryKind::Vulnerability, Some(Severity::High));
+        f_unbuilt.package = 1;
+        let mut f_dev = finding(AdvisoryKind::Vulnerability, Some(Severity::High));
+        f_dev.package = 2;
+        let mut f_wasm = finding(AdvisoryKind::Vulnerability, Some(Severity::High));
+        f_wasm.package = 3;
+        f_wasm.affected_arch = vec!["wasm32".to_owned()];
+        let mut f_uncalled = finding(AdvisoryKind::Vulnerability, Some(Severity::High));
+        f_uncalled.package = 4;
+        f_uncalled.affected_functions = vec!["zip_like::Archive::extract".to_owned()];
+        let mut f_called = finding(AdvisoryKind::Vulnerability, Some(Severity::High));
+        f_called.package = 4;
+        f_called.affected_functions = vec!["zip_like::used_fn".to_owned()];
+
+        let mut findings = vec![f_unbuilt, f_dev, f_wasm.clone(), f_uncalled, f_called];
+        super::evaluate_advisory_relevance(
+            &inventory,
+            &direct_kinds,
+            &["x86_64-unknown-linux-gnu".to_owned()],
+            Some(&active),
+            Some(&non_dev),
+            &idents,
+            &mut findings,
+        );
+        assert_eq!(findings[0].relevance, AdvisoryRelevance::Unlikely);
+        assert_eq!(findings[1].relevance, AdvisoryRelevance::Unlikely);
+        assert_eq!(findings[2].relevance, AdvisoryRelevance::Unlikely);
+        assert!(
+            findings[2]
+                .relevance_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("wasm32"))
+        );
+        assert_eq!(findings[3].relevance, AdvisoryRelevance::Unlikely);
+        assert_eq!(findings[4].relevance, AdvisoryRelevance::AffectsYou);
+
+        // Without configured targets, arch/os constraints rank as Possibly.
+        let mut no_targets = vec![f_wasm];
+        super::evaluate_advisory_relevance(
+            &inventory,
+            &direct_kinds,
+            &[],
+            None,
+            None,
+            &idents,
+            &mut no_targets,
+        );
+        assert_eq!(no_targets[0].relevance, AdvisoryRelevance::Possibly);
     }
 }

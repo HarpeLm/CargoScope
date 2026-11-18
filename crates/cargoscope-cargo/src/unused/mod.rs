@@ -27,6 +27,18 @@ use self::references::*;
 use self::rules::*;
 use self::sources::*;
 
+/// Collects identifier tokens across all `.rs` source and build-script files
+/// discovered for a package.
+pub(crate) fn collect_package_idents(
+    package_dir: &Path,
+    manifest: &toml::Value,
+    out: &mut BTreeSet<String>,
+) {
+    let sources = collect_sources(package_dir, manifest);
+    scan_idents(&sources.code, out);
+    scan_idents(&sources.build, out);
+}
+
 /// One dependency declared in a manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclaredDependency {

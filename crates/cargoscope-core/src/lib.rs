@@ -3,7 +3,7 @@
 pub mod license;
 pub mod policy;
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// The current application version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -222,6 +222,42 @@ impl Inventory {
             .count()
     }
 
+    /// Marks the packages reachable from root packages without traversing
+    /// direct `[dev-dependencies]` edges (edges leaving a root package to a
+    /// non-root package that has only `DependencyKind::Dev` in `direct_kinds`).
+    #[must_use]
+    pub fn non_dev_reachable(
+        &self,
+        direct_kinds: &BTreeMap<String, BTreeSet<DependencyKind>>,
+    ) -> Vec<bool> {
+        let count = self.packages.len();
+        let mut seen = vec![false; count];
+        let mut stack: Vec<usize> = (0..count).filter(|&i| self.packages[i].root).collect();
+        for &root in &stack {
+            seen[root] = true;
+        }
+        while let Some(current) = stack.pop() {
+            let from_root = self.packages[current].root;
+            for &next in &self.packages[current].dependencies {
+                if next >= count || seen[next] {
+                    continue;
+                }
+                if from_root
+                    && !self.packages[next].root
+                    && let Some(kinds) = direct_kinds.get(&self.packages[next].name)
+                    && !kinds.is_empty()
+                    && !kinds.contains(&DependencyKind::Normal)
+                    && !kinds.contains(&DependencyKind::Build)
+                {
+                    continue;
+                }
+                seen[next] = true;
+                stack.push(next);
+            }
+        }
+        seen
+    }
+
     /// Returns `(exclusive, tree)` for `target`: how many non-root packages
     /// would leave the dependency tree if `target` were removed (`exclusive`),
     /// and how many non-root packages `target` transitively pulls in (`tree`).
@@ -358,6 +394,33 @@ pub enum AdvisoryKind {
     Informational(String),
 }
 
+/// How likely an advisory is to affect the scanned project's shipped code.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AdvisoryRelevance {
+    /// No signal rules the advisory out.
+    #[default]
+    AffectsYou,
+    /// The advisory is restricted (for example to a target OS/arch or an
+    /// uncalled function on a transitive dependency) and may not apply.
+    Possibly,
+    /// A concrete signal shows the advisory does not affect the shipped build
+    /// (not built, dev-only, non-matching target, or uncalled function on a
+    /// direct dependency).
+    Unlikely,
+}
+
+impl AdvisoryRelevance {
+    /// Machine-readable name (`"affects-you"`, `"possibly"`, `"unlikely"`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AffectsYou => "affects-you",
+            Self::Possibly => "possibly",
+            Self::Unlikely => "unlikely",
+        }
+    }
+}
+
 /// A known advisory affecting a resolved package.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdvisoryFinding {
@@ -379,6 +442,17 @@ pub struct AdvisoryFinding {
     pub severity: Option<Severity>,
     /// Version requirements that fix the advisory; empty when no fix exists.
     pub patched: Vec<String>,
+    /// Architectures declared under `[affected] arch` (empty if unrestricted).
+    pub affected_arch: Vec<String>,
+    /// Operating systems declared under `[affected] os` (empty if unrestricted).
+    pub affected_os: Vec<String>,
+    /// Function paths declared under `[affected.functions]` that apply to the
+    /// resolved package version.
+    pub affected_functions: Vec<String>,
+    /// Evaluated likelihood that the advisory affects the project's build.
+    pub relevance: AdvisoryRelevance,
+    /// Human-readable reason when [`Self::relevance`] is not `AffectsYou`.
+    pub relevance_reason: Option<String>,
     /// Reason given in `cargoscope.toml` when this advisory is ignored.
     /// Ignored advisories stay in the report but never fail the scan.
     pub ignored: Option<String>,

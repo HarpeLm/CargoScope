@@ -103,7 +103,8 @@
       "additionalProperties": false,
       "required": [
         "id", "aliases", "title", "date", "url", "kind", "informational",
-        "severity", "package", "patched", "path", "ignored_reason"
+        "severity", "package", "patched", "path", "ignored_reason",
+        "relevance", "relevance_reason"
       ],
       "properties": {
         "id": { "type": "string", "description": "Identifier taken from the advisory data, such as a RUSTSEC ID." },
@@ -129,6 +130,14 @@
         "path": { "$ref": "#/$defs/path" },
         "ignored_reason": {
           "description": "Reason given in cargoscope.toml [advisories] ignore, or null. Ignored advisories never fail the scan.",
+          "$ref": "#/$defs/nullable_string"
+        },
+        "relevance": {
+          "description": "How likely the advisory is to affect the project's shipped code (since 0.8.0).",
+          "enum": ["affects-you", "possibly", "unlikely"]
+        },
+        "relevance_reason": {
+          "description": "Why relevance is `possibly` or `unlikely`, or null when `affects-you` (since 0.8.0).",
           "$ref": "#/$defs/nullable_string"
         }
       }

@@ -10,8 +10,8 @@ use std::fmt::Write;
 use std::path::Path;
 
 use cargoscope_core::{
-    AdvisoryFinding, AdvisoryKind, DependencyKind, Inventory, Package, Report, UnusedConfidence,
-    UnusedFinding, VERSION,
+    AdvisoryFinding, AdvisoryKind, AdvisoryRelevance, DependencyKind, Inventory, Package, Report,
+    UnusedConfidence, UnusedFinding, VERSION,
 };
 
 /// Version of the JSON report format.
@@ -308,6 +308,20 @@ fn render_advisories_text(out: &mut String, report: &Report) {
         }
         if let Some(reason) = &finding.ignored {
             let _ = writeln!(out, "    ignored in cargoscope.toml: {reason}");
+        }
+        if finding.relevance != AdvisoryRelevance::AffectsYou {
+            match &finding.relevance_reason {
+                Some(reason) => {
+                    let _ = writeln!(
+                        out,
+                        "    relevance: {} ({reason})",
+                        finding.relevance.as_str()
+                    );
+                }
+                None => {
+                    let _ = writeln!(out, "    relevance: {}", finding.relevance.as_str());
+                }
+            }
         }
     }
     if report.advisories.is_empty() {
@@ -840,8 +854,10 @@ pub fn render_json(project_root: &Path, report: &Report) -> String {
         write_path(&mut out, inventory, finding.package);
         let _ = write!(
             out,
-            ",\"ignored_reason\":{}}}",
-            json_string_or_null(finding.ignored.as_deref())
+            ",\"ignored_reason\":{},\"relevance\":\"{}\",\"relevance_reason\":{}}}",
+            json_string_or_null(finding.ignored.as_deref()),
+            finding.relevance.as_str(),
+            json_string_or_null(finding.relevance_reason.as_deref())
         );
     }
     out.push_str("],");
@@ -1198,6 +1214,11 @@ mod tests {
             kind,
             severity: Some(Severity::High),
             patched,
+            affected_arch: Vec::new(),
+            affected_os: Vec::new(),
+            affected_functions: Vec::new(),
+            relevance: cargoscope_core::AdvisoryRelevance::AffectsYou,
+            relevance_reason: None,
             ignored: None,
         }
     }
@@ -1251,7 +1272,7 @@ mod tests {
             "\"advisory_database\":{\"source\":\"RustSec\",\"downloaded_on\":\"2026-01-02\"}"
         ));
         assert!(json.contains(
-            "{\"id\":\"TEST-0001\",\"aliases\":[\"CVE-TEST\"],\"title\":\"Beta is broken\",\"date\":\"2025-05-05\",\"url\":\"https://example.test/report\",\"kind\":\"vulnerability\",\"informational\":null,\"severity\":\"high\",\"package\":{\"name\":\"beta\",\"version\":\"1.0.0\"},\"patched\":[\">= 1.2.0\"],\"path\":[{\"name\":\"app\",\"version\":\"1.0.0\"},{\"name\":\"alpha\",\"version\":\"1.0.0\"},{\"name\":\"beta\",\"version\":\"1.0.0\"}],\"ignored_reason\":null}"
+            "{\"id\":\"TEST-0001\",\"aliases\":[\"CVE-TEST\"],\"title\":\"Beta is broken\",\"date\":\"2025-05-05\",\"url\":\"https://example.test/report\",\"kind\":\"vulnerability\",\"informational\":null,\"severity\":\"high\",\"package\":{\"name\":\"beta\",\"version\":\"1.0.0\"},\"patched\":[\">= 1.2.0\"],\"path\":[{\"name\":\"app\",\"version\":\"1.0.0\"},{\"name\":\"alpha\",\"version\":\"1.0.0\"},{\"name\":\"beta\",\"version\":\"1.0.0\"}],\"ignored_reason\":null,\"relevance\":\"affects-you\",\"relevance_reason\":null}"
         ));
         assert!(json.contains(
             "{\"name\":\"orphan\",\"version\":\"1.0.0\",\"scope\":\"transitive\",\"direct\":false,\"source\":null,\"path\":null,\"license\":null,\"latest_version\":null,\"latest_published\":null,\"latest_compatible\":null,\"compatible_published\":null,\"outdated\":false,\"outdated_kind\":\"none\",\"yanked\":null,\"last_release\":null,\"owners\":null,\"repository\":null,\"archived\":null,\"maintenance\":[]}"

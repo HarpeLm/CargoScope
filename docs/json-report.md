@@ -6,14 +6,14 @@
 
 - `format_version` is `1`. It changes only when a field is removed, renamed, or changes type or meaning.
 - New fields may be added within the same `format_version`; the schema file is updated with them. Consumers must ignore fields they do not know.
-- Enum values (`scope`, `kind`, `severity`, `confidence`, `section`, `maintenance`) may gain new values within the same version; consumers should treat unknown values as "other".
+- Enum values (`scope`, `kind`, `severity`, `relevance`, `confidence`, `section`, `maintenance`) may gain new values within the same version; consumers should treat unknown values as "other".
 
 ## Main fields
 
 | Field | Content |
 |---|---|
 | `advisory_database`, `registry` | Data source and the date it was downloaded by `cargoscope update` (`null` if never) |
-| `advisories` | Known advisories affecting resolved packages, with severity, fix and dependency `path` |
+| `advisories` | Known advisories affecting resolved packages, with severity, `relevance` (`affects-you`, `possibly`, `unlikely`) and `relevance_reason`, fix and dependency `path` |
 | `packages` | Every resolved package: scope, source, dependency `path`, license, latest & SemVer-compatible versions (`latest_version`, `latest_compatible`, `outdated_kind`), yanked status; maintenance data (`last_release`, `owners`, `repository`, `archived`, and the `maintenance` concerns `archived`, `stale`, `single-owner`, since 0.7.0) |
 | `duplicates` | Crates resolved in more than one version, with their versions, oldest first (since 0.3.0) |
 | `direct_weights` | Each direct dependency with the number of packages only it pulls in (`exclusive`) and the size of its own tree (`tree`), heaviest first (since 0.4.0) |

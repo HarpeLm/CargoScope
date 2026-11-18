@@ -2,6 +2,10 @@
 
 All notable changes to CargoScope are documented in this file.
 
+## Unreleased
+
+- Advisory relevance ranking (#25): evaluates whether each advisory affects shipped code (`affects-you`, `possibly`, `unlikely`) using `[graph]` target filtering, `[dev-dependencies]` reachability, `[affected]` OS/architecture constraints, and uncalled `[affected.functions]`, sorted by relevance and surfaced with `relevance` / `relevance_reason` in JSON, terminal, text, and HTML reports.
+
 ## 0.7.6 (2026-11-18)
 
 - `cargoscope init` (`--ci`, `--policy`, `--dry-run`, `--force`) to create a starter `cargoscope.toml`, translate an existing `deny.toml` and `.cargo/audit.toml` into `cargoscope.toml`, and generate `.github/workflows/cargoscope.yml`.
