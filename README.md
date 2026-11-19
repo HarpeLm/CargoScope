@@ -27,7 +27,7 @@
 
 </div>
 
-| | | |
+| Check | What you get | Instead of |
 |---|---|---|
 | **Advisories** | RustSec, ranked by whether your build is exposed: `affects-you`, `possibly`, `unlikely` | `cargo-audit` |
 | **Unused dependencies** | Static analysis, or checked by the compiler with `--precise` | `cargo-machete`, `cargo-shear` |
