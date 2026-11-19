@@ -433,15 +433,26 @@ mod tests {
     use std::path::Path;
 
     fn artifact(manifest: &str, kind: &str, name: &str, test: bool) -> String {
-        format!(
-            r#"{{"reason":"compiler-artifact","manifest_path":"{manifest}","target":{{"kind":["{kind}"],"name":"{name}"}},"profile":{{"test":{test}}}}}"#
-        )
+        serde_json::json!({
+            "reason": "compiler-artifact",
+            "manifest_path": manifest,
+            "target": { "kind": [kind], "name": name },
+            "profile": { "test": test },
+        })
+        .to_string()
     }
 
     fn unused(manifest: &str, kind: &str, name: &str, krate: &str) -> String {
-        format!(
-            r#"{{"reason":"compiler-message","manifest_path":"{manifest}","target":{{"kind":["{kind}"],"name":"{name}"}},"message":{{"code":{{"code":"unused_crate_dependencies"}},"message":"extern crate `{krate}` is unused in crate `{name}`"}}}}"#
-        )
+        serde_json::json!({
+            "reason": "compiler-message",
+            "manifest_path": manifest,
+            "target": { "kind": [kind], "name": name },
+            "message": {
+                "code": { "code": "unused_crate_dependencies" },
+                "message": format!("extern crate `{krate}` is unused in crate `{name}`"),
+            },
+        })
+        .to_string()
     }
 
     #[test]
