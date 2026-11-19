@@ -87,7 +87,7 @@ docker run --rm -v "$PWD:/src" -v cargoscope-cache:/cache ghcr.io/harpelm/cargos
 # GitLab CI
 cargoscope:
   image:
-    name: ghcr.io/harpelm/cargoscope:0.9.0
+    name: ghcr.io/harpelm/cargoscope:0.9.1
     entrypoint: [""]
   script:
     - cargoscope update .
@@ -140,7 +140,7 @@ cargoscope:
 Drop [**CargoScope-Bot**](https://github.com/marketplace/actions/cargoscope-bot) into any CI workflow (downloads the prebuilt binary, caches RustSec/crates.io data, and comments PR diffs when permissions allow):
 
 ```yaml
-      - uses: HarpeLm/CargoScope@v0.9.0
+      - uses: HarpeLm/CargoScope@v0.9.1
         with:
           fail-on: high
           upload-sarif: false

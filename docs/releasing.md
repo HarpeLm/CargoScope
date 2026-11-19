@@ -9,7 +9,7 @@ A release is started by pushing a version tag. Everything else runs in GitHub Ac
 | Homebrew (`brew install HarpeLm/tap/cargoscope`) | `release.yml` | `HarpeLm/homebrew-tap` repository and `HOMEBREW_TAP_TOKEN` secret |
 | npm (`npx cargoscope`) | `release.yml` | `NPM_TOKEN` secret |
 | PyPI (`pip install cargoscope`, `uvx cargoscope`) | `pypi.yml` | `pypi` GitHub environment (configured) + PyPI Pending Publisher (no token) |
-| GitHub Action (`uses: HarpeLm/CargoScope@v0.9.0`) | `action.yml` at the repository root | The GitHub Release |
+| GitHub Action (`uses: HarpeLm/CargoScope@v0.9.1`) | `action.yml` at the repository root | The GitHub Release |
 | Container images (`ghcr.io/harpelm/cargoscope`) | `docker/Dockerfile`, `.github/workflows/docker.yml` | The Docker workflow, once Release succeeds (or by hand with a tag) |
 
 ## v0.1.0 checklist
@@ -153,7 +153,13 @@ Released on 2026-11-18: advisory relevance ranking (`affects-you`, `possibly`, `
 
 Prepared on 2026-11-19 (Release Candidate): governance & `1.x` stability contracts (`SECURITY.md`, `docs/compatibility.md`), `fix --advisories` and `--updates` workspace propagation (`[workspace.dependencies]` + version-filtered multi-version edits + `name@version` lockfile disambiguation), large-scale `--precise` 76-repo benchmark (`100.0%` blind precision across 35 unseen repos on Rust `1.99.1` and `1.100.0`), Telemetry HUD terminal UI (adaptive width wrapping, severity pills, optical relevance indicators, OSC 8 links, weight and license bars), README visual overhaul + extracted `docs/commands.md` / `docs/github-action.md`, and PyPI Trusted Publisher activation (`pypi.yml`).
 
-- ⬜ Set versions to `0.9.0`, verify `cargo fmt`, `clippy -D warnings`, `cargo test --workspace`, `cargo package --workspace --exclude cargoscope-corpus`, and `dist plan`; tag `v0.9.0` and verify all channels including PyPI.
+- ✅ Tag `v0.9.0` pushed (2026-11-19). GitHub Release, crates.io (5 crates), npm, Homebrew and Docker succeeded. The first PyPI run failed (retired `macos-14` runners, and `ring` failing to cross-compile for Linux `aarch64`), so nothing was published to PyPI; the fix ships in `v0.9.1`.
+
+## v0.9.1
+
+Released on 2026-11-19: PyPI wheel matrix fix (`macos-15-intel`, `macos-15`, native `ubuntu-22.04-arm`), checked with a manual `pypi.yml` run (6 wheels and sdist built) before tagging. No change to the CLI.
+
+- ⬜ `cargo fmt`, `clippy -D warnings`, `cargo test --workspace`, `cargo package`, `dist plan`; tag `v0.9.1` and verify all channels including the first PyPI publish.
 
 ## One-time setup (maintainer)
 

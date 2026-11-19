@@ -2,6 +2,10 @@
 
 All notable changes to CargoScope are documented in this file.
 
+## 0.9.1 (2026-11-19)
+
+- PyPI wheels: fixed the `pypi.yml` build matrix (retired `macos-14` runners replaced by `macos-15-intel` and `macos-15`, Linux `aarch64` built natively on `ubuntu-22.04-arm` instead of cross-compiling `ring`), so `pip install cargoscope` and `uvx cargoscope` ship 6 wheels (Linux x86_64/aarch64/musl, macOS x86_64/arm64, Windows x64) plus an sdist. No change to the CLI.
+
 ## 0.9.0 (2026-11-19)
 
 - Governance & stability contracts: added [SECURITY.md](SECURITY.md) (vulnerability reporting, offline/no-code-execution threat model, `unsafe_code = "forbid"`, and parser limits) and [docs/compatibility.md](docs/compatibility.md) (`1.x` CLI/exit-code/JSON/SARIF/CycloneDX stability guarantees and Rust `1.90`+ MSRV policy).
