@@ -32,7 +32,8 @@
 | **Advisories** | RustSec, plus GitHub advisories and malicious crates from OSV, ranked by whether your build is exposed: `affects-you`, `possibly`, `unlikely` | `cargo-audit` |
 | **Unused dependencies** | Static analysis, or checked by the compiler with `--precise` | `cargo-machete`, `cargo-shear` |
 | **Policy** | Licenses, bans and sources, read from `cargoscope.toml` or your `deny.toml` | `cargo-deny` |
-| **Versions** | Compatible and breaking updates, yanked crates, duplicates, maintenance | `cargo-outdated` |
+| **Versions** | Compatible and breaking updates, yanked crates, recent releases, duplicates, maintenance | `cargo-outdated` |
+| **Unsafe code** | `unsafe` blocks, functions and impls of every dependency, counted from its sources | `cargo-geiger` |
 | **Fixes** | Dry-run edits to `Cargo.toml` and `Cargo.lock`, or pull requests from the Action | Dependabot |
 
 <p align="center">

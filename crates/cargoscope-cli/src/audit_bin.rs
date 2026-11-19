@@ -133,6 +133,7 @@ fn audit(
         advisory_db_date: database.fetched_on.clone(),
         warnings,
         direct_kinds: std::collections::BTreeMap::new(),
+        unsafe_code: Vec::new(),
     };
     let rendered = match options.format {
         OutputFormat::Text => cargoscope_report::render_text(

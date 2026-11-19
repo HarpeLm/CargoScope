@@ -150,7 +150,7 @@
         "latest_version", "latest_published", "latest_compatible",
         "compatible_published", "outdated", "outdated_kind", "yanked",
         "last_release", "owners", "repository", "archived", "maintenance",
-        "published"
+        "published", "unsafe"
       ],
       "properties": {
         "name": { "type": "string" },
@@ -180,7 +180,26 @@
           "items": { "enum": ["archived", "stale", "single-owner"] },
           "description": "Maintenance concerns: archived repository, no release for 2 years, single crates.io owner (since 0.7.0)."
         },
-        "published": { "$ref": "#/$defs/nullable_string", "description": "Publication time of the resolved version, RFC 3339 UTC (a bare date in older caches); null when unknown (since 1.0.0)." }
+        "published": { "$ref": "#/$defs/nullable_string", "description": "Publication time of the resolved version, RFC 3339 UTC (a bare date in older caches); null when unknown (since 1.0.0)." },
+        "unsafe": {
+          "description": "Uses of `unsafe` in the package's sources on disk; null for workspace members and packages whose sources are not downloaded (since 1.0.0).",
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["total", "blocks", "functions", "impls", "traits", "other"],
+              "properties": {
+                "total": { "type": "integer", "minimum": 0 },
+                "blocks": { "type": "integer", "minimum": 0 },
+                "functions": { "type": "integer", "minimum": 0 },
+                "impls": { "type": "integer", "minimum": 0 },
+                "traits": { "type": "integer", "minimum": 0 },
+                "other": { "type": "integer", "minimum": 0 }
+              }
+            }
+          ]
+        }
       }
     },
     "violation": {

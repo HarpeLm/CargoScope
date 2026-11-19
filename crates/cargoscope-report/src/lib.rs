@@ -112,6 +112,7 @@ pub fn render_text(project_root: &Path, report: &Report, options: TextOptions) -
     if report.checks.versions {
         render_recent_text(&mut out, report, options.now);
     }
+    render_unsafe_text(&mut out, report, options.verbose);
     render_policy_text(&mut out, report, options.verbose);
 
     let _ = writeln!(out, "\nResolved packages: {}", inventory.packages.len());
@@ -608,6 +609,72 @@ pub(crate) fn describe_age(hours: u64) -> String {
     }
 }
 
+/// Dependencies whose sources use `unsafe`, most uses first, and how many
+/// dependencies had their sources counted.
+pub(crate) fn unsafe_rows(report: &Report) -> (Vec<(usize, cargoscope_core::UnsafeCount)>, usize) {
+    let counted: Vec<(usize, cargoscope_core::UnsafeCount)> = report
+        .unsafe_code
+        .iter()
+        .enumerate()
+        .filter_map(|(index, count)| Some((index, (*count)?)))
+        .collect();
+    let total = counted.len();
+    let mut rows: Vec<_> = counted
+        .into_iter()
+        .filter(|(_, count)| count.total() > 0)
+        .collect();
+    rows.sort_by(|left, right| {
+        right
+            .1
+            .total()
+            .cmp(&left.1.total())
+            .then(left.0.cmp(&right.0))
+    });
+    (rows, total)
+}
+
+/// `380 blocks, 30 fn, 2 impl`: the non-zero parts of a count.
+pub(crate) fn describe_unsafe(count: &cargoscope_core::UnsafeCount) -> String {
+    [
+        (count.blocks, "block", "blocks"),
+        (count.functions, "fn", "fn"),
+        (count.impls, "impl", "impl"),
+        (count.traits, "trait", "traits"),
+        (count.other, "other", "other"),
+    ]
+    .iter()
+    .filter(|(number, _, _)| *number > 0)
+    .map(|(number, one, many)| format!("{number} {}", if *number == 1 { one } else { many }))
+    .collect::<Vec<_>>()
+    .join(", ")
+}
+
+fn render_unsafe_text(out: &mut String, report: &Report, verbose: bool) {
+    let (rows, counted) = unsafe_rows(report);
+    if counted == 0 {
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "\nUnsafe code: {} of {} dependencies with sources on disk use unsafe",
+        rows.len(),
+        counted
+    );
+    let shown = shown_rows(rows.len(), verbose, 8);
+    for (index, count) in rows.iter().take(shown) {
+        let package = &report.inventory.packages[*index];
+        let _ = writeln!(
+            out,
+            "- {} {}: {} ({})",
+            package.name,
+            package.version,
+            count.total(),
+            describe_unsafe(count)
+        );
+    }
+    more_rows(out, rows.len(), shown);
+}
+
 fn render_recent_text(out: &mut String, report: &Report, now: Option<u64>) {
     let rows = recent_releases(report, now);
     if rows.is_empty() {
@@ -937,7 +1004,7 @@ pub fn render_json(project_root: &Path, report: &Report) -> String {
         let outdated_kind = info.outdated_kind(&package.version);
         let _ = write!(
             out,
-            ",\"license\":{},\"latest_version\":{},\"latest_published\":{},\"latest_compatible\":{},\"compatible_published\":{},\"outdated\":{},\"outdated_kind\":\"{}\",\"yanked\":{},\"last_release\":{},\"owners\":{},\"repository\":{},\"archived\":{},\"maintenance\":{},\"published\":{}}}",
+            ",\"license\":{},\"latest_version\":{},\"latest_published\":{},\"latest_compatible\":{},\"compatible_published\":{},\"outdated\":{},\"outdated_kind\":\"{}\",\"yanked\":{},\"last_release\":{},\"owners\":{},\"repository\":{},\"archived\":{},\"maintenance\":{},\"published\":{},\"unsafe\":{}}}",
             json_string_or_null(info.license.as_deref()),
             json_string_or_null(info.latest_version.as_deref()),
             json_string_or_null(info.latest_published.as_deref()),
@@ -962,6 +1029,23 @@ pub fn render_json(project_root: &Path, report: &Report) -> String {
                     .collect::<Vec<_>>()
             ),
             json_string_or_null(info.published.as_deref()),
+            report
+                .unsafe_code
+                .get(index)
+                .copied()
+                .flatten()
+                .map_or_else(
+                    || "null".to_owned(),
+                    |count| format!(
+                        "{{\"total\":{},\"blocks\":{},\"functions\":{},\"impls\":{},\"traits\":{},\"other\":{}}}",
+                        count.total(),
+                        count.blocks,
+                        count.functions,
+                        count.impls,
+                        count.traits,
+                        count.other
+                    )
+                ),
         );
     }
     out.push_str("],");
@@ -1173,7 +1257,41 @@ mod tests {
             advisory_db_date: Some("2026-01-02".to_owned()),
             warnings: Vec::new(),
             direct_kinds: std::collections::BTreeMap::new(),
+            unsafe_code: Vec::new(),
         }
+    }
+
+    #[test]
+    fn lists_unsafe_code_of_direct_dependencies() {
+        let mut report = sample(Vec::new());
+        let count = |blocks, functions| {
+            Some(cargoscope_core::UnsafeCount {
+                blocks,
+                functions,
+                ..cargoscope_core::UnsafeCount::default()
+            })
+        };
+        report.unsafe_code = vec![None, count(12, 1), count(400, 0), count(0, 0)];
+        let hud = render_text(Path::new("."), &report, TextOptions::default());
+        assert!(
+            hud.contains("UNSAFE CODE (1 of 1 direct dependencies · 2 crates in all)"),
+            "{hud}"
+        );
+        assert!(
+            hud.contains("alpha 1.0.0  ━━━━━━━━━━  13  12 blocks, 1 fn"),
+            "{hud}"
+        );
+        // beta is transitive: only with --verbose.
+        assert!(!hud.contains("beta 1.0.0  "), "{hud}");
+        let verbose = render_text(Path::new("."), &report, VERBOSE);
+        assert!(
+            verbose.contains("Unsafe code: 2 of 3 dependencies with sources on disk use unsafe\n- beta 1.0.0: 400 (400 blocks)\n- alpha 1.0.0: 13 (12 blocks, 1 fn)\n"),
+            "{verbose}"
+        );
+        let json = render_json(Path::new("."), &report);
+        assert!(json.contains(
+            "\"unsafe\":{\"total\":13,\"blocks\":12,\"functions\":1,\"impls\":0,\"traits\":0,\"other\":0}"
+        ));
     }
 
     #[test]
@@ -1376,7 +1494,7 @@ mod tests {
             "{\"id\":\"TEST-0001\",\"aliases\":[\"CVE-TEST\"],\"title\":\"Beta is broken\",\"date\":\"2025-05-05\",\"url\":\"https://example.test/report\",\"kind\":\"vulnerability\",\"informational\":null,\"severity\":\"high\",\"package\":{\"name\":\"beta\",\"version\":\"1.0.0\"},\"patched\":[\">= 1.2.0\"],\"path\":[{\"name\":\"app\",\"version\":\"1.0.0\"},{\"name\":\"alpha\",\"version\":\"1.0.0\"},{\"name\":\"beta\",\"version\":\"1.0.0\"}],\"ignored_reason\":null,\"relevance\":\"affects-you\",\"relevance_reason\":null}"
         ));
         assert!(json.contains(
-            "{\"name\":\"orphan\",\"version\":\"1.0.0\",\"scope\":\"transitive\",\"direct\":false,\"source\":null,\"path\":null,\"license\":null,\"latest_version\":null,\"latest_published\":null,\"latest_compatible\":null,\"compatible_published\":null,\"outdated\":false,\"outdated_kind\":\"none\",\"yanked\":null,\"last_release\":null,\"owners\":null,\"repository\":null,\"archived\":null,\"maintenance\":[],\"published\":null}"
+            "{\"name\":\"orphan\",\"version\":\"1.0.0\",\"scope\":\"transitive\",\"direct\":false,\"source\":null,\"path\":null,\"license\":null,\"latest_version\":null,\"latest_published\":null,\"latest_compatible\":null,\"compatible_published\":null,\"outdated\":false,\"outdated_kind\":\"none\",\"yanked\":null,\"last_release\":null,\"owners\":null,\"repository\":null,\"archived\":null,\"maintenance\":[],\"published\":null,\"unsafe\":null}"
         ));
         assert!(json.ends_with("\"unused\":[],\"warnings\":[]}\n"));
     }
@@ -1506,7 +1624,7 @@ mod tests {
                 "\"registry\":{\"source\":\"crates.io\",\"downloaded_on\":\"2026-02-03\"}"
             )
         );
-        assert!(json.contains("\"license\":\"MIT\",\"latest_version\":\"2.0.0\",\"latest_published\":\"2026-01-01\",\"latest_compatible\":\"1.4.0\",\"compatible_published\":\"2025-11-10\",\"outdated\":true,\"outdated_kind\":\"both\",\"yanked\":true,\"last_release\":null,\"owners\":null,\"repository\":null,\"archived\":null,\"maintenance\":[],\"published\":null}"));
+        assert!(json.contains("\"license\":\"MIT\",\"latest_version\":\"2.0.0\",\"latest_published\":\"2026-01-01\",\"latest_compatible\":\"1.4.0\",\"compatible_published\":\"2025-11-10\",\"outdated\":true,\"outdated_kind\":\"both\",\"yanked\":true,\"last_release\":null,\"owners\":null,\"repository\":null,\"archived\":null,\"maintenance\":[],\"published\":null,\"unsafe\":null}"));
     }
 
     #[test]

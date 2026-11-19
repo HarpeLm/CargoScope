@@ -19,6 +19,7 @@ pub mod licenses;
 pub mod locations;
 pub mod precise;
 pub mod targets;
+pub mod unsafe_code;
 pub mod unused;
 pub mod updates;
 pub mod workspace;

@@ -384,8 +384,14 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
             &mut advisories,
         );
     }
+    let unsafe_code = cargoscope_cargo::unsafe_code::count_unsafe(
+        root,
+        &inventory,
+        cargoscope_advisory::cache_dir().ok().as_deref(),
+    );
     let report = Report {
         direct_kinds,
+        unsafe_code,
         checks,
         package_info,
         registry_date,

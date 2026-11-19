@@ -4,6 +4,7 @@ All notable changes to CargoScope are documented in this file.
 
 ## Unreleased
 
+- Unsafe code: a scan counts the `unsafe` blocks, functions, impls and traits of every dependency whose sources Cargo downloaded, with a Rust lexer (comments and strings never count), offline and without compiling. The terminal report ranks direct dependencies (`UNSAFE CODE`), `--verbose` lists every crate, and JSON packages gain an `unsafe` object. Counts of published versions are cached, so only the first scan of a version pays for it (nyaterm, 1,366 packages: +4 s the first time, nothing after).
 - Recent releases: resolved versions published less than 72 hours before the scan are listed (`RECENT RELEASES` in the terminal report, `Recent releases` with `--verbose`), since compromised releases are usually caught within days. The crates.io cache now keeps each version's full publication time, and JSON packages gain a `published` field.
 - A scan warns when the advisory data is more than 7 days old, since advisories published after the download are missing.
 - Advisories from OSV: `cargoscope update` also downloads the crates.io export of OSV (3.8 MB) and keeps the GitHub security advisories (`GHSA-…`) and malicious crates (`MAL-…`, reported as critical) that RustSec does not have; entries naming a RustSec advisory's ID or alias are left out, so nothing is reported twice. On `russh 0.55.0`, a scan finds 15 GitHub advisories RustSec lacks. `--rustsec-only` reports RustSec alone, as `cargo-audit` does.

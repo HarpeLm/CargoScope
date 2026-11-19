@@ -407,6 +407,7 @@ pub(crate) fn render_hud(project_root: &Path, report: &Report, options: TextOpti
         showed_any_section |= hud_outdated(&mut out, report, width, paint);
         showed_any_section |= hud_maintenance(&mut out, report, width, paint);
     }
+    showed_any_section |= hud_unsafe(&mut out, report, width, paint);
     showed_any_section |= hud_weights(&mut out, report, width, paint);
     showed_any_section |= hud_duplicates(&mut out, report, width, paint);
     if report.checks.licenses {
@@ -1433,6 +1434,73 @@ fn mass_bar(value: usize, max_value: usize, is_top: bool, paint: Paint) -> Strin
         paint.scope(&fill_str)
     };
     format!("{colored_fill}{}", paint.dim(&empty_str))
+}
+
+fn hud_unsafe(out: &mut String, report: &Report, width: usize, paint: Paint) -> bool {
+    // Direct dependencies: the ones the project chose. Transitive ones,
+    // generated bindings included, are listed with --verbose.
+    let (all_rows, _) = crate::unsafe_rows(report);
+    let rows: Vec<_> = all_rows
+        .iter()
+        .filter(|(index, _)| report.inventory.packages[*index].direct)
+        .copied()
+        .collect();
+    if rows.is_empty() {
+        return false;
+    }
+    let direct_counted = report
+        .unsafe_code
+        .iter()
+        .zip(&report.inventory.packages)
+        .filter(|(count, package)| count.is_some() && package.direct)
+        .count();
+    let sub = format!(
+        "{} of {} direct dependencies · {} crates in all",
+        rows.len(),
+        direct_counted,
+        all_rows.len()
+    );
+    section_rule(out, "UNSAFE CODE", Some(&sub), width, paint);
+    let shown = rows.len().min(5);
+    let slice = &rows[..shown];
+    let most = slice.first().map_or(1, |(_, count)| count.total());
+    let label_w = slice
+        .iter()
+        .map(|(index, _)| {
+            let pkg = &report.inventory.packages[*index];
+            pkg.name.len() + 1 + pkg.version.len()
+        })
+        .max()
+        .unwrap_or(0);
+    let total_w = slice
+        .iter()
+        .map(|(_, count)| count.total().to_string().len())
+        .max()
+        .unwrap_or(1);
+    for (pos, (index, count)) in slice.iter().enumerate() {
+        let pkg = &report.inventory.packages[*index];
+        let bar = mass_bar(count.total(), most, pos == 0, paint);
+        let _ = writeln!(
+            out,
+            "  {} {}{}  {bar}  {}  {}",
+            paint.bold(&pkg.name),
+            paint.dim(&pkg.version),
+            " ".repeat(label_w.saturating_sub(pkg.name.len() + 1 + pkg.version.len())),
+            paint.bold(&format!("{:>total_w$}", count.total())),
+            paint.dim(&crate::describe_unsafe(count))
+        );
+    }
+    if rows.len() > shown {
+        let _ = writeln!(
+            out,
+            "  {}",
+            paint.dim(&format!(
+                "+ {} more — use --verbose for all",
+                rows.len() - shown
+            ))
+        );
+    }
+    true
 }
 
 fn hud_weights(out: &mut String, report: &Report, width: usize, paint: Paint) -> bool {

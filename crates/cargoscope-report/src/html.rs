@@ -1206,6 +1206,7 @@ mod tests {
 
         Report {
             inventory,
+            unsafe_code: Vec::new(),
             checks: Checks::ALL,
             advisories: vec![
                 AdvisoryFinding {

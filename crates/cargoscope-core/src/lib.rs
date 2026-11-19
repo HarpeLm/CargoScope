@@ -842,6 +842,31 @@ impl Default for Checks {
     }
 }
 
+/// How much `unsafe` code a package contains, counted from its sources.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UnsafeCount {
+    /// `unsafe { … }` blocks.
+    pub blocks: usize,
+    /// `unsafe fn` items and `unsafe extern` blocks.
+    pub functions: usize,
+    /// `unsafe impl` items.
+    pub impls: usize,
+    /// `unsafe trait` items.
+    pub traits: usize,
+    /// Other uses of the keyword, such as `#[unsafe(no_mangle)]` or inside macros.
+    pub other: usize,
+    /// Source files the lexer could not read, so not counted.
+    pub unreadable_files: usize,
+}
+
+impl UnsafeCount {
+    /// Every use of `unsafe`.
+    #[must_use]
+    pub const fn total(&self) -> usize {
+        self.blocks + self.functions + self.impls + self.traits + self.other
+    }
+}
+
 /// Everything a scan produced, ready to be rendered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
@@ -870,6 +895,9 @@ pub struct Report {
     /// dependency, by crate name (empty when the manifests were not read).
     pub direct_kinds:
         std::collections::BTreeMap<String, std::collections::BTreeSet<DependencyKind>>,
+    /// `unsafe` code of each package, by package index (empty when not
+    /// counted; `None` for packages whose sources are not on disk).
+    pub unsafe_code: Vec<Option<UnsafeCount>>,
 }
 
 #[cfg(test)]

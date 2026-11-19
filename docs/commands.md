@@ -64,6 +64,10 @@ cargoscope scan . --color auto|always|never                    # override termin
 
 `--rustsec-only` reports RustSec advisories alone, which is what `cargo-audit` reports. If OSV cannot be downloaded, `update` prints a warning and scans use RustSec alone.
 
+### Unsafe code
+
+A scan counts the uses of `unsafe` in every dependency whose sources are on disk (run `cargo fetch` first): `unsafe` blocks, `unsafe fn` items and `unsafe extern` blocks, `unsafe impl`, `unsafe trait`, and other uses such as `#[unsafe(no_mangle)]`. A Rust lexer reads the files under `src/` and the build script, so comments and strings never count, and nothing is compiled. The terminal report ranks the direct dependencies; `--verbose` lists every crate, generated bindings such as `windows` included. Published versions never change, so their counts are cached and later scans read them back.
+
 ### Freshness
 
 A scan warns when the advisory data is more than 7 days old: advisories published after the download are missing until `cargoscope update` runs again. With crates.io data, the report also lists resolved versions published less than 72 hours before the scan (`RECENT RELEASES`). Compromised releases are usually caught and yanked within days, so a brand-new version deserves a look before you rely on it.
