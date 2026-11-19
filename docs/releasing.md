@@ -9,7 +9,7 @@ A release is started by pushing a version tag. Everything else runs in GitHub Ac
 | Homebrew (`brew install HarpeLm/tap/cargoscope`) | `release.yml` | `HarpeLm/homebrew-tap` repository and `HOMEBREW_TAP_TOKEN` secret |
 | npm (`npx cargoscope`) | `release.yml` | `NPM_TOKEN` secret |
 | PyPI (`pip install cargoscope`, `uvx cargoscope`) | `pypi.yml` | `pypi` GitHub environment (configured) + PyPI Pending Publisher (no token) |
-| GitHub Action (`uses: HarpeLm/CargoScope@v0.8.0`) | `action.yml` at the repository root | The GitHub Release |
+| GitHub Action (`uses: HarpeLm/CargoScope@v0.9.0`) | `action.yml` at the repository root | The GitHub Release |
 | Container images (`ghcr.io/harpelm/cargoscope`) | `docker/Dockerfile`, `.github/workflows/docker.yml` | The Docker workflow, once Release succeeds (or by hand with a tag) |
 
 ## v0.1.0 checklist
@@ -148,6 +148,12 @@ Released on 2026-11-18: advisory relevance ranking (`affects-you`, `possibly`, `
 
 - ✅ Set versions to `0.8.0`, verified `cargo fmt`, `clippy -D warnings`, `cargo test --workspace`, and `cargo package --workspace --exclude cargoscope-corpus`; tag `v0.8.0` pushed (2026-11-18).
 - ✅ Set the version back to `0.9.0-dev`.
+
+## v0.9.0
+
+Prepared on 2026-11-19 (Release Candidate): governance & `1.x` stability contracts (`SECURITY.md`, `docs/compatibility.md`), `fix --advisories` and `--updates` workspace propagation (`[workspace.dependencies]` + version-filtered multi-version edits + `name@version` lockfile disambiguation), large-scale `--precise` 76-repo benchmark (`100.0%` blind precision across 35 unseen repos on Rust `1.99.1` and `1.100.0`), Telemetry HUD terminal UI (adaptive width wrapping, severity pills, optical relevance indicators, OSC 8 links, weight and license bars), README visual overhaul + extracted `docs/commands.md` / `docs/github-action.md`, and PyPI Trusted Publisher activation (`pypi.yml`).
+
+- ⬜ Set versions to `0.9.0`, verify `cargo fmt`, `clippy -D warnings`, `cargo test --workspace`, `cargo package --workspace --exclude cargoscope-corpus`, and `dist plan`; tag `v0.9.0` and verify all channels including PyPI.
 
 ## One-time setup (maintainer)
 

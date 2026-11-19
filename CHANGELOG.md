@@ -2,7 +2,7 @@
 
 All notable changes to CargoScope are documented in this file.
 
-## Unreleased (0.9.0-dev)
+## 0.9.0 (2026-11-19)
 
 - Governance & stability contracts: added [SECURITY.md](SECURITY.md) (vulnerability reporting, offline/no-code-execution threat model, `unsafe_code = "forbid"`, and parser limits) and [docs/compatibility.md](docs/compatibility.md) (`1.x` CLI/exit-code/JSON/SARIF/CycloneDX stability guarantees and Rust `1.90`+ MSRV policy).
 - `cargoscope fix --advisories` and `--updates` workspace propagation: updates `[workspace.dependencies]` (including renamed and dotted-key entries) and implicit local path members without touching `workspace = true` declarations, filters manifest edits by the vulnerable version so unrelated major version lines elsewhere in a workspace are never downgraded, and passes unambiguous `name@version` package specs to `cargo update` for multi-version lockfiles.
@@ -10,6 +10,7 @@ All notable changes to CargoScope are documented in this file.
 - PyPI Trusted Publisher workflow (`.github/workflows/pypi.yml`): enabled version-tag trigger and `publish` job targeting the `pypi` GitHub Actions environment.
 - Terminal Telemetry HUD UI: redesigned default `cargoscope scan` terminal output with a boxed `◎ CARGOSCOPE` KPI cockpit header (Rust copper + Optical Scope cyan palette, elapsed scan duration, offline/precise badge), ruled sections, severity pills (`CRIT`/`HIGH`/`MED`/`LOW`), optical relevance indicators (`⌖ affects-you` / `◐ possibly` / `◌ unlikely`), clickable OSC 8 links on advisory IDs, proportional weight bars for heaviest direct dependencies, and a segmented license distribution bar (`--verbose` and `NO_COLOR` preserved cleanly).
 - Terminal HUD fits the terminal: the report follows `COLUMNS` or the terminal's width (60 to 120 columns, 100 when unknown), KPI cells wrap onto more rows, long advisory details and policy messages wrap instead of running past the edge, the fix column moves under the advisory on narrow terminals, other lines are cut with `…`, the header names the project directory instead of `.`, and advisories ranked `unlikely` take one dimmed line.
+- README overhaul: adaptive GitHub dark/light hero (`banner.svg` / `banner-light.svg`), refreshed Telemetry HUD `scan.gif`, KPI benchmark table, embedded `pipeline.svg`, HTML/PR preview cards, and extracted [docs/commands.md](docs/commands.md) and [docs/github-action.md](docs/github-action.md).
 
 ## 0.8.0 (2026-11-18)
 

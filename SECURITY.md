@@ -6,8 +6,8 @@ Security fixes are released for the latest minor version on the `main` branch.
 
 | Version | Supported |
 |---|---|
-| `0.8.x` (latest release) | Yes |
-| `< 0.8.0` | No — please upgrade to the latest release |
+| `0.9.x` (latest release) | Yes |
+| `< 0.9.0` | No — please upgrade to the latest release |
 
 Once `1.0.0` is released, the latest `1.x` minor series will receive security fixes according to [docs/compatibility.md](docs/compatibility.md).
 
