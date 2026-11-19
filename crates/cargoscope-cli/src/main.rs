@@ -354,6 +354,19 @@ fn run_update(
             "warning: OSV advisories not updated ({error}); scans use RustSec alone until the next update"
         ),
     }
+    match cargoscope_advisory::vet::update(&cache, cargoscope_advisory::vet::DEFAULT_REGISTRY_URL) {
+        Ok(summary) => {
+            say(&format!(
+                "Published audits updated: {} crate versions reviewed by {} (cargo-vet)",
+                summary.versions,
+                summary.organisations.join(", ")
+            ));
+            for failure in &summary.failures {
+                eprintln!("warning: audits not downloaded from {failure}");
+            }
+        }
+        Err(error) => eprintln!("warning: published audits not updated ({error})"),
+    }
 
     let loaded_inventory;
     let inventory = match inventory {

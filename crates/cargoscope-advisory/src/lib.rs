@@ -19,6 +19,7 @@ pub mod crates_io;
 mod maintenance;
 pub mod osv;
 mod proxy;
+pub mod vet;
 
 /// Where the RustSec database archive is downloaded from.
 pub const DEFAULT_ARCHIVE_URL: &str =

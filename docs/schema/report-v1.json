@@ -150,7 +150,7 @@
         "latest_version", "latest_published", "latest_compatible",
         "compatible_published", "outdated", "outdated_kind", "yanked",
         "last_release", "owners", "repository", "archived", "maintenance",
-        "published", "unsafe"
+        "published", "unsafe", "audits"
       ],
       "properties": {
         "name": { "type": "string" },
@@ -199,6 +199,19 @@
               }
             }
           ]
+        },
+        "audits": {
+          "description": "Published cargo-vet audits of the resolved version, best criteria first: empty when no organisation audited it, null when no audits were downloaded (since 1.0.0).",
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["by", "criteria"],
+            "properties": {
+              "by": { "type": "string" },
+              "criteria": { "enum": ["safe-to-deploy", "safe-to-run"] }
+            }
+          }
         }
       }
     },

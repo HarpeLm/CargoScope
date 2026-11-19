@@ -68,6 +68,10 @@ cargoscope scan . --color auto|always|never                    # override termin
 
 A scan counts the uses of `unsafe` in every dependency whose sources are on disk (run `cargo fetch` first): `unsafe` blocks, `unsafe fn` items and `unsafe extern` blocks, `unsafe impl`, `unsafe trait`, and other uses such as `#[unsafe(no_mangle)]`. A Rust lexer reads the files under `src/` and the build script, so comments and strings never count, and nothing is compiled. The terminal report ranks the direct dependencies; `--verbose` lists every crate, generated bindings such as `windows` included. Published versions never change, so their counts are cached and later scans read them back.
 
+### Published audits
+
+`cargoscope update` downloads the audits listed in the [cargo-vet registry](https://github.com/mozilla/cargo-vet/blob/main/registry.toml): Mozilla, Google, the Bytecode Alliance, Zcash and others publish which crate versions they reviewed, as `safe-to-deploy` (fit to ship) or `safe-to-run` (fit for tests and development). A version counts as audited when an organisation reviewed it in full, or reviewed the changes from a version it had audited before (`delta` audits). The report shows how many crates.io packages are audited and which direct dependencies have no audit of the version in use; `--verbose` names the criteria and reviewers of each direct dependency. Publisher-based `trusted` entries are not used, since crates.io does not record who published a version, so a crate its owner is trusted for may still show as not audited.
+
 ### Freshness
 
 A scan warns when the advisory data is more than 7 days old: advisories published after the download are missing until `cargoscope update` runs again. With crates.io data, the report also lists resolved versions published less than 72 hours before the scan (`RECENT RELEASES`). Compromised releases are usually caught and yanked within days, so a brand-new version deserves a look before you rely on it.

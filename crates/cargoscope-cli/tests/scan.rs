@@ -264,7 +264,7 @@ fn json_output_includes_registry_data() {
     assert!(
         json.contains("\"registry\":{\"source\":\"crates.io\",\"downloaded_on\":\"2026-01-01\"}")
     );
-    assert!(json.contains("\"license\":\"MIT OR Apache-2.0\",\"latest_version\":\"1.0.200\",\"latest_published\":\"2025-12-01\",\"latest_compatible\":\"1.0.200\",\"compatible_published\":\"2025-12-01\",\"outdated\":true,\"outdated_kind\":\"compatible\",\"yanked\":false,\"last_release\":\"2025-12-20\",\"owners\":[\"dtolnay\"],\"repository\":\"https://github.com/serde-rs/json\",\"archived\":false,\"maintenance\":[\"single-owner\"],\"published\":\"2024-09-01\",\"unsafe\":null}"));
+    assert!(json.contains("\"license\":\"MIT OR Apache-2.0\",\"latest_version\":\"1.0.200\",\"latest_published\":\"2025-12-01\",\"latest_compatible\":\"1.0.200\",\"compatible_published\":\"2025-12-01\",\"outdated\":true,\"outdated_kind\":\"compatible\",\"yanked\":false,\"last_release\":\"2025-12-20\",\"owners\":[\"dtolnay\"],\"repository\":\"https://github.com/serde-rs/json\",\"archived\":false,\"maintenance\":[\"single-owner\"],\"published\":\"2024-09-01\",\"unsafe\":null,\"audits\":null}"));
 }
 
 #[test]

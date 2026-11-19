@@ -476,6 +476,7 @@ fn local_license(sources: &[PathBuf], name: &str, version: &str) -> Option<Strin
 #[derive(Debug, Clone)]
 pub struct RegistryCache {
     root: PathBuf,
+    audits: Option<crate::vet::Audits>,
     /// When the data was downloaded, as `YYYY-MM-DD` (UTC), if ever.
     pub fetched_on: Option<String>,
 }
@@ -489,7 +490,20 @@ impl RegistryCache {
             .ok()
             .and_then(|text| text.trim().parse::<u64>().ok())
             .map(utc_date);
-        Self { root, fetched_on }
+        Self {
+            root,
+            audits: crate::vet::Audits::open(cache_dir),
+            fetched_on,
+        }
+    }
+
+    /// Organisations whose published audits are cached, sorted; empty when
+    /// none were downloaded.
+    #[must_use]
+    pub fn audit_organisations(&self) -> &[String] {
+        self.audits
+            .as_ref()
+            .map_or(&[], |audits| audits.organisations.as_slice())
     }
 
     /// Registry data for every package of `inventory`, in the same order.
@@ -548,6 +562,10 @@ impl RegistryCache {
                     }
                 });
                 PackageInfo {
+                    audits: self
+                        .audits
+                        .as_ref()
+                        .map(|audits| audits.of(&package.name, &package.version)),
                     license,
                     latest_version: newest.map(|version| version.version.clone()),
                     latest_published: newest.and_then(PublishedVersion::date),

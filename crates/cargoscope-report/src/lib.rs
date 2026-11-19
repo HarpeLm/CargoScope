@@ -113,6 +113,7 @@ pub fn render_text(project_root: &Path, report: &Report, options: TextOptions) -
         render_recent_text(&mut out, report, options.now);
     }
     render_unsafe_text(&mut out, report, options.verbose);
+    render_audits_text(&mut out, report, options.verbose);
     render_policy_text(&mut out, report, options.verbose);
 
     let _ = writeln!(out, "\nResolved packages: {}", inventory.packages.len());
@@ -649,6 +650,103 @@ pub(crate) fn describe_unsafe(count: &cargoscope_core::UnsafeCount) -> String {
     .join(", ")
 }
 
+/// Published audit coverage: the organisations, crates.io packages audited
+/// and counted, and direct crates.io dependencies without an audit. `None`
+/// when no audits were downloaded.
+pub(crate) struct AuditCoverage {
+    pub(crate) organisations: Vec<String>,
+    pub(crate) audited: usize,
+    pub(crate) deploy: usize,
+    pub(crate) counted: usize,
+    pub(crate) direct_unaudited: Vec<usize>,
+}
+
+pub(crate) fn audit_coverage(report: &Report) -> Option<AuditCoverage> {
+    let mut coverage = AuditCoverage {
+        organisations: Vec::new(),
+        audited: 0,
+        deploy: 0,
+        counted: 0,
+        direct_unaudited: Vec::new(),
+    };
+    let mut organisations = std::collections::BTreeSet::new();
+    let mut any = false;
+    for (index, info) in report.package_info.iter().enumerate() {
+        let Some(audits) = &info.audits else {
+            continue;
+        };
+        any = true;
+        coverage.counted += 1;
+        if audits.is_empty() {
+            let package = &report.inventory.packages[index];
+            if package.direct && !package.root {
+                coverage.direct_unaudited.push(index);
+            }
+            continue;
+        }
+        coverage.audited += 1;
+        if audits
+            .iter()
+            .any(|audit| audit.criteria == cargoscope_core::AuditCriteria::SafeToDeploy)
+        {
+            coverage.deploy += 1;
+        }
+        organisations.extend(audits.iter().map(|audit| audit.by.clone()));
+    }
+    coverage.organisations = organisations.into_iter().collect();
+    any.then_some(coverage)
+}
+
+/// `safe-to-deploy (google, mozilla)`: the best criteria and who certified it.
+pub(crate) fn describe_audits(audits: &[cargoscope_core::Audit]) -> String {
+    let Some(best) = audits.iter().map(|audit| audit.criteria).max() else {
+        return "not audited".to_owned();
+    };
+    let by: Vec<&str> = audits
+        .iter()
+        .filter(|audit| audit.criteria == best)
+        .map(|audit| audit.by.as_str())
+        .collect();
+    format!("{} ({})", best.as_str(), by.join(", "))
+}
+
+fn render_audits_text(out: &mut String, report: &Report, verbose: bool) {
+    let Some(coverage) = audit_coverage(report) else {
+        return;
+    };
+    let _ = writeln!(
+        out,
+        "\nPublished audits (cargo-vet): {} of {} crates.io packages audited, {} safe-to-deploy",
+        coverage.audited, coverage.counted, coverage.deploy
+    );
+    let direct: Vec<usize> = report
+        .package_info
+        .iter()
+        .enumerate()
+        .filter(|(index, info)| {
+            let package = &report.inventory.packages[*index];
+            info.audits.is_some() && package.direct && !package.root
+        })
+        .map(|(index, _)| index)
+        .collect();
+    let shown = shown_rows(direct.len(), verbose, 8);
+    for &index in direct.iter().take(shown) {
+        let package = &report.inventory.packages[index];
+        let audits = report.package_info[index]
+            .audits
+            .as_deref()
+            .unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "- {} {}: {}",
+            package.name,
+            package.version,
+            describe_audits(audits)
+        );
+    }
+    more_rows(out, direct.len(), shown);
+}
+
 fn render_unsafe_text(out: &mut String, report: &Report, verbose: bool) {
     let (rows, counted) = unsafe_rows(report);
     if counted == 0 {
@@ -1004,7 +1102,7 @@ pub fn render_json(project_root: &Path, report: &Report) -> String {
         let outdated_kind = info.outdated_kind(&package.version);
         let _ = write!(
             out,
-            ",\"license\":{},\"latest_version\":{},\"latest_published\":{},\"latest_compatible\":{},\"compatible_published\":{},\"outdated\":{},\"outdated_kind\":\"{}\",\"yanked\":{},\"last_release\":{},\"owners\":{},\"repository\":{},\"archived\":{},\"maintenance\":{},\"published\":{},\"unsafe\":{}}}",
+            ",\"license\":{},\"latest_version\":{},\"latest_published\":{},\"latest_compatible\":{},\"compatible_published\":{},\"outdated\":{},\"outdated_kind\":\"{}\",\"yanked\":{},\"last_release\":{},\"owners\":{},\"repository\":{},\"archived\":{},\"maintenance\":{},\"published\":{},\"unsafe\":{},\"audits\":{}}}",
             json_string_or_null(info.license.as_deref()),
             json_string_or_null(info.latest_version.as_deref()),
             json_string_or_null(info.latest_published.as_deref()),
@@ -1046,6 +1144,21 @@ pub fn render_json(project_root: &Path, report: &Report) -> String {
                         count.other
                     )
                 ),
+            info.audits.as_deref().map_or_else(
+                || "null".to_owned(),
+                |audits| format!(
+                    "[{}]",
+                    audits
+                        .iter()
+                        .map(|audit| format!(
+                            "{{\"by\":{},\"criteria\":\"{}\"}}",
+                            json_string_or_null(Some(&audit.by)),
+                            audit.criteria.as_str()
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            ),
         );
     }
     out.push_str("],");
@@ -1259,6 +1372,47 @@ mod tests {
             direct_kinds: std::collections::BTreeMap::new(),
             unsafe_code: Vec::new(),
         }
+    }
+
+    #[test]
+    fn reports_published_audit_coverage() {
+        use cargoscope_core::{Audit, AuditCriteria};
+        let mut report = sample(Vec::new());
+        report.package_info = vec![PackageInfo::default(); report.inventory.packages.len()];
+        report.package_info[1].audits = Some(vec![
+            Audit {
+                by: "google".to_owned(),
+                criteria: AuditCriteria::SafeToDeploy,
+            },
+            Audit {
+                by: "mozilla".to_owned(),
+                criteria: AuditCriteria::SafeToDeploy,
+            },
+        ]);
+        report.package_info[2].audits = Some(Vec::new());
+        let hud = render_text(Path::new("."), &report, TextOptions::default());
+        assert!(
+            hud.contains("AUDITS (cargo-vet · google, mozilla)"),
+            "{hud}"
+        );
+        assert!(
+            hud.contains("1 of 2 crates.io packages reviewed by an organisation  1 safe-to-deploy"),
+            "{hud}"
+        );
+        let verbose = render_text(Path::new("."), &report, VERBOSE);
+        assert!(
+            verbose.contains("Published audits (cargo-vet): 1 of 2 crates.io packages audited, 1 safe-to-deploy\n- alpha 1.0.0: safe-to-deploy (google, mozilla)\n"),
+            "{verbose}"
+        );
+        let json = render_json(Path::new("."), &report);
+        assert!(json.contains(
+            "\"audits\":[{\"by\":\"google\",\"criteria\":\"safe-to-deploy\"},{\"by\":\"mozilla\",\"criteria\":\"safe-to-deploy\"}]"
+        ));
+        // Without downloaded audits, no section.
+        assert!(
+            !render_text(Path::new("."), &sample(Vec::new()), TextOptions::default())
+                .contains("AUDITS")
+        );
     }
 
     #[test]
@@ -1494,7 +1648,7 @@ mod tests {
             "{\"id\":\"TEST-0001\",\"aliases\":[\"CVE-TEST\"],\"title\":\"Beta is broken\",\"date\":\"2025-05-05\",\"url\":\"https://example.test/report\",\"kind\":\"vulnerability\",\"informational\":null,\"severity\":\"high\",\"package\":{\"name\":\"beta\",\"version\":\"1.0.0\"},\"patched\":[\">= 1.2.0\"],\"path\":[{\"name\":\"app\",\"version\":\"1.0.0\"},{\"name\":\"alpha\",\"version\":\"1.0.0\"},{\"name\":\"beta\",\"version\":\"1.0.0\"}],\"ignored_reason\":null,\"relevance\":\"affects-you\",\"relevance_reason\":null}"
         ));
         assert!(json.contains(
-            "{\"name\":\"orphan\",\"version\":\"1.0.0\",\"scope\":\"transitive\",\"direct\":false,\"source\":null,\"path\":null,\"license\":null,\"latest_version\":null,\"latest_published\":null,\"latest_compatible\":null,\"compatible_published\":null,\"outdated\":false,\"outdated_kind\":\"none\",\"yanked\":null,\"last_release\":null,\"owners\":null,\"repository\":null,\"archived\":null,\"maintenance\":[],\"published\":null,\"unsafe\":null}"
+            "{\"name\":\"orphan\",\"version\":\"1.0.0\",\"scope\":\"transitive\",\"direct\":false,\"source\":null,\"path\":null,\"license\":null,\"latest_version\":null,\"latest_published\":null,\"latest_compatible\":null,\"compatible_published\":null,\"outdated\":false,\"outdated_kind\":\"none\",\"yanked\":null,\"last_release\":null,\"owners\":null,\"repository\":null,\"archived\":null,\"maintenance\":[],\"published\":null,\"unsafe\":null,\"audits\":null}"
         ));
         assert!(json.ends_with("\"unused\":[],\"warnings\":[]}\n"));
     }
@@ -1624,7 +1778,7 @@ mod tests {
                 "\"registry\":{\"source\":\"crates.io\",\"downloaded_on\":\"2026-02-03\"}"
             )
         );
-        assert!(json.contains("\"license\":\"MIT\",\"latest_version\":\"2.0.0\",\"latest_published\":\"2026-01-01\",\"latest_compatible\":\"1.4.0\",\"compatible_published\":\"2025-11-10\",\"outdated\":true,\"outdated_kind\":\"both\",\"yanked\":true,\"last_release\":null,\"owners\":null,\"repository\":null,\"archived\":null,\"maintenance\":[],\"published\":null,\"unsafe\":null}"));
+        assert!(json.contains("\"license\":\"MIT\",\"latest_version\":\"2.0.0\",\"latest_published\":\"2026-01-01\",\"latest_compatible\":\"1.4.0\",\"compatible_published\":\"2025-11-10\",\"outdated\":true,\"outdated_kind\":\"both\",\"yanked\":true,\"last_release\":null,\"owners\":null,\"repository\":null,\"archived\":null,\"maintenance\":[],\"published\":null,\"unsafe\":null,\"audits\":null}"));
     }
 
     #[test]

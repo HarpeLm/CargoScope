@@ -408,6 +408,7 @@ pub(crate) fn render_hud(project_root: &Path, report: &Report, options: TextOpti
         showed_any_section |= hud_maintenance(&mut out, report, width, paint);
     }
     showed_any_section |= hud_unsafe(&mut out, report, width, paint);
+    showed_any_section |= hud_audits(&mut out, report, width, paint);
     showed_any_section |= hud_weights(&mut out, report, width, paint);
     showed_any_section |= hud_duplicates(&mut out, report, width, paint);
     if report.checks.licenses {
@@ -1498,6 +1499,59 @@ fn hud_unsafe(out: &mut String, report: &Report, width: usize, paint: Paint) -> 
                 "+ {} more — use --verbose for all",
                 rows.len() - shown
             ))
+        );
+    }
+    true
+}
+
+fn hud_audits(out: &mut String, report: &Report, width: usize, paint: Paint) -> bool {
+    let Some(coverage) = crate::audit_coverage(report) else {
+        return false;
+    };
+    let sub = if coverage.organisations.is_empty() {
+        "cargo-vet".to_owned()
+    } else {
+        format!("cargo-vet · {}", coverage.organisations.join(", "))
+    };
+    section_rule(out, "AUDITS", Some(&sub), width, paint);
+    let _ = writeln!(
+        out,
+        "  {} {} of {} crates.io packages reviewed by an organisation  {}",
+        paint.green("✔"),
+        paint.bold(&coverage.audited.to_string()),
+        coverage.counted,
+        paint.dim(&format!("{} safe-to-deploy", coverage.deploy))
+    );
+    if !coverage.direct_unaudited.is_empty() {
+        let names: Vec<&str> = coverage
+            .direct_unaudited
+            .iter()
+            .map(|&index| report.inventory.packages[index].name.as_str())
+            .collect();
+        let prefix = "  ◇ no audit of the version in use: ";
+        let room = width.saturating_sub(prefix.chars().count() + 6);
+        let mut shown: Vec<&str> = Vec::new();
+        let mut used = 0;
+        for name in &names {
+            let needed = used + usize::from(!shown.is_empty()) * 2 + name.chars().count();
+            if needed > room && !shown.is_empty() {
+                break;
+            }
+            used = needed;
+            shown.push(name);
+        }
+        let more = names.len() - shown.len();
+        let _ = writeln!(
+            out,
+            "  {} {}{}{}",
+            paint.yellow("◇"),
+            paint.dim("no audit of the version in use: "),
+            shown.join(", "),
+            if more > 0 {
+                format!(" {}", paint.dim(&format!("+{more}")))
+            } else {
+                String::new()
+            }
         );
     }
     true

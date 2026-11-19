@@ -579,6 +579,9 @@ pub struct PackageInfo {
     pub compatible_published: Option<String>,
     /// Publication time of the resolved version (RFC 3339, UTC), when known.
     pub published: Option<String>,
+    /// Published cargo-vet audits of the resolved version, best first;
+    /// `None` when no audits were downloaded.
+    pub audits: Option<Vec<Audit>>,
     /// Whether the resolved version has been yanked. `None` when unknown.
     pub yanked: Option<bool>,
     /// Whether `latest_version` is newer than the resolved version.
@@ -840,6 +843,35 @@ impl Default for Checks {
     fn default() -> Self {
         Self::ALL
     }
+}
+
+/// The standard cargo-vet criteria an audit certifies, weakest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AuditCriteria {
+    /// Reviewed enough to run in tests and development.
+    SafeToRun,
+    /// Reviewed enough to ship to users.
+    SafeToDeploy,
+}
+
+impl AuditCriteria {
+    /// The cargo-vet name of the criteria.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SafeToRun => "safe-to-run",
+            Self::SafeToDeploy => "safe-to-deploy",
+        }
+    }
+}
+
+/// A published audit of a crate version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Audit {
+    /// The organisation that published it (`mozilla`, `google`…).
+    pub by: String,
+    /// The best standard criteria it certifies.
+    pub criteria: AuditCriteria,
 }
 
 /// How much `unsafe` code a package contains, counted from its sources.
