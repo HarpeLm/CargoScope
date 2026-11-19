@@ -38,3 +38,12 @@ Precision is measured on `likely-unused` findings only, the ones shown by defaul
 - Their "correct" labels mean that the dependency name appears nowhere in the package (code, strings, docs) and no known macro generates it; they were not checked with the compiler.
 - Recall is lower by design: on the development set, 9 of 20 dependencies labelled `unused` are only reported as `possibly-unused`, for example `tokio-test` next to tokio, or `heck` in a package with a skipped file.
 - Labels come from reading code, not from the compiler. Repositories without a committed `Cargo.lock` get one generated at run time, so their results can drift slightly over time.
+
+## Other Benchmarks in This Directory
+
+- [compiler-benchmark.md](compiler-benchmark.md) — 73 foundational crates.io libraries judged by `rustc` (`1.99.1`), comparing CargoScope, `cargo-shear`, and `cargo-machete`.
+- [blind-benchmark-3.md](blind-benchmark-3.md) — 80 unseen active repositories (500–5,000 stars) judged by `rustc`, plus `cargo-audit` and `cargo-deny` parity.
+- [precise-benchmark.md](precise-benchmark.md) — large-scale measurement of `--precise` across 76 repositories (72 compiling, 8,158 packages) on both Rust `1.99.1` and Rust `1.100.0`, validating the `SPEC.md` 97% precision goal (`100.0%` on the 35-repo blind held-out set).
+- [deny-toml.md](deny-toml.md) — `deny.toml` parity benchmark against `cargo-deny` 0.20.2.
+- [cargo-audit.md](cargo-audit.md) — RustSec advisory parity benchmark against `cargo-audit`.
+- [cargo-shear.md](cargo-shear.md) & [cargo-machete.md](cargo-machete.md) — head-to-head unused-dependency comparisons.

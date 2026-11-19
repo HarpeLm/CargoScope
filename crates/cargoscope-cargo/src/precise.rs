@@ -338,10 +338,15 @@ pub fn run(project_root: &Path) -> Result<CompilerReport, String> {
 
 /// Replaces static findings with the compiler's answer where it has one.
 ///
-/// - Confirmed unused: kept as `likely-unused`, with the compiler as evidence.
+/// - Confirmed unused: kept (or promoted from `possibly-unused`) as
+///   `likely-unused`, with the compiler as evidence.
 /// - Used according to the compiler: removed.
-/// - Not compiled (another platform, say): the static finding stays.
-/// - Unused for the compiler but not found statically: added.
+/// - Not compiled (another platform, or dev-dependencies under Cargo 1.100+):
+///   the static finding stays.
+/// - Unused for the compiler but not found statically (meaning static analysis
+///   saw a source or doctest reference): added as `possibly-unused`, because
+///   `cargo check --all-targets --all-features` skips doctests and disables
+///   mutually-exclusive `#[cfg(not(feature = ...))]` branches.
 #[must_use]
 pub fn refine(
     findings: Vec<UnusedFinding>,
@@ -409,9 +414,9 @@ pub fn refine(
                 dependency: dependency.key.clone(),
                 package: dependency.package.clone(),
                 kind: dependency.kind,
-                confidence: UnusedConfidence::Likely,
+                confidence: UnusedConfidence::Possibly,
                 evidence: vec![format!(
-                    "reported by {} (--precise), although the static analysis found a reference",
+                    "reported by {} (--precise), although the static analysis found a reference (may be doctest-only or behind a mutually-exclusive feature)",
                     compiler.source()
                 )],
                 ignored: None,
@@ -552,6 +557,78 @@ mod tests {
         assert!(!report.checks(DependencyKind::Dev));
         assert!(report.source().starts_with("Cargo's"));
         assert!(report.reported(&manifest).contains("libc"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn refine_promotes_confirmed_and_keeps_compiler_only_disagreements_uncertain() {
+        use cargoscope_core::{UnusedConfidence, UnusedFinding};
+        let root = std::env::temp_dir().join(format!("cargoscope-refine-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("dir");
+        let manifest_text = "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nconfirmed = \"1\"\nused_by_macro = \"1\"\nno_std_only = \"1\"\n";
+        let manifest_path = root.join("Cargo.toml");
+        std::fs::write(&manifest_path, manifest_text).expect("manifest");
+        let parsed: toml::Value = toml::from_str(manifest_text).expect("toml");
+        let m = manifest_path
+            .canonicalize()
+            .expect("canonical")
+            .to_string_lossy()
+            .into_owned();
+
+        // Compiler sees `confirmed` and `no_std_only` unused, and `used_by_macro` used.
+        let output = [
+            artifact(&m, "lib", "demo", false),
+            unused(&m, "lib", "demo", "confirmed"),
+            unused(&m, "lib", "demo", "no_std_only"),
+        ]
+        .join("\n");
+        let compiler = parse_messages(&output);
+
+        // Static analysis flagged `confirmed` (possibly-unused) and `used_by_macro` (likely-unused),
+        // and did NOT flag `no_std_only` because it saw a reference in source/doctests.
+        let static_findings = vec![
+            UnusedFinding {
+                declared_by: "demo".to_owned(),
+                manifest: "Cargo.toml".to_owned(),
+                dependency: "confirmed".to_owned(),
+                package: "confirmed".to_owned(),
+                kind: DependencyKind::Normal,
+                confidence: UnusedConfidence::Possibly,
+                evidence: vec!["static".to_owned()],
+                ignored: None,
+            },
+            UnusedFinding {
+                declared_by: "demo".to_owned(),
+                manifest: "Cargo.toml".to_owned(),
+                dependency: "used_by_macro".to_owned(),
+                package: "used_by_macro".to_owned(),
+                kind: DependencyKind::Normal,
+                confidence: UnusedConfidence::Likely,
+                evidence: vec!["static".to_owned()],
+                ignored: None,
+            },
+        ];
+
+        let refined = super::refine(
+            static_findings,
+            &[(root.clone(), "Cargo.toml".to_owned(), parsed)],
+            None,
+            &compiler,
+        );
+        // `used_by_macro` was eliminated, `confirmed` promoted to Likely, `no_std_only` added as Possible.
+        assert_eq!(refined.len(), 2, "{refined:?}");
+        let confirmed = refined
+            .iter()
+            .find(|f| f.dependency == "confirmed")
+            .expect("confirmed");
+        assert_eq!(confirmed.confidence, UnusedConfidence::Likely);
+        let no_std = refined
+            .iter()
+            .find(|f| f.dependency == "no_std_only")
+            .expect("no_std_only");
+        assert_eq!(no_std.confidence, UnusedConfidence::Possibly);
+
         let _ = std::fs::remove_dir_all(&root);
     }
 }

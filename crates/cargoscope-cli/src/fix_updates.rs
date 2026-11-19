@@ -515,7 +515,7 @@ fn apply(root: &Path, rows: &[Row], manifests: &mut Option<Vec<Manifest>>) -> Re
                 Some(loaded) => loaded,
                 None => manifests.insert(read_manifests(root)?),
             };
-            apply_manifest_update(root, &row.name, to, labels, loaded)?;
+            apply_manifest_update(root, &row.name, &row.from, to, labels, loaded)?;
         }
     }
     Ok(())

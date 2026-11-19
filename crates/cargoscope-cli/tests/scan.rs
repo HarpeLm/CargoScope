@@ -3096,3 +3096,161 @@ fn comment_commands_parse_pr_body_and_update_ignore_rules() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn fix_advisories_propagates_workspace_dependencies_without_downgrading_other_lines() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-fix-adv-ws-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("a/src")).expect("create a");
+    std::fs::create_dir_all(dir.join("b/src")).expect("create b");
+    std::fs::create_dir_all(dir.join("helper/src")).expect("create helper");
+    std::fs::write(dir.join("a/src/lib.rs"), "").expect("a lib");
+    std::fs::write(dir.join("b/src/lib.rs"), "").expect("b lib");
+    std::fs::write(dir.join("helper/src/lib.rs"), "").expect("helper lib");
+
+    // Virtual workspace: [workspace.dependencies] pins serde_json to =1.0.128,
+    // member `a` inherits it via `workspace = true` (and depends on implicit
+    // path crate `helper`, which also inherits `workspace = true`), while member
+    // `b` depends on an unrelated major line `2.0`.
+    let root_manifest = "[workspace]\nmembers = [\"a\", \"b\"]\nresolver = \"2\"\n\n[workspace.dependencies]\nserde_json = \"=1.0.128\"\n";
+    let member_a = "[package]\nname = \"a\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nserde_json = { workspace = true }\nhelper = { path = \"../helper\" }\n";
+    let member_b = "[package]\nname = \"b\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nserde_json = \"2.0\"\n";
+    let helper = "[package]\nname = \"helper\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nserde_json.workspace = true\n";
+    let lock = r#"version = 4
+
+[[package]]
+name = "a"
+version = "0.1.0"
+dependencies = [
+ "helper",
+ "serde_json 1.0.128",
+]
+
+[[package]]
+name = "b"
+version = "0.1.0"
+dependencies = [
+ "serde_json 2.0.0",
+]
+
+[[package]]
+name = "helper"
+version = "0.1.0"
+dependencies = [
+ "serde_json 1.0.128",
+]
+
+[[package]]
+name = "serde_json"
+version = "1.0.128"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "serde_json"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#;
+
+    std::fs::write(dir.join("Cargo.toml"), root_manifest).expect("root");
+    std::fs::write(dir.join("a/Cargo.toml"), member_a).expect("a");
+    std::fs::write(dir.join("b/Cargo.toml"), member_b).expect("b");
+    std::fs::write(dir.join("helper/Cargo.toml"), helper).expect("helper");
+    std::fs::write(dir.join("Cargo.lock"), lock).expect("lock");
+
+    let fake_src = dir.join("fake_cargo.rs");
+    let fake_bin = dir.join(format!("fake-cargo{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(
+        &fake_src,
+        r#"fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let dry_run = args.iter().any(|a| a == "--dry-run");
+    let target = args
+        .windows(2)
+        .find(|w| w[0] == "-p")
+        .map(|w| w[1].as_str())
+        .unwrap_or("");
+    // Must pass the unambiguous versioned spec when two versions exist in Cargo.lock.
+    if target != "serde_json@1.0.128" {
+        eprintln!("error: specification `{target}` is ambiguous");
+        std::process::exit(101);
+    }
+    let root = std::fs::read_to_string("Cargo.toml").unwrap();
+    let b = std::fs::read_to_string("b/Cargo.toml").unwrap();
+    if !b.contains("serde_json = \"2.0\"") {
+        eprintln!("error: b/Cargo.toml was unexpectedly modified:\n{b}");
+        std::process::exit(1);
+    }
+    if root.contains("\"=1.0.128\"") {
+        eprintln!("error: failed to select a version for the requirement `serde_json = \"=1.0.128\"`\nrequired by package `a v0.1.0`");
+        std::process::exit(1);
+    }
+    if root.contains("\"=1.0.200\"") {
+        eprintln!("Updating serde_json v1.0.128 -> v1.0.200");
+        if !dry_run {
+            let lock = std::fs::read_to_string("Cargo.lock").unwrap();
+            std::fs::write(
+                "Cargo.lock",
+                lock.replace("1.0.128", "1.0.200"),
+            )
+            .unwrap();
+        }
+        return;
+    }
+    eprintln!("unexpected root manifest:\n{root}");
+    std::process::exit(1);
+}
+"#,
+    )
+    .expect("write fake cargo");
+
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let compiled = Command::new(rustc)
+        .arg(&fake_src)
+        .arg("-o")
+        .arg(&fake_bin)
+        .output()
+        .expect("rustc runs");
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+
+    let apply = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+        .env("CARGO_HOME", fixture("empty-cargo-home"))
+        .env("CARGO", &fake_bin)
+        .args(["fix", "--advisories", "--apply"])
+        .arg(&dir)
+        .output()
+        .expect("cargoscope runs");
+    assert_eq!(
+        apply.status.code(),
+        Some(0),
+        "stderr: {}\nstdout: {}",
+        String::from_utf8_lossy(&apply.stderr),
+        stdout(&apply)
+    );
+    let out = stdout(&apply);
+    assert!(out.contains("update to 1.0.200 (in Cargo.toml)"), "{out}");
+    // Root [workspace.dependencies] was updated while keeping the pin,
+    // inheriting members stayed `workspace = true`, and member `b` stayed on 2.0.
+    assert_eq!(
+        std::fs::read_to_string(dir.join("Cargo.toml")).expect("root"),
+        root_manifest.replace("=1.0.128", "=1.0.200")
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("a/Cargo.toml")).expect("a"),
+        member_a
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("helper/Cargo.toml")).expect("helper"),
+        helper
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("b/Cargo.toml")).expect("b"),
+        member_b
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}

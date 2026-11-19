@@ -284,9 +284,8 @@ fn table_mut<'a>(
 /// (by key, or by `package = "..."` for a renamed dependency) to
 /// `requirement`, in the dependency tables of a manifest, its
 /// `[target.'...']` tables and its `[workspace.dependencies]`. Entries
-/// inherited with `workspace = true` and path or git dependencies without a
-/// version are left alone. Returns the new contents and whether anything
-/// changed.
+/// inherited with `workspace = true` and path or git dependencies are left
+/// alone. Returns the new contents and whether anything changed.
 ///
 /// # Errors
 ///
@@ -296,7 +295,27 @@ pub fn set_requirement(
     package: &str,
     requirement: &str,
 ) -> Result<(String, bool), String> {
+    set_requirement_for_version(contents, package, None, requirement)
+}
+
+/// Like [`set_requirement`], but when `from_version` is given, only declarations
+/// whose existing version requirement matches `from_version` are updated.
+///
+/// This prevents downgrading or touching another major version line of the same
+/// crate elsewhere in a workspace (for example updating `time = "0.1"` without
+/// touching another member's `time = "0.3"`).
+///
+/// # Errors
+///
+/// Returns a message when the manifest is not valid TOML.
+pub fn set_requirement_for_version(
+    contents: &str,
+    package: &str,
+    from_version: Option<&str>,
+    requirement: &str,
+) -> Result<(String, bool), String> {
     let mut document: DocumentMut = contents.parse().map_err(|error| format!("{error}"))?;
+    let from = from_version.and_then(|version| semver::Version::parse(version).ok());
     let sections = [
         "dependencies",
         "dev-dependencies",
@@ -336,6 +355,9 @@ pub fn set_requirement(
                 continue;
             }
             if value.is_str() {
+                if !matches_from(value.as_str(), from.as_ref()) {
+                    continue;
+                }
                 let requirement = keep_pin(value.as_str(), requirement);
                 if value.as_str() != Some(requirement.as_str()) {
                     // `name = "1.2"`: keep the surrounding spaces and comment.
@@ -346,27 +368,45 @@ pub fn set_requirement(
                     }
                     changed = true;
                 }
-            } else if let Some(entry) = value.as_table_like_mut()
-                && entry.get("version").is_some()
-                && let requirement =
-                    keep_pin(entry.get("version").and_then(Item::as_str), requirement)
-                && entry.get("version").and_then(Item::as_str) != Some(requirement.as_str())
-            {
-                let decor = entry
-                    .get("version")
-                    .and_then(Item::as_value)
-                    .map(|v| v.decor().clone());
-                entry.insert("version", toml_edit::value(requirement));
-                if let (Some(decor), Some(new)) =
-                    (decor, entry.get_mut("version").and_then(Item::as_value_mut))
+            } else if let Some(entry) = value.as_table_like_mut() {
+                if entry.get("workspace").is_some()
+                    || entry.get("path").is_some()
+                    || entry.get("git").is_some()
                 {
-                    *new.decor_mut() = decor;
+                    continue;
                 }
-                changed = true;
+                let existing = entry
+                    .get("version")
+                    .and_then(Item::as_str)
+                    .map(str::to_owned);
+                if existing.is_none() || !matches_from(existing.as_deref(), from.as_ref()) {
+                    continue;
+                }
+                let requirement = keep_pin(existing.as_deref(), requirement);
+                if existing.as_deref() != Some(requirement.as_str()) {
+                    let decor = entry
+                        .get("version")
+                        .and_then(Item::as_value)
+                        .map(|v| v.decor().clone());
+                    if let Some(slot) = entry.get_mut("version") {
+                        *slot = toml_edit::value(requirement);
+                        if let (Some(decor), Some(new)) = (decor, slot.as_value_mut()) {
+                            *new.decor_mut() = decor;
+                        }
+                        changed = true;
+                    }
+                }
             }
         }
     }
     Ok((document.to_string(), changed))
+}
+
+fn matches_from(old: Option<&str>, from: Option<&semver::Version>) -> bool {
+    let (Some(old), Some(from)) = (old, from) else {
+        return true;
+    };
+    semver::VersionReq::parse(old).map_or(true, |requirement| requirement.matches(from))
 }
 
 /// The requirement to write over `old`: a bare version (`1.2.3`) stays pinned
@@ -574,5 +614,64 @@ other = ["baz"]
             edited.contains("baz = { version = \"1\", optional = true }"),
             "{edited}"
         );
+    }
+
+    #[test]
+    fn set_requirement_for_version_propagates_workspace_and_skips_other_major_lines() {
+        let workspace_root = r#"[workspace]
+members = ["a", "b"]
+
+[workspace.dependencies]
+time = "=0.1.45" # pinned workspace dep
+old_time = { package = "time", version = "0.1" }
+dotted.package = "time"
+dotted.version = "=0.1.45"
+local_time = { package = "time", path = "vendor/time", version = "0.1.45" }
+git_time = { package = "time", git = "https://example.test/time", version = "0.1.45" }
+"#;
+        let (edited_root, changed_root) =
+            super::set_requirement_for_version(workspace_root, "time", Some("0.1.45"), "0.2.23")
+                .expect("valid root manifest");
+        assert!(changed_root);
+        assert!(
+            edited_root.contains("time = \"=0.2.23\" # pinned workspace dep"),
+            "{edited_root}"
+        );
+        assert!(
+            edited_root.contains("old_time = { package = \"time\", version = \"0.2.23\" }"),
+            "{edited_root}"
+        );
+        assert!(
+            edited_root.contains("dotted.version = \"=0.2.23\""),
+            "{edited_root}"
+        );
+        assert!(
+            edited_root.contains(
+                "local_time = { package = \"time\", path = \"vendor/time\", version = \"0.1.45\" }"
+            ),
+            "{edited_root}"
+        );
+        assert!(
+            edited_root.contains("git_time = { package = \"time\", git = \"https://example.test/time\", version = \"0.1.45\" }"),
+            "{edited_root}"
+        );
+
+        let inheriting_member = "[package]\nname = \"a\"\n\n[dependencies]\ntime = { workspace = true, features = [\"std\"] }\nold_time.workspace = true\n";
+        let (edited_a, changed_a) =
+            super::set_requirement_for_version(inheriting_member, "time", Some("0.1.45"), "0.2.23")
+                .expect("valid member a");
+        assert!(!changed_a);
+        assert_eq!(edited_a, inheriting_member);
+
+        let newer_major_member = "[package]\nname = \"b\"\n\n[dependencies]\ntime = \"0.3\"\n";
+        let (edited_b, changed_b) = super::set_requirement_for_version(
+            newer_major_member,
+            "time",
+            Some("0.1.45"),
+            "0.2.23",
+        )
+        .expect("valid member b");
+        assert!(!changed_b);
+        assert_eq!(edited_b, newer_major_member);
     }
 }

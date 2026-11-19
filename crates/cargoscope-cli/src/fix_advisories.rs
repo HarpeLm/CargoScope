@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
-use cargoscope_cargo::fix::set_requirement;
+use cargoscope_cargo::fix::set_requirement_for_version;
 use cargoscope_core::{AdvisoryKind, Inventory, Package};
 
 use crate::execution_error;
@@ -189,22 +189,67 @@ impl Drop for Restore<'_> {
 pub(crate) fn read_manifests(root: &Path) -> Result<Vec<Manifest>, ExitCode> {
     let packages =
         cargoscope_cargo::project_packages(root).map_err(|error| execution_error(root, &error))?;
-    let candidates = std::iter::once((root.join("Cargo.toml"), "Cargo.toml".to_owned())).chain(
-        packages
-            .packages
-            .into_iter()
-            .map(|(dir, label, _)| (dir.join("Cargo.toml"), label)),
-    );
+    let workspace_dependencies = packages.workspace_dependencies.as_ref();
+    let canonical_root = root.canonicalize().ok();
+
+    let mut queue: Vec<(PathBuf, String, Option<toml::Value>)> =
+        vec![(root.to_path_buf(), "Cargo.toml".to_owned(), None)];
+    for (dir, label, manifest) in packages.packages {
+        queue.push((dir, label, Some(manifest)));
+    }
+
     let mut seen = BTreeSet::new();
     let mut manifests = Vec::new();
-    for (path, label) in candidates {
-        if !seen.insert(path.clone()) {
+    let mut index = 0;
+    while index < queue.len() && manifests.len() < 4_096 {
+        let (dir, label, parsed) = queue[index].clone();
+        index += 1;
+        let path = dir.join("Cargo.toml");
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if !seen.insert(canonical) {
             continue;
         }
         let contents = std::fs::read_to_string(&path).map_err(|error| {
             eprintln!("CargoScope could not read {}: {error}", path.display());
             ExitCode::from(2)
         })?;
+        let manifest_value = parsed.or_else(|| toml::from_str::<toml::Value>(&contents).ok());
+        if let Some(manifest_value) = manifest_value.as_ref() {
+            for dependency in cargoscope_cargo::unused::declared_dependencies(
+                manifest_value,
+                workspace_dependencies,
+            ) {
+                let Some((dep_path, from_workspace)) = dependency.path else {
+                    continue;
+                };
+                let base = if from_workspace { root } else { dir.as_path() };
+                let candidate = base.join(dep_path);
+                let Some(canonical_dir) = candidate.canonicalize().ok() else {
+                    continue;
+                };
+                if let Some(ref root_dir) = canonical_root
+                    && !canonical_dir.starts_with(root_dir)
+                {
+                    continue;
+                }
+                if !canonical_dir.join("Cargo.toml").is_file() {
+                    continue;
+                }
+                let rel_label = canonical_root
+                    .as_ref()
+                    .and_then(|root_dir| canonical_dir.strip_prefix(root_dir).ok())
+                    .map(|rel| {
+                        let rel_str = rel.to_string_lossy().replace('\\', "/");
+                        if rel_str.is_empty() {
+                            "Cargo.toml".to_owned()
+                        } else {
+                            format!("{}/Cargo.toml", rel_str.trim_end_matches('/'))
+                        }
+                    })
+                    .unwrap_or_else(|| format!("{}/Cargo.toml", candidate.display()));
+                queue.push((canonical_dir, rel_label, None));
+            }
+        }
         manifests.push(Manifest {
             path,
             label,
@@ -292,8 +337,9 @@ fn render_markdown(rows: &[Row]) -> String {
     out
 }
 
-/// Checks whether updating direct manifest declarations of `package` to
-/// `=version` lets `cargo update --dry-run` replace `package.version`.
+/// Checks whether updating direct or `[workspace.dependencies]` manifest
+/// declarations of `package` matching `package.version` to `=version` lets
+/// `cargo update --dry-run` replace `package.version`.
 pub(crate) fn probe_manifest_update(
     root: &Path,
     package: &Package,
@@ -302,14 +348,25 @@ pub(crate) fn probe_manifest_update(
 ) -> Result<Option<Vec<String>>, String> {
     let version_str = version.to_string();
     let exact_req = format!("={version_str}");
+    let spec = format!("{}@{}", package.name, package.version);
     let mut edited = Vec::new();
     let mut labels = Vec::new();
     for manifest in manifests {
-        let (_, changed) = set_requirement(&manifest.contents, &package.name, &version_str)?;
+        let (_, changed) = set_requirement_for_version(
+            &manifest.contents,
+            &package.name,
+            Some(&package.version),
+            &version_str,
+        )?;
         if !changed {
             continue;
         }
-        let (exact, _) = set_requirement(&manifest.contents, &package.name, &exact_req)?;
+        let (exact, _) = set_requirement_for_version(
+            &manifest.contents,
+            &package.name,
+            Some(&package.version),
+            &exact_req,
+        )?;
         labels.push(manifest.label.clone());
         edited.push((manifest.path.as_path(), manifest.contents.as_str(), exact));
     }
@@ -323,13 +380,13 @@ pub(crate) fn probe_manifest_update(
         std::fs::write(path, exact)
             .map_err(|error| format!("could not write {}: {error}", path.display()))?;
     }
-    let stderr = run_cargo_update(root, &package.name, None, true)?;
+    let stderr = run_cargo_update(root, &spec, None, true)?;
     drop(restore);
 
     let clean = strip_ansi(&stderr);
-    let stale_remains = clean.contains(&format!("Adding {} v{version_str}", package.name))
-        && !clean.contains(&format!("Removing {} v{}", package.name, package.version));
-    if stale_remains {
+    let removed_old = clean.contains(&format!("Updating {} v{}", package.name, package.version))
+        || clean.contains(&format!("Removing {} v{}", package.name, package.version));
+    if !removed_old {
         return Err(format!(
             "another dependency still requires {} {}",
             package.name, package.version
@@ -395,10 +452,6 @@ fn plan_package(
         }
     }
 
-    if !package.direct {
-        return Ok(Step::Blocked(last_error));
-    }
-
     let loaded = match manifests {
         Some(loaded) => loaded,
         None => manifests.insert(read_manifests(root)?),
@@ -422,11 +475,13 @@ fn plan_package(
 pub(crate) fn apply_manifest_update(
     root: &Path,
     name: &str,
+    from: &str,
     version: &str,
     target_labels: &[String],
     manifests: &mut [Manifest],
 ) -> Result<(), ExitCode> {
     let exact_req = format!("={version}");
+    let spec = format!("{name}@{from}");
     let mut originals = Vec::new();
     let mut final_edits = Vec::new();
     for (index, manifest) in manifests.iter().enumerate() {
@@ -434,21 +489,25 @@ pub(crate) fn apply_manifest_update(
             continue;
         }
         let (exact, _) =
-            set_requirement(&manifest.contents, name, &exact_req).map_err(|error| {
-                eprintln!(
-                    "CargoScope could not edit {}: {error}",
-                    manifest.path.display()
-                );
-                ExitCode::from(2)
-            })?;
+            set_requirement_for_version(&manifest.contents, name, Some(from), &exact_req).map_err(
+                |error| {
+                    eprintln!(
+                        "CargoScope could not edit {}: {error}",
+                        manifest.path.display()
+                    );
+                    ExitCode::from(2)
+                },
+            )?;
         let (final_contents, _) =
-            set_requirement(&manifest.contents, name, version).map_err(|error| {
-                eprintln!(
-                    "CargoScope could not edit {}: {error}",
-                    manifest.path.display()
-                );
-                ExitCode::from(2)
-            })?;
+            set_requirement_for_version(&manifest.contents, name, Some(from), version).map_err(
+                |error| {
+                    eprintln!(
+                        "CargoScope could not edit {}: {error}",
+                        manifest.path.display()
+                    );
+                    ExitCode::from(2)
+                },
+            )?;
         originals.push((index, exact));
         final_edits.push((index, final_contents));
     }
@@ -467,8 +526,8 @@ pub(crate) fn apply_manifest_update(
             return Err(ExitCode::from(2));
         }
     }
-    if let Err(error) = run_cargo_update(root, name, None, false) {
-        eprintln!("cargo update -p {name} failed: {}", reason(&error));
+    if let Err(error) = run_cargo_update(root, &spec, None, false) {
+        eprintln!("cargo update -p {spec} failed: {}", reason(&error));
         return Err(ExitCode::from(2));
     }
     std::mem::forget(restore);
@@ -596,7 +655,7 @@ fn apply_updates(
             Some(loaded) => loaded,
             None => manifests.insert(read_manifests(root)?),
         };
-        apply_manifest_update(root, &row.name, version, target_labels, loaded)?;
+        apply_manifest_update(root, &row.name, &row.from, version, target_labels, loaded)?;
     }
     settle_moved_packages(root, rows);
     Ok(())
