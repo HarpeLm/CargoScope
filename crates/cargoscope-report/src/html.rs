@@ -39,6 +39,52 @@ fn safe_http_url(url: Option<&str>) -> Option<&str> {
     url.filter(|u| u.starts_with("https://") || u.starts_with("http://"))
 }
 
+fn is_crates_io(pkg: &cargoscope_core::Package) -> bool {
+    pkg.source.as_deref().is_some_and(|source| {
+        source == "registry+https://github.com/rust-lang/crates.io-index"
+            || source.starts_with("sparse+https://index.crates.io")
+    })
+}
+
+/// A package's name, linked to its crates.io page when it comes from
+/// crates.io, with a `data-direct` marker the quick filters read.
+fn crate_name_html(pkg: &cargoscope_core::Package) -> String {
+    let name = escape_html(&pkg.name);
+    let direct = if pkg.direct { "true" } else { "false" };
+    if is_crates_io(pkg) {
+        format!(
+            "<a class=\"crate\" data-direct=\"{direct}\" href=\"https://crates.io/crates/{name}/{}\" target=\"_blank\" rel=\"noopener noreferrer\"><code>{name}</code></a>",
+            escape_html(&pkg.version)
+        )
+    } else {
+        format!("<code class=\"crate\" data-direct=\"{direct}\">{name}</code>")
+    }
+}
+
+/// A package's linked name and its version.
+fn package_cell(pkg: &cargoscope_core::Package) -> String {
+    format!(
+        "{} <span class=\"muted\">{}</span>",
+        crate_name_html(pkg),
+        escape_html(&pkg.version)
+    )
+}
+
+/// `to` as a link to the source diff from the resolved version on diff.rs.
+fn diff_link(pkg: &cargoscope_core::Package, to: &str) -> String {
+    if !is_crates_io(pkg) || to == "-" || to == "?" {
+        return format!("<code>{}</code>", escape_html(to));
+    }
+    format!(
+        "<a href=\"https://diff.rs/{}/{}/{}\" target=\"_blank\" rel=\"noopener noreferrer\" title=\"What changed since {}\"><code>{}</code></a>",
+        escape_html(&pkg.name),
+        escape_html(&pkg.version),
+        escape_html(to),
+        escape_html(&pkg.version),
+        escape_html(to)
+    )
+}
+
 struct ReportCounts {
     active_vulnerabilities: usize,
     informational_advisories: usize,
@@ -165,6 +211,7 @@ pub fn render_html(
 
     render_header(&mut out, &escaped_target, report, &counts);
     render_kpi_grid(&mut out, report, &counts);
+    render_actions(&mut out, report, now);
     render_controls(&mut out);
     render_warnings(&mut out, &report.warnings);
 
@@ -260,6 +307,198 @@ fn render_header(out: &mut String, escaped_target: &str, report: &Report, counts
 }
 
 const LOGO_SVG: &str = "<svg width=\"22\" height=\"22\" viewBox=\"0 0 96 96\" aria-hidden=\"true\"><circle cx=\"48\" cy=\"48\" r=\"38\" fill=\"none\" stroke=\"#E2622B\" stroke-width=\"7\"/><path d=\"M48 2v16M48 78v16M2 48h16M78 48h16\" stroke=\"#E2622B\" stroke-width=\"7\" stroke-linecap=\"round\"/><rect x=\"35\" y=\"35\" width=\"26\" height=\"26\" rx=\"3\" fill=\"#E2622B\"/></svg>";
+
+/// A shell command with a copy button.
+fn command_html(command: &str, note: &str) -> String {
+    let escaped = escape_html(command);
+    format!(
+        "<div class=\"cmd\"><code>{escaped}</code><button class=\"copy\" type=\"button\" data-copy=\"{escaped}\">Copy</button></div><p class=\"cmd-note muted small\">{}</p>",
+        escape_html(note)
+    )
+}
+
+/// What to do about the findings, most urgent first, with the commands
+/// that do it.
+fn render_actions(out: &mut String, report: &Report, now: Option<u64>) {
+    let mut items: Vec<String> = Vec::new();
+
+    // Vulnerable crates: the version that fixes all their advisories.
+    let mut vulnerable: std::collections::BTreeMap<usize, Vec<&cargoscope_core::AdvisoryFinding>> =
+        std::collections::BTreeMap::new();
+    for finding in &report.advisories {
+        if finding.ignored.is_none() && matches!(finding.kind, AdvisoryKind::Vulnerability) {
+            vulnerable.entry(finding.package).or_default().push(finding);
+        }
+    }
+    if !vulnerable.is_empty() {
+        let mut crates: Vec<(usize, Vec<&cargoscope_core::AdvisoryFinding>)> =
+            vulnerable.into_iter().collect();
+        crates.sort_by_key(|(_, findings)| {
+            (
+                findings.iter().map(|f| f.relevance).min(),
+                std::cmp::Reverse(findings.iter().map(|f| severity_rank(f)).max()),
+            )
+        });
+        let mut lines = String::new();
+        for (index, findings) in crates.iter().take(6) {
+            let pkg = &report.inventory.packages[*index];
+            let worst = findings.iter().filter_map(|f| f.severity).max();
+            let worst = worst.map_or("unknown severity", |severity| match severity {
+                cargoscope_core::Severity::Critical => "critical",
+                cargoscope_core::Severity::High => "high",
+                cargoscope_core::Severity::Medium => "medium",
+                cargoscope_core::Severity::Low => "low",
+                cargoscope_core::Severity::None => "no severity",
+            });
+            let count = findings.len();
+            let advisories = format!(
+                "{count} {} advisor{}",
+                worst,
+                if count == 1 { "y" } else { "ies" }
+            );
+            let unlikely = if findings
+                .iter()
+                .all(|f| f.relevance == AdvisoryRelevance::Unlikely)
+            {
+                " <span class=\"badge badge-muted\">unlikely</span>"
+            } else {
+                ""
+            };
+            let (fix, _) = crate::terminal::crate_fix(findings, &pkg.version);
+            let line = match fix {
+                Some(version) => format!(
+                    "Update {} {} &rarr; {}: fixes {advisories}{unlikely}",
+                    crate_name_html(pkg),
+                    escape_html(&pkg.version),
+                    diff_link(pkg, &version.to_string())
+                ),
+                None => format!(
+                    "No fixed version of {} {} yet ({advisories}){unlikely}: consider replacing it",
+                    crate_name_html(pkg),
+                    escape_html(&pkg.version)
+                ),
+            };
+            let _ = write!(lines, "<li>{line}</li>");
+        }
+        if crates.len() > 6 {
+            let _ = write!(
+                lines,
+                "<li class=\"muted\">and {} more in Security advisories</li>",
+                crates.len() - 6
+            );
+        }
+        items.push(format!(
+            "<div class=\"action action-danger\"><h3>Fix {} vulnerable crate{}</h3><ul>{lines}</ul>{}</div>",
+            crates.len(),
+            if crates.len() == 1 { "" } else { "s" },
+            command_html("cargoscope fix --advisories", "preview; add --apply to write")
+        ));
+    }
+
+    let yanked: Vec<&cargoscope_core::Package> = report
+        .package_info
+        .iter()
+        .zip(&report.inventory.packages)
+        .filter(|(info, _)| info.yanked == Some(true))
+        .map(|(_, pkg)| pkg)
+        .collect();
+    if !yanked.is_empty() {
+        let names: Vec<String> = yanked.iter().map(|pkg| package_cell(pkg)).collect();
+        let command = format!(
+            "cargo update {}",
+            yanked
+                .iter()
+                .map(|pkg| format!("-p {}@{}", pkg.name, pkg.version))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        items.push(format!(
+            "<div class=\"action action-danger\"><h3>Replace {} yanked version{}</h3><p>{}</p>{}</div>",
+            yanked.len(),
+            if yanked.len() == 1 { "" } else { "s" },
+            names.join(", "),
+            command_html(&command, "moves to the next published version")
+        ));
+    }
+
+    let unused: Vec<&cargoscope_core::UnusedFinding> = report
+        .unused
+        .iter()
+        .filter(|f| f.ignored.is_none() && f.confidence == UnusedConfidence::Likely)
+        .collect();
+    if !unused.is_empty() {
+        let names: Vec<String> = unused
+            .iter()
+            .map(|f| {
+                format!(
+                    "<code>{}</code> <span class=\"muted\">in {}</span>",
+                    escape_html(&f.dependency),
+                    escape_html(&f.manifest)
+                )
+            })
+            .collect();
+        items.push(format!(
+            "<div class=\"action action-warn\"><h3>Remove {} unused dependenc{}</h3><p>{}</p>{}</div>",
+            unused.len(),
+            if unused.len() == 1 { "y" } else { "ies" },
+            names.join(", "),
+            command_html("cargoscope fix", "preview; add --apply to write")
+        ));
+    }
+
+    let recent = crate::recent_releases(report, now);
+    if !recent.is_empty() {
+        let names: Vec<String> = recent
+            .iter()
+            .map(|&(index, hours)| {
+                format!(
+                    "{} <span class=\"muted\">{}</span>",
+                    package_cell(&report.inventory.packages[index]),
+                    escape_html(&crate::describe_age(hours))
+                )
+            })
+            .collect();
+        items.push(format!(
+            "<div class=\"action action-warn\"><h3>Review {} recent release{}</h3><p>{}</p><p class=\"muted small\">Compromised releases are usually caught within days.</p></div>",
+            recent.len(),
+            if recent.len() == 1 { "" } else { "s" },
+            names.join(", ")
+        ));
+    }
+
+    let outdated: Vec<(&cargoscope_core::Package, &cargoscope_core::PackageInfo)> = report
+        .inventory
+        .packages
+        .iter()
+        .zip(&report.package_info)
+        .filter(|(pkg, info)| info.outdated && pkg.direct)
+        .collect();
+    if !outdated.is_empty() {
+        let compatible = outdated
+            .iter()
+            .filter(|(pkg, info)| info.compatible_upgrade(&pkg.version).is_some())
+            .count();
+        items.push(format!(
+            "<div class=\"action\"><h3>Update {} outdated direct dependenc{}</h3><p class=\"muted\">{compatible} with a compatible update; details in Versions and licenses.</p>{}</div>",
+            outdated.len(),
+            if outdated.len() == 1 { "y" } else { "ies" },
+            command_html("cargoscope fix --updates", "preview; add --apply to write")
+        ));
+    }
+
+    out.push_str("<section class=\"actions\" aria-label=\"What to do\">\n<h2>What to do</h2>\n");
+    if items.is_empty() {
+        out.push_str("<p class=\"empty empty-ok\">Nothing to do: no vulnerable, yanked, unused or outdated dependency.</p>\n");
+    } else {
+        out.push_str("<div class=\"action-grid\">\n");
+        for item in items {
+            out.push_str(&item);
+            out.push('\n');
+        }
+        out.push_str("</div>\n");
+    }
+    out.push_str("</section>\n");
+}
 
 fn render_kpi_grid(out: &mut String, report: &Report, counts: &ReportCounts) {
     out.push_str("<section class=\"kpi-grid\" aria-label=\"Summary metrics\">\n");
@@ -393,6 +632,11 @@ fn render_controls(out: &mut String) {
 <button class=\"tab\" data-section=\"supply-chain\" type=\"button\">Supply chain</button>\n\
 <button class=\"tab\" data-section=\"graph\" type=\"button\">Graph</button>\n\
 <button class=\"tab\" data-section=\"inventory\" type=\"button\">Inventory</button>\n\
+</div>\n\
+<div class=\"toggles\" aria-label=\"Quick filters\">\n\
+<label><input type=\"checkbox\" data-filter=\"vulnerabilities\"> Vulnerabilities only</label>\n\
+<label><input type=\"checkbox\" data-filter=\"likely\"> Hide unlikely</label>\n\
+<label><input type=\"checkbox\" data-filter=\"direct\"> Direct dependencies only</label>\n\
 </div>\n</div>\n",
     );
 }
@@ -408,6 +652,20 @@ fn render_warnings(out: &mut String, warnings: &[String]) {
         let _ = writeln!(out, "<li>{}</li>", escape_html(warning));
     }
     out.push_str("</ul>\n</aside>\n");
+}
+
+/// Sort key of a severity cell: worst first when sorted descending.
+fn severity_rank(finding: &cargoscope_core::AdvisoryFinding) -> u8 {
+    if finding.ignored.is_some() || !matches!(finding.kind, AdvisoryKind::Vulnerability) {
+        return 0;
+    }
+    match finding.severity {
+        Some(cargoscope_core::Severity::Critical) => 5,
+        Some(cargoscope_core::Severity::High) => 4,
+        Some(cargoscope_core::Severity::Medium) => 3,
+        Some(cargoscope_core::Severity::Low) => 2,
+        Some(cargoscope_core::Severity::None) | None => 1,
+    }
 }
 
 fn render_advisories_section(out: &mut String, report: &Report) {
@@ -511,16 +769,22 @@ fn render_advisories_section(out: &mut String, report: &Report) {
         };
         let _ = writeln!(
             out,
-            "<tr class=\"filter-row\">\
+            "<tr class=\"filter-row\" data-relevance=\"{}\" data-kind=\"{}\">\
 <td>{id_cell}{aliases_html}</td>\
-<td><span class=\"badge {sev_class}\">{}</span></td>\
-<td><code>{}</code> <span class=\"muted\">{}</span></td>\
+<td data-sort=\"{}\"><span class=\"badge {sev_class}\">{}</span></td>\
+<td>{}</td>\
 <td>{}{chain_html}{relevance_html}</td>\
 <td>{fix_html}</td>\
 </tr>",
+            finding.relevance.as_str(),
+            if matches!(finding.kind, AdvisoryKind::Vulnerability) {
+                "vulnerability"
+            } else {
+                "notice"
+            },
+            severity_rank(finding),
             escape_html(sev_text),
-            escape_html(&package.name),
-            escape_html(&package.version),
+            package_cell(package),
             escape_html(&finding.title),
         );
     }
@@ -572,13 +836,12 @@ fn render_policy_section(out: &mut String, report: &Report) {
             "<tr class=\"filter-row\">\
 <td><code>{}</code></td>\
 <td><span class=\"badge {level_class}\">{}</span></td>\
-<td><code>{}</code> <span class=\"muted\">{}</span></td>\
+<td>{}</td>\
 <td>{}{chain_html}</td>\
 </tr>",
             escape_html(violation.rule.as_str()),
             escape_html(violation.level.as_str()),
-            escape_html(&package.name),
-            escape_html(&package.version),
+            package_cell(package),
             escape_html(&violation.message),
         );
     }
@@ -779,11 +1042,11 @@ fn render_versions_licenses_section(out: &mut String, report: &Report, counts: &
                 let compat_text = info.compatible_upgrade(&pkg.version).unwrap_or("-");
                 let _ = writeln!(
                     out,
-                    "<tr class=\"filter-row\"><td><code>{}</code></td><td>{}</td><td><code>{}</code></td><td><code>{}</code></td><td><span class=\"badge {kind_class}\">{}</span></td><td>{}</td></tr>",
-                    escape_html(&pkg.name),
+                    "<tr class=\"filter-row\"><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td><span class=\"badge {kind_class}\">{}</span></td><td>{}</td></tr>",
+                    crate_name_html(pkg),
                     escape_html(&pkg.version),
-                    escape_html(compat_text),
-                    escape_html(info.latest_version.as_deref().unwrap_or("?")),
+                    diff_link(pkg, compat_text),
+                    diff_link(pkg, info.latest_version.as_deref().unwrap_or("?")),
                     escape_html(kind.as_str()),
                     escape_html(info.latest_published.as_deref().unwrap_or("-"))
                 );
@@ -820,9 +1083,8 @@ fn render_maintenance_panel(out: &mut String, report: &Report) {
             .collect();
         let _ = writeln!(
             out,
-            "<tr class=\"filter-row\"><td><code>{}</code> <span class=\"muted\">{}</span></td><td>{}</td></tr>",
-            escape_html(&pkg.name),
-            escape_html(&pkg.version),
+            "<tr class=\"filter-row\"><td>{}</td><td>{}</td></tr>",
+            package_cell(pkg),
             badges.join("<br>")
         );
     }
@@ -856,9 +1118,8 @@ fn render_supply_chain_section(out: &mut String, report: &Report, now: Option<u6
             let via = chain(&report.inventory, index).unwrap_or_default();
             let _ = writeln!(
                 out,
-                "<tr class=\"filter-row\"><td><code>{}</code> <span class=\"muted\">{}</span></td><td><span class=\"badge badge-warn\">{}</span></td><td><code>{}</code></td></tr>",
-                escape_html(&pkg.name),
-                escape_html(&pkg.version),
+                "<tr class=\"filter-row\"><td>{}</td><td><span class=\"badge badge-warn\">{}</span></td><td><code>{}</code></td></tr>",
+                package_cell(pkg),
                 escape_html(&crate::describe_age(hours)),
                 escape_html(&via)
             );
@@ -934,9 +1195,8 @@ fn render_supply_chain_section(out: &mut String, report: &Report, now: Option<u6
                     };
                     let _ = writeln!(
                         out,
-                        "<tr class=\"filter-row\"><td><code>{}</code> <span class=\"muted\">{}</span></td><td>{cell}</td></tr>",
-                        escape_html(&pkg.name),
-                        escape_html(&pkg.version)
+                        "<tr class=\"filter-row\"><td>{}</td><td>{cell}</td></tr>",
+                        package_cell(pkg)
                     );
                 }
                 out.push_str("</tbody></table></div>\n");
@@ -969,9 +1229,8 @@ fn render_supply_chain_section(out: &mut String, report: &Report, now: Option<u6
             let pkg = &report.inventory.packages[index];
             let _ = writeln!(
                 out,
-                "<tr class=\"filter-row\"><td><code>{}</code> <span class=\"muted\">{}</span></td><td>{}</td><td><strong>{}</strong></td><td>{}</td></tr>",
-                escape_html(&pkg.name),
-                escape_html(&pkg.version),
+                "<tr class=\"filter-row\"><td>{}</td><td>{}</td><td><strong>{}</strong></td><td>{}</td></tr>",
+                package_cell(pkg),
                 if pkg.direct { "direct" } else { "transitive" },
                 count.total(),
                 escape_html(&crate::describe_unsafe(&count))
@@ -982,9 +1241,87 @@ fn render_supply_chain_section(out: &mut String, report: &Report, now: Option<u6
     out.push_str("</div>\n</section>\n");
 }
 
+/// An interactive map of the dependency graph: one dot per package, sized by
+/// how many packages depend on it, laid out by the script in the page.
+fn render_dependency_map(out: &mut String, report: &Report) {
+    let packages = &report.inventory.packages;
+    if packages.len() < 2 {
+        return;
+    }
+    let mut dependents = vec![0usize; packages.len()];
+    let mut edges = Vec::new();
+    for (from, pkg) in packages.iter().enumerate() {
+        for &to in &pkg.dependencies {
+            if to < packages.len() && to != from {
+                dependents[to] += 1;
+                edges.push(format!("[{from},{to}]"));
+            }
+        }
+    }
+    let vulnerable: std::collections::BTreeSet<usize> = report
+        .advisories
+        .iter()
+        .filter(|f| f.ignored.is_none() && matches!(f.kind, AdvisoryKind::Vulnerability))
+        .map(|f| f.package)
+        .collect();
+    let nodes: Vec<String> = packages
+        .iter()
+        .enumerate()
+        .map(|(index, pkg)| {
+            let kind = if pkg.root {
+                0
+            } else if pkg.direct {
+                1
+            } else {
+                2
+            };
+            format!(
+                "[{},{},{kind},{},{}]",
+                json_string(&pkg.name),
+                json_string(&pkg.version),
+                dependents[index],
+                u8::from(vulnerable.contains(&index))
+            )
+        })
+        .collect();
+    out.push_str("<div class=\"panel map-panel\">\n<div class=\"map-head\"><h3>Dependency map</h3>\
+<span class=\"muted small\">Each dot is a package, bigger when more packages depend on it. Scroll to zoom, drag to move, click a dot to see what it depends on and what depends on it.</span>\
+<input id=\"map-search\" type=\"search\" placeholder=\"Find a crate\" aria-label=\"Find a crate in the map\"></div>\n\
+<div class=\"map-wrap\"><canvas id=\"dep-map\" aria-label=\"Dependency map\"></canvas><div id=\"map-tip\" hidden></div></div>\n\
+<div class=\"map-legend small muted\"><span><i class=\"lg lg-root\"></i>project</span><span><i class=\"lg lg-direct\"></i>direct</span><span><i class=\"lg lg-trans\"></i>transitive</span><span><i class=\"lg lg-vuln\"></i>vulnerable</span></div>\n");
+    let _ = writeln!(
+        out,
+        "<script type=\"application/json\" id=\"graph-data\">{{\"nodes\":[{}],\"edges\":[{}]}}</script>\n</div>",
+        nodes.join(","),
+        edges.join(",")
+    );
+}
+
+/// A JSON string that is also safe inside a `<script>` element.
+fn json_string(value: &str) -> String {
+    let mut out = String::from("\"");
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '<' => out.push_str("\\u003c"),
+            '>' => out.push_str("\\u003e"),
+            '&' => out.push_str("\\u0026"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 fn render_graph_section(out: &mut String, report: &Report) {
     out.push_str("<section id=\"graph\" class=\"report-section\" data-section=\"graph\">\n");
-    out.push_str("<h2>Dependency graph</h2>\n<div class=\"split-grid\">\n");
+    out.push_str("<h2>Dependency graph</h2>\n");
+    render_dependency_map(out, report);
+    out.push_str("<div class=\"split-grid\">\n");
 
     let heavy = sorted_heavy_weights(report);
     out.push_str("<div class=\"panel\">\n<h3>Heaviest direct dependencies</h3>\n");
@@ -1004,9 +1341,8 @@ fn render_graph_section(out: &mut String, report: &Report) {
             };
             let _ = writeln!(
                 out,
-                "<tr class=\"filter-row\"><td><code>{}</code> <span class=\"muted\">{}</span></td><td>{}</td><td><strong>{exclusive}</strong> / {tree}</td></tr>",
-                escape_html(&pkg.name),
-                escape_html(&pkg.version),
+                "<tr class=\"filter-row\"><td>{}</td><td>{}</td><td><strong>{exclusive}</strong> / {tree}</td></tr>",
+                package_cell(pkg),
                 escape_html(&kinds_text)
             );
         }
@@ -1107,14 +1443,14 @@ fn render_inventory_section(out: &mut String, report: &Report) {
         let _ = writeln!(
             out,
             "<tr class=\"filter-row\">\
-<td><code>{}</code></td>\
+<td>{}</td>\
 <td>{}</td>\
 <td><span class=\"badge {scope_class}\">{pkg_scope}</span></td>\
 <td><code>{}</code></td>\
 <td>{status_html}</td>\
 <td>{path_html}</td>\
 </tr>",
-            escape_html(&pkg.name),
+            crate_name_html(pkg),
             escape_html(&pkg.version),
             escape_html(license),
         );
@@ -1281,6 +1617,46 @@ a:hover { text-decoration: underline; }
 .note { margin-top: 10px; font-size: 0.86rem; }
 .sub-details { margin-top: 12px; }
 footer { color: var(--muted); font-size: 0.8rem; margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--border); }
+.actions { margin-bottom: 28px; }
+.action-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; }
+.action { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 0 10px 10px 0; padding: 14px 16px; min-width: 0; }
+.action-danger { border-left-color: var(--danger); }
+.action-warn { border-left-color: var(--warn); }
+.action h3 { margin-bottom: 8px; }
+.action ul { margin: 0 0 10px; padding-left: 18px; font-size: 0.88rem; }
+.action li { margin: 3px 0; }
+.action p { margin: 0 0 10px; font-size: 0.88rem; }
+.cmd { display: flex; align-items: center; gap: 10px; background: var(--surface-alt); border-radius: 8px; padding: 6px 6px 6px 12px; flex-wrap: wrap; }
+.cmd code { font-size: 0.85rem; }
+.cmd code { flex: 1; }
+.cmd-note { margin: 6px 0 0 !important; }
+.copy { border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 6px; padding: 3px 10px; font-size: 0.78rem; cursor: pointer; }
+.copy:hover { border-color: var(--accent); }
+.copy.done { color: var(--ok); border-color: var(--ok); }
+a.crate code { color: var(--text); }
+a.crate:hover code { color: var(--accent); }
+.toggles { display: flex; flex-wrap: wrap; gap: 14px; width: 100%; font-size: 0.82rem; color: var(--muted); }
+.toggles label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.toggles input { accent-color: var(--accent); }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--text); }
+th.sort-asc::after { content: " \2191"; }
+th.sort-desc::after { content: " \2193"; }
+.map-panel { padding-bottom: 12px; }
+.map-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.map-head h3 { margin: 0; }
+.map-head .muted { flex: 1; min-width: 220px; }
+#map-search { padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 0.85rem; }
+.map-wrap { position: relative; height: 560px; border-radius: 8px; background: var(--surface-alt); overflow: hidden; }
+#dep-map { width: 100%; height: 100%; display: block; cursor: grab; }
+#dep-map.dragging { cursor: grabbing; }
+#map-tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; font-size: 0.8rem; white-space: nowrap; }
+.map-legend { display: flex; gap: 16px; margin-top: 8px; }
+.lg { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+.lg-root { background: var(--accent); }
+.lg-direct { background: var(--info); }
+.lg-trans { background: var(--muted); }
+.lg-vuln { background: var(--danger); }
 @media print {
   .controls { display: none; }
   .report-header, .report-section, .kpi-card { break-inside: avoid; }
@@ -1291,16 +1667,30 @@ const FILTER_JS: &str = r#"(function () {
   var search = document.getElementById('search-input');
   var tabs = document.querySelectorAll('.tab');
   var sections = document.querySelectorAll('.report-section');
+  var toggles = document.querySelectorAll('.toggles input');
   var activeSection = 'all';
+
+  function on(name) {
+    var box = document.querySelector('.toggles input[data-filter="' + name + '"]');
+    return box && box.checked;
+  }
 
   function applyFilters() {
     var q = search ? search.value.trim().toLowerCase() : '';
+    var vulnOnly = on('vulnerabilities'), hideUnlikely = on('likely'), directOnly = on('direct');
     sections.forEach(function (sec) {
       var name = sec.getAttribute('data-section');
       sec.hidden = activeSection !== 'all' && name !== activeSection;
       sec.querySelectorAll('.filter-row').forEach(function (row) {
         var text = (row.textContent || '').toLowerCase();
-        row.hidden = q.length > 0 && text.indexOf(q) === -1;
+        var hide = q.length > 0 && text.indexOf(q) === -1;
+        if (vulnOnly && row.getAttribute('data-kind') === 'notice') hide = true;
+        if (hideUnlikely && row.getAttribute('data-relevance') === 'unlikely') hide = true;
+        if (directOnly) {
+          var marker = row.querySelector('[data-direct]');
+          if (marker && marker.getAttribute('data-direct') === 'false') hide = true;
+        }
+        row.hidden = hide;
       });
     });
   }
@@ -1313,10 +1703,268 @@ const FILTER_JS: &str = r#"(function () {
       applyFilters();
     });
   });
+  if (search) search.addEventListener('input', applyFilters);
+  toggles.forEach(function (box) { box.addEventListener('change', applyFilters); });
 
-  if (search) {
-    search.addEventListener('input', applyFilters);
+  // Click a column title to sort; numbers sort as numbers.
+  function cellKey(cell) {
+    if (!cell) return '';
+    var key = cell.getAttribute('data-sort');
+    if (key !== null) return Number(key);
+    var text = (cell.textContent || '').trim();
+    var number = text.replace(/[,\s]/g, '').match(/^-?\d+(\.\d+)?/);
+    return number && /^[\d,.\s-]/.test(text) && !/^\d+\.\d+\.\d+/.test(text) ? Number(number[0]) : text.toLowerCase();
   }
+  document.querySelectorAll('table').forEach(function (table) {
+    var heads = table.querySelectorAll('thead th');
+    heads.forEach(function (th, column) {
+      th.classList.add('sortable');
+      th.addEventListener('click', function () {
+        var body = table.tBodies[0];
+        if (!body) return;
+        var descending = !th.classList.contains('sort-desc');
+        heads.forEach(function (h) { h.classList.remove('sort-asc', 'sort-desc'); });
+        th.classList.add(descending ? 'sort-desc' : 'sort-asc');
+        var rows = Array.prototype.slice.call(body.rows);
+        rows.sort(function (a, b) {
+          var x = cellKey(a.cells[column]), y = cellKey(b.cells[column]);
+          var order = typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true });
+          return descending ? -order : order;
+        });
+        rows.forEach(function (row) { body.appendChild(row); });
+      });
+    });
+  });
+
+  // Copy buttons.
+  document.querySelectorAll('.copy').forEach(function (button) {
+    button.addEventListener('click', function () {
+      var text = button.getAttribute('data-copy') || '';
+      function done() { button.textContent = 'Copied'; button.classList.add('done'); setTimeout(function () { button.textContent = 'Copy'; button.classList.remove('done'); }, 1500); }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () { fallback(); });
+      } else { fallback(); }
+      function fallback() {
+        var area = document.createElement('textarea');
+        area.value = text; document.body.appendChild(area); area.select();
+        try { document.execCommand('copy'); done(); } catch (e) {}
+        document.body.removeChild(area);
+      }
+    });
+  });
+
+  // Dependency map: force layout on a canvas, no library.
+  var dataNode = document.getElementById('graph-data');
+  var canvas = document.getElementById('dep-map');
+  if (!dataNode || !canvas) return;
+  var data = JSON.parse(dataNode.textContent);
+  var tip = document.getElementById('map-tip');
+  var mapSearch = document.getElementById('map-search');
+  var styles = getComputedStyle(document.documentElement);
+  function css(name) { return styles.getPropertyValue(name).trim(); }
+  var colors = { root: css('--accent'), direct: css('--info'), trans: css('--muted'), vuln: css('--danger'), edge: css('--muted'), text: css('--text') };
+  var labelFrom = data.nodes.map(function (d) { return d[3]; }).sort(function (a, b) { return b - a; })[Math.min(24, data.nodes.length - 1)] || 1;
+  var n = data.nodes.length;
+  var nodes = data.nodes.map(function (d, i) {
+    return { i: i, name: d[0], version: d[1], kind: d[2], dependents: d[3], vuln: d[4] === 1, x: 0, y: 0, vx: 0, vy: 0, out: [], inn: [],
+      r: d[2] === 0 ? 10 : 2 + 2.6 * Math.sqrt(d[3]) };
+  });
+  var edges = [];
+  for (var e = 0; e < data.edges.length; e++) {
+    var a = data.edges[e][0], b = data.edges[e][1];
+    edges.push([a, b]); nodes[a].out.push(b); nodes[b].inn.push(a);
+  }
+  // Start on rings by depth from the project, so the layout settles fast.
+  var depth = new Array(n).fill(-1), queue = [];
+  nodes.forEach(function (node) { if (node.kind === 0) { depth[node.i] = 0; queue.push(node.i); } });
+  if (!queue.length) { depth[0] = 0; queue.push(0); }
+  for (var q = 0; q < queue.length; q++) {
+    nodes[queue[q]].out.forEach(function (next) { if (depth[next] < 0) { depth[next] = depth[queue[q]] + 1; queue.push(next); } });
+  }
+  var byDepth = {};
+  nodes.forEach(function (node) { var d = depth[node.i] < 0 ? 6 : depth[node.i]; (byDepth[d] = byDepth[d] || []).push(node); });
+  Object.keys(byDepth).forEach(function (d) {
+    var ring = byDepth[d];
+    ring.forEach(function (node, k) {
+      var angle = (k / ring.length) * Math.PI * 2 + d * 0.7;
+      var radius = d * 110 + Math.random() * 30;
+      node.x = Math.cos(angle) * radius; node.y = Math.sin(angle) * radius;
+    });
+  });
+
+  var view = { x: 0, y: 0, k: 0.6 }, ctx = canvas.getContext('2d'), focus = null, hover = null, ticks = 0, maxTicks = 320;
+  function resize() {
+    var ratio = window.devicePixelRatio || 1;
+    canvas.width = canvas.clientWidth * ratio; canvas.height = canvas.clientHeight * ratio;
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    draw();
+  }
+  function step() {
+    var cell = 70, grid = {}, alpha = Math.max(0.02, 1 - ticks / maxTicks);
+    nodes.forEach(function (node) {
+      var key = Math.floor(node.x / cell) + ',' + Math.floor(node.y / cell);
+      (grid[key] = grid[key] || []).push(node);
+    });
+    nodes.forEach(function (node) {
+      var gx = Math.floor(node.x / cell), gy = Math.floor(node.y / cell);
+      for (var dx = -1; dx <= 1; dx++) for (var dy = -1; dy <= 1; dy++) {
+        var bucket = grid[(gx + dx) + ',' + (gy + dy)];
+        if (!bucket) continue;
+        for (var m = 0; m < bucket.length; m++) {
+          var other = bucket[m];
+          if (other === node) continue;
+          var x = node.x - other.x, y = node.y - other.y, dist2 = x * x + y * y + 0.01;
+          if (dist2 > cell * cell) continue;
+          var push = (260 + 40 * (node.r + other.r)) / dist2 * alpha;
+          node.vx += x * push * 0.05; node.vy += y * push * 0.05;
+        }
+      }
+      node.vx -= node.x * 0.0009 * alpha; node.vy -= node.y * 0.0009 * alpha;
+    });
+    edges.forEach(function (edge) {
+      var a = nodes[edge[0]], b = nodes[edge[1]];
+      var x = b.x - a.x, y = b.y - a.y, dist = Math.sqrt(x * x + y * y) + 0.01;
+      var pull = (dist - (22 + a.r + b.r)) * 0.03 * alpha;
+      var fx = x / dist * pull, fy = y / dist * pull;
+      a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+    });
+    nodes.forEach(function (node) {
+      node.vx *= 0.82; node.vy *= 0.82;
+      node.x += node.vx; node.y += node.vy;
+    });
+    ticks++;
+  }
+  function related(node) {
+    var set = {};
+    set[node.i] = true;
+    node.out.forEach(function (i) { set[i] = true; });
+    node.inn.forEach(function (i) { set[i] = true; });
+    return set;
+  }
+  function color(node) {
+    if (node.vuln) return colors.vuln;
+    return node.kind === 0 ? colors.root : node.kind === 1 ? colors.direct : colors.trans;
+  }
+  function draw() {
+    var w = canvas.clientWidth, h = canvas.clientHeight;
+    ctx.clearRect(0, 0, w, h);
+    ctx.save();
+    ctx.translate(w / 2 + view.x, h / 2 + view.y);
+    ctx.scale(view.k, view.k);
+    var near = focus ? related(focus) : null;
+    ctx.lineWidth = 0.6 / view.k;
+    ctx.strokeStyle = colors.edge;
+    ctx.globalAlpha = near ? 0.06 : 0.16;
+    ctx.beginPath();
+    edges.forEach(function (edge) {
+      var a = nodes[edge[0]], b = nodes[edge[1]];
+      ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+    });
+    ctx.stroke();
+    if (focus) {
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 1.4 / view.k;
+      ctx.strokeStyle = colors.root;
+      ctx.beginPath();
+      focus.out.forEach(function (i) { ctx.moveTo(focus.x, focus.y); ctx.lineTo(nodes[i].x, nodes[i].y); });
+      ctx.stroke();
+      ctx.strokeStyle = colors.direct;
+      ctx.beginPath();
+      focus.inn.forEach(function (i) { ctx.moveTo(focus.x, focus.y); ctx.lineTo(nodes[i].x, nodes[i].y); });
+      ctx.stroke();
+    }
+    nodes.forEach(function (node) {
+      ctx.globalAlpha = near && !near[node.i] ? 0.15 : 1;
+      ctx.fillStyle = color(node);
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, node.r, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = colors.text;
+    ctx.font = (11 / view.k) + 'px ui-sans-serif, system-ui, sans-serif';
+    nodes.forEach(function (node) {
+      var big = node.kind === 0 || node.vuln || (node.dependents >= labelFrom && node.dependents > 1) || node.r * view.k > 16;
+      if ((near && near[node.i]) || (!near && big) || node === hover) {
+        ctx.fillText(node.name, node.x + node.r + 3 / view.k, node.y + 4 / view.k);
+      }
+    });
+    ctx.restore();
+  }
+  function animate() {
+    for (var s = 0; s < 4 && ticks < maxTicks; s++) step();
+    draw();
+    if (ticks < maxTicks) requestAnimationFrame(animate);
+    else if (!fitted) { fit(); draw(); }
+  }
+  var fitted = false;
+  function fit() {
+    fitted = true;
+    var xs = nodes.map(function (node) { return node.x; }).sort(function (a, b) { return a - b; });
+    var ys = nodes.map(function (node) { return node.y; }).sort(function (a, b) { return a - b; });
+    // Ignore the farthest 2% so a few strays do not shrink everything.
+    var lo = Math.floor(n * 0.02), hi = Math.max(lo, n - 1 - lo);
+    var width = xs[hi] - xs[lo] + 80, height = ys[hi] - ys[lo] + 80;
+    view.k = Math.min(3, Math.max(0.1, Math.min(canvas.clientWidth / width, canvas.clientHeight / height)));
+    view.x = -((xs[hi] + xs[lo]) / 2) * view.k;
+    view.y = -((ys[hi] + ys[lo]) / 2) * view.k;
+  }
+  function toWorld(event) {
+    var box = canvas.getBoundingClientRect();
+    return { x: (event.clientX - box.left - canvas.clientWidth / 2 - view.x) / view.k, y: (event.clientY - box.top - canvas.clientHeight / 2 - view.y) / view.k };
+  }
+  function pick(event) {
+    var p = toWorld(event), best = null, bestDist = Infinity;
+    nodes.forEach(function (node) {
+      var x = node.x - p.x, y = node.y - p.y, d = x * x + y * y, r = Math.max(node.r, 5 / view.k);
+      if (d < r * r && d < bestDist) { best = node; bestDist = d; }
+    });
+    return best;
+  }
+  var drag = null;
+  canvas.addEventListener('mousedown', function (event) { drag = { x: event.clientX, y: event.clientY, vx: view.x, vy: view.y, moved: false }; canvas.classList.add('dragging'); });
+  window.addEventListener('mouseup', function (event) {
+    if (drag && !drag.moved && event.target === canvas) { var node = pick(event); focus = node && node !== focus ? node : null; draw(); }
+    drag = null; canvas.classList.remove('dragging');
+  });
+  canvas.addEventListener('mousemove', function (event) {
+    if (drag) {
+      var dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+      if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+      view.x = drag.vx + dx; view.y = drag.vy + dy; draw(); return;
+    }
+    var node = pick(event);
+    hover = node;
+    if (node) {
+      var box = canvas.getBoundingClientRect();
+      tip.hidden = false;
+      tip.textContent = node.name + ' ' + node.version + ' · ' + node.dependents + ' dependent' + (node.dependents === 1 ? '' : 's') + ' · ' + node.out.length + ' dependenc' + (node.out.length === 1 ? 'y' : 'ies') + (node.vuln ? ' · vulnerable' : '');
+      tip.style.left = (event.clientX - box.left + 12) + 'px';
+      tip.style.top = (event.clientY - box.top + 12) + 'px';
+    } else { tip.hidden = true; }
+    draw();
+  });
+  canvas.addEventListener('mouseleave', function () { tip.hidden = true; hover = null; draw(); });
+  canvas.addEventListener('wheel', function (event) {
+    event.preventDefault();
+    var box = canvas.getBoundingClientRect();
+    var mx = event.clientX - box.left - canvas.clientWidth / 2, my = event.clientY - box.top - canvas.clientHeight / 2;
+    var factor = Math.exp(-event.deltaY * 0.0015), k = Math.min(6, Math.max(0.08, view.k * factor));
+    view.x = mx - (mx - view.x) * (k / view.k); view.y = my - (my - view.y) * (k / view.k); view.k = k;
+    draw();
+  }, { passive: false });
+  if (mapSearch) {
+    mapSearch.addEventListener('input', function () {
+      var q = mapSearch.value.trim().toLowerCase();
+      var found = q ? nodes.filter(function (node) { return node.name.toLowerCase() === q; })[0] || nodes.filter(function (node) { return node.name.toLowerCase().indexOf(q) === 0; })[0] : null;
+      focus = found || null;
+      if (found) { view.x = -found.x * view.k; view.y = -found.y * view.k; }
+      draw();
+    });
+  }
+  window.addEventListener('resize', resize);
+  resize();
+  animate();
 })();
 "#;
 
@@ -1486,7 +2134,19 @@ mod tests {
         let now = cargoscope_core::unix_seconds("2026-11-19T08:30:00Z");
         let html = render_html(Path::new("."), &report, false, now);
         assert!(html.contains("data-section=\"supply-chain\" type=\"button\">Supply chain"));
-        assert!(html.contains("<code>serde_json</code> <span class=\"muted\">1.0.100</span></td><td><span class=\"badge badge-warn\">6 h ago</span>"), "{html}");
+        assert!(html.contains("<code>serde_json</code></a> <span class=\"muted\">1.0.100</span></td><td><span class=\"badge badge-warn\">6 h ago</span>"), "{html}");
+
+        // What to do: the recent release to review, with links.
+        assert!(html.contains("<h2>What to do</h2>"));
+        assert!(html.contains("<h3>Review 1 recent release</h3>"));
+        assert!(html.contains(
+            "<a class=\"crate\" data-direct=\"true\" href=\"https://crates.io/crates/serde_json/1.0.100\""
+        ));
+        // Quick filters, and the map's data for its three packages.
+        assert!(html.contains("data-filter=\"direct\""));
+        assert!(html.contains(
+            "<script type=\"application/json\" id=\"graph-data\">{\"nodes\":[[\"my-app\""
+        ));
         assert!(
             html.contains("<strong>1</strong> of 2 crates.io packages reviewed by an organisation")
         );
@@ -1498,6 +2158,24 @@ mod tests {
         let bare = render_html(Path::new("."), &sample_report(), false, None);
         assert!(bare.contains("No published audits downloaded"));
         assert!(bare.contains("No dependency sources on disk"));
+    }
+
+    #[test]
+    fn lists_fixes_with_commands_and_diff_links() {
+        let report = sample_report();
+        let html = render_html(Path::new("."), &report, false, None);
+        // The sample's serde_json advisory is fixed in ^1.0.128.
+        assert!(html.contains("<h3>Fix 1 vulnerable crate</h3>"), "{html}");
+        assert!(
+            html.contains("&rarr; <a href=\"https://diff.rs/serde_json/1.0.100/1.0.128\""),
+            "{html}"
+        );
+        assert!(html.contains("data-copy=\"cargoscope fix --advisories\">Copy</button>"));
+        assert!(html.contains("data-relevance=\"affects-you\" data-kind=\"vulnerability\""));
+        assert_eq!(
+            super::json_string("a\"<b>&"),
+            "\"a\\\"\\u003cb\\u003e\\u0026\""
+        );
     }
 
     #[test]

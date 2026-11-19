@@ -690,7 +690,10 @@ fn smallest_fix(finding: &AdvisoryFinding, current: &semver::Version) -> Option<
 
 /// The version that fixes every advisory of a crate, if one does; and how
 /// many advisories have no fix at all.
-fn crate_fix(findings: &[&AdvisoryFinding], version: &str) -> (Option<semver::Version>, usize) {
+pub(crate) fn crate_fix(
+    findings: &[&AdvisoryFinding],
+    version: &str,
+) -> (Option<semver::Version>, usize) {
     let Ok(current) = semver::Version::parse(version) else {
         return (None, 0);
     };

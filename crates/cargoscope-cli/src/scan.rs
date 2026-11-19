@@ -870,10 +870,38 @@ fn write_report(
         ),
     };
     match &options.output {
-        Some(path) => std::fs::write(path, rendered).map_err(|error| {
-            eprintln!("CargoScope could not write {}: {error}", path.display());
-            ExitCode::from(2)
-        }),
+        Some(path) => {
+            std::fs::write(path, rendered).map_err(|error| {
+                eprintln!("CargoScope could not write {}: {error}", path.display());
+                ExitCode::from(2)
+            })?;
+            // On stderr, so scripts reading stdout see nothing new.
+            let vulnerable = report
+                .advisories
+                .iter()
+                .filter(|finding| {
+                    finding.ignored.is_none()
+                        && matches!(finding.kind, cargoscope_core::AdvisoryKind::Vulnerability)
+                })
+                .map(|finding| finding.package)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len();
+            let format = match options.format {
+                OutputFormat::Text => "Text",
+                OutputFormat::Json => "JSON",
+                OutputFormat::Sarif => "SARIF",
+                OutputFormat::CycloneDx => "CycloneDX",
+                OutputFormat::Html => "HTML",
+            };
+            eprintln!(
+                "{format} report written to {} ({} packages, {} vulnerable {})",
+                path.display(),
+                report.inventory.packages.len(),
+                vulnerable,
+                if vulnerable == 1 { "crate" } else { "crates" }
+            );
+            Ok(())
+        }
         None => {
             print!("{rendered}");
             Ok(())
