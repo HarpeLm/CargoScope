@@ -81,7 +81,7 @@ pub(super) fn scan_idents(files: &[PathBuf], out: &mut BTreeSet<String>) {
 /// Records identifiers that appear as the first segment of a path
 /// (`name::...`), after `extern crate`, or after `use`.
 pub(super) fn collect_references(tokens: TokenStream, names: &mut BTreeSet<String>) {
-    collect_references_in(tokens, false, names);
+    collect_references_in(tokens, false, false, names);
 }
 
 /// Whether the tokens before `index` end with `::` that continues a path
@@ -134,9 +134,13 @@ pub(super) fn continues_path(tokens: &[TokenTree], index: usize) -> bool {
 
 /// `nested` is true inside a `use` group that follows `::`
 /// (`use std::{io::Read, fmt}`), where names are not crate roots.
+/// `root_use` is true inside a group right after `use`
+/// (`use { serde_json as json, grep_matcher::Match }`), where the first name
+/// of each item is a crate root.
 pub(super) fn collect_references_in(
     tokens: TokenStream,
     nested: bool,
+    root_use: bool,
     names: &mut BTreeSet<String>,
 ) {
     let tokens: Vec<TokenTree> = tokens.into_iter().collect();
@@ -150,10 +154,12 @@ pub(super) fn collect_references_in(
                 if is_attribute {
                     collect_attribute_references(group.stream(), names);
                 }
-                let use_group = group.delimiter() == proc_macro2::Delimiter::Brace
-                    && index >= 1
+                let brace = group.delimiter() == proc_macro2::Delimiter::Brace && index >= 1;
+                let use_group = brace
                     && matches!(&tokens[index - 1], TokenTree::Punct(p) if p.as_char() == ':');
-                collect_references_in(group.stream(), use_group, names);
+                let root_use_group =
+                    brace && matches!(&tokens[index - 1], TokenTree::Ident(word) if word == "use");
+                collect_references_in(group.stream(), use_group, root_use_group, names);
             }
             TokenTree::Ident(ident) => {
                 let name = ident.to_string();
@@ -175,7 +181,16 @@ pub(super) fn collect_references_in(
                 // Only the first segment of a path names a crate:
                 // `deno_runtime::deno_node::X` uses deno_runtime, not deno_node.
                 let first_segment = !nested && !continues_path(&tokens, index);
-                if (followed_by_path && first_segment) || after_use || after_extern_crate {
+                let starts_use_item = root_use
+                    && !matches!(name.as_str(), "self" | "super" | "crate")
+                    && index.checked_sub(1).is_none_or(|previous| {
+                        matches!(&tokens[previous], TokenTree::Punct(p) if p.as_char() == ',')
+                    });
+                if (followed_by_path && first_segment)
+                    || after_use
+                    || after_extern_crate
+                    || starts_use_item
+                {
                     names.insert(name);
                 }
             }
@@ -257,14 +272,23 @@ pub(super) fn collect_path_literals(tokens: &[TokenTree], names: &mut BTreeSet<S
                 else {
                     continue;
                 };
-                let first = text.split("::").next().unwrap_or_default();
+                // Generic arguments do not count: in
+                // `"serde_with::As::<serde_with::DisplayFromStr>"` the path is
+                // `serde_with::As`.
+                let path = match text.split_once('<') {
+                    Some((before, _)) => before.strip_suffix("::").unwrap_or(before),
+                    None => text,
+                };
+                let first = path.split("::").next().unwrap_or_default();
                 let is_path = !first.is_empty()
                     && first.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
                     && !first.starts_with(|c: char| c.is_ascii_digit())
-                    && text.split("::").all(|segment| {
-                        segment
-                            .chars()
-                            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    && (path.len() == text.len() || path.contains("::"))
+                    && path.split("::").all(|segment| {
+                        !segment.is_empty()
+                            && segment
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || c == '_')
                     });
                 if is_path {
                     names.insert(first.to_owned());

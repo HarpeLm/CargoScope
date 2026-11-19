@@ -636,6 +636,11 @@ mod tests {
                 r: Regex,
                 #[serde(deserialize_with = "humantime_serde::deserialize")]
                 d: Duration,
+                // restate: generic arguments inside the path string.
+                #[cfg_attr(feature = "serde", serde(with = "serde_with::As::<serde_with::DisplayFromStr>"))]
+                n: Name,
+                #[serde(skip_serializing_if = "Vec<u8>")]
+                v: Vec<u8>,
             }
             #[doc = "log"]
             #[inline]
@@ -645,6 +650,11 @@ mod tests {
         assert!(names.contains("serde"));
         assert!(names.contains("serde_regex"));
         assert!(names.contains("humantime_serde"));
+        assert!(names.contains("serde_with"), "{names:?}");
+        assert!(
+            !names.contains("Vec"),
+            "a type with arguments is not a path: {names:?}"
+        );
         assert!(!names.contains("log"), "doc text is not a reference");
     }
 
@@ -658,6 +668,31 @@ mod tests {
             "#,
         );
         assert!(names.is_empty(), "{names:?}");
+    }
+
+    #[test]
+    fn a_group_right_after_use_names_a_crate_per_item() {
+        // ripgrep's printer: `use { grep_matcher::..., serde_json as json };`
+        let names = references(
+            r#"
+            use {
+                grep_matcher::{Match, Matcher},
+                serde_json as json,
+                self::local::Thing,
+                crate::util::Replacer,
+            };
+            pub use {anyhow, thiserror::Error};
+            "#,
+        );
+        for expected in ["grep_matcher", "serde_json", "anyhow", "thiserror"] {
+            assert!(names.contains(expected), "{expected} missing: {names:?}");
+        }
+        for not_a_crate in ["Match", "Matcher", "json", "local", "util", "Replacer"] {
+            assert!(
+                !names.contains(not_a_crate),
+                "{not_a_crate} counted: {names:?}"
+            );
+        }
     }
 
     #[test]
