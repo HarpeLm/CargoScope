@@ -333,7 +333,7 @@ No dates: each version ships when its exit criteria are met. There is no intervi
 | Inaccurate competitive comparisons | Verify current features, publish method and date |
 | Risky fix recommendations | Preview, diff, explicit application and validation (later versions) |
 | Incomplete or outdated advisory data | Provenance, database date in every report, warning on old cache |
-| Untrusted repositories | No code execution by default, file limits, no symlink escape |
+| Untrusted repositories | No code execution by default (`scan` only runs `cargo tree --offline --locked`, which reads manifests), file limits, no symlink escape |
 
 ## 12. Success Criteria
 

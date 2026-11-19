@@ -22,7 +22,7 @@ CargoScope is an open-source CLI, written in Rust, for Rust/Cargo projects. One 
 - **Your code never leaves your machine**: nothing is uploaded.
 - **No silent writes**: CargoScope never modifies your files, except `cargoscope fix --apply` and `cargoscope init`, which you run on purpose.
 - **Evidence first**: every finding shows its evidence, its source and the date of its data.
-- **No code execution**: CargoScope reads files directly and never runs `cargo`, build scripts or project code by default.
+- **No code execution**: CargoScope reads files directly and never runs build scripts or project code by default. To rank advisories, `scan` asks `cargo tree --offline --locked` which crates any feature or platform builds; that command only reads the manifests, compiles nothing and never uses the network.
 
 ## Status
 
@@ -172,7 +172,7 @@ Next steps
   › cargoscope scan --verbose    every advisory and package in full
 ```
 
-Each vulnerable crate takes one line, with the smallest version that fixes all its advisories, the shortest chain that pulls it in, and whether it is likely to affect shipped code (advisories in dev-only crates, unbuilt `[graph]` targets, mismatched platforms, or uncalled `[affected.functions]` are ranked `possibly` or `unlikely` with the reason, and sorted after `affects-you`); informational advisories (unmaintained, unsound, yanked) are grouped by kind. `--verbose` gives the full report instead: every advisory with its ID, link and fix, every resolved package with its chain, and the lists the short report cuts. Colors are used only on a terminal; `--color never`, `--color always` or the `NO_COLOR` variable change that, and a report written with `--output` has none. The JSON report carries the same chains in a `path` field.
+Each vulnerable crate takes one line, with the smallest version that fixes all its advisories, the shortest chain that pulls it in, and whether it is likely to affect shipped code (advisories in crates no feature or platform builds, dev-only crates, unbuilt `[graph]` targets, mismatched platforms, or uncalled `[affected.functions]` are ranked `possibly` or `unlikely` with the reason, and sorted after `affects-you`; what is built comes from `cargo tree --offline --locked --all-features --target all`, or from `[graph]` when set, and when Cargo cannot list it, for instance before `cargo fetch`, the report says so and nothing is ranked unlikely for that reason); informational advisories (unmaintained, unsound, yanked) are grouped by kind. `--verbose` gives the full report instead: every advisory with its ID, link and fix, every resolved package with its chain, and the lists the short report cuts. Colors are used only on a terminal; `--color never`, `--color always` or the `NO_COLOR` variable change that, and a report written with `--output` has none. The JSON report carries the same chains in a `path` field.
 
 ### Behind a Proxy
 
