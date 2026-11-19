@@ -1122,7 +1122,7 @@ mod tests {
         let text = render_text(Path::new("."), &report, TextOptions::default());
         assert!(
             text.contains("HEAVIEST DIRECT (exclusive / subtree)")
-                && text.contains("alpha 1.0.0  ██████████  2 / 2 pkgs\n"),
+                && text.contains("alpha 1.0.0  ━━━━━━━━━━  2 / 2 pkgs\n"),
             "{text}"
         );
         let verbose_text = render_text(Path::new("."), &report, VERBOSE);

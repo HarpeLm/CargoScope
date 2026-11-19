@@ -1380,8 +1380,8 @@ fn mass_bar(value: usize, max_value: usize, is_top: bool, paint: Paint) -> Strin
             .clamp(1, BAR_WIDTH)
     };
     let empty = BAR_WIDTH - filled;
-    let fill_str = "█".repeat(filled);
-    let empty_str = "░".repeat(empty);
+    let fill_str = "━".repeat(filled);
+    let empty_str = "─".repeat(empty);
     let colored_fill = if is_top {
         paint.rust(&fill_str)
     } else {
@@ -1583,10 +1583,10 @@ fn hud_licenses(out: &mut String, report: &Report, width: usize, paint: Paint) -
     let w_rest = BAR_WIDTH - used;
     let bar = format!(
         "{}{}{}{}",
-        paint.green(&"█".repeat(w1.min(BAR_WIDTH))),
-        paint.scope(&"█".repeat(w2.min(BAR_WIDTH.saturating_sub(w1)))),
-        paint.yellow(&"█".repeat(w3.min(BAR_WIDTH.saturating_sub(w1 + w2)))),
-        paint.dim(&"░".repeat(w_rest)),
+        paint.green(&"━".repeat(w1.min(BAR_WIDTH))),
+        paint.scope(&"━".repeat(w2.min(BAR_WIDTH.saturating_sub(w1)))),
+        paint.yellow(&"━".repeat(w3.min(BAR_WIDTH.saturating_sub(w1 + w2)))),
+        paint.dim(&"─".repeat(w_rest)),
     );
 
     let mut summary_parts: Vec<String> = sorted
@@ -1792,7 +1792,7 @@ mod tests {
                 .link("https://example.test", "RUSTSEC-1")
                 .contains("\u{1b}]8;;https://example.test\u{1b}\\")
         );
-        assert_eq!(mass_bar(5, 10, false, Paint::new(false)), "█████░░░░░");
+        assert_eq!(mass_bar(5, 10, false, Paint::new(false)), "━━━━━─────");
         assert_eq!(format_duration(24), "24 ms");
         assert_eq!(format_duration(1250), "1.25s");
     }
