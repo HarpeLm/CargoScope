@@ -3254,3 +3254,107 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn advisories_in_crates_no_feature_builds_are_ranked_unlikely() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-built-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    copy_dir(&fixture("simple"), &dir);
+
+    // A fake cargo answers `cargo tree`: every feature and platform builds
+    // simple, serde_json and serde, but not itoa (an optional dependency no
+    // feature turns on, as quinn in nyaterm).
+    let fake_src = dir.join("fake_cargo.rs");
+    let fake_bin = dir.join(format!("fake-cargo{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(
+        &fake_src,
+        r##"fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if std::env::var_os("FAKE_CARGO_FAIL").is_some() {
+        eprintln!("`cargo tree`: error: failed to download `serde v1.0.210`");
+        std::process::exit(101);
+    }
+    for expected in ["tree", "--offline", "--locked", "--workspace", "--all-features"] {
+        assert!(args.iter().any(|a| a == expected), "{expected} missing: {args:?}");
+    }
+    let target = args.windows(2).find(|w| w[0] == "--target").map(|w| w[1].clone());
+    assert_eq!(target.as_deref(), Some("all"), "{args:?}");
+    println!("0simple v0.1.0 (/work/simple) []\n1serde_json v1.0.128 [default,std]\n2serde v1.0.210 [default,std]");
+}
+"##,
+    )
+    .expect("write fake cargo");
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let compiled = Command::new(rustc)
+        .arg(&fake_src)
+        .arg("-o")
+        .arg(&fake_bin)
+        .output()
+        .expect("rustc runs");
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+
+    let run = |fail: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_cargoscope"));
+        command
+            .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+            .env("CARGO_HOME", fixture("empty-cargo-home"))
+            .env("CARGO", &fake_bin)
+            .args(["scan", "--format", "json", "--fail-on", "none"])
+            .arg(&dir);
+        if fail {
+            command.env("FAKE_CARGO_FAIL", "1");
+        }
+        command.output().expect("cargoscope binary runs")
+    };
+    let relevance = |output: &std::process::Output, crate_name: &str| -> Vec<String> {
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+        json["advisories"]
+            .as_array()
+            .expect("advisories")
+            .iter()
+            .filter(|a| a["package"]["name"] == crate_name)
+            .map(|a| a["relevance"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    };
+
+    let built = run(false);
+    assert_eq!(
+        built.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    assert_eq!(relevance(&built, "itoa"), vec!["unlikely"]);
+    assert!(
+        relevance(&built, "serde_json")
+            .iter()
+            .all(|r| r != "unlikely")
+    );
+    let json: serde_json::Value = serde_json::from_slice(&built.stdout).expect("json");
+    let itoa = json["advisories"]
+        .as_array()
+        .expect("advisories")
+        .iter()
+        .find(|a| a["package"]["name"] == "itoa")
+        .expect("itoa advisory");
+    assert_eq!(
+        itoa["relevance_reason"],
+        "itoa is not built by workspace targets or features"
+    );
+
+    // When Cargo cannot list the tree, nothing is ranked unlikely for that
+    // reason, and the report says why.
+    let failed = run(true);
+    assert_eq!(failed.status.code(), Some(0));
+    assert!(relevance(&failed, "itoa").iter().all(|r| r != "unlikely"));
+    let text = String::from_utf8_lossy(&failed.stdout);
+    assert!(
+        text.contains("`cargo tree --offline` could not list what the project builds (failed to download `serde v1.0.210`)"),
+        "{text}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}

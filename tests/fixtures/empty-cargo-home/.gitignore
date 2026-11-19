@@ -1,0 +1,4 @@
+# `cargo tree --offline` (advisory relevance) leaves its lock and an empty
+# index cache here when tests point CARGO_HOME at this directory.
+/.package-cache
+/registry/

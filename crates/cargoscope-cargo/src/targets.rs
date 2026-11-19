@@ -533,6 +533,34 @@ pub fn active_packages(
     Ok((packages, enabled_features))
 }
 
+/// Packages that at least one feature or platform of the workspace at `root`
+/// builds: `cargo tree --workspace --all-features --target all --offline
+/// --locked`. A package left out is in `Cargo.lock` but built by no
+/// configuration (an optional dependency no feature turns on), so its
+/// advisories cannot reach shipped code. Nothing is compiled or run, and the
+/// network is never used.
+///
+/// # Errors
+///
+/// Returns Cargo's explanation when it cannot list the tree: `cargo` is not
+/// installed, the sources are not downloaded, or `Cargo.lock` is outdated.
+pub fn built_packages(root: &Path) -> Result<ActivePackages, String> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let every_feature = Features {
+        list: Vec::new(),
+        all: true,
+        no_default: false,
+    };
+    let mut args = tree_args(&[], Some(&every_feature), false, false);
+    args.push("--offline".to_owned());
+    let output = run_tree(&cargo, root, &args)?;
+    let (saw_any, packages, _) = filter_depth_tree(&output, &[], &BTreeSet::new(), None);
+    if !saw_any {
+        return Err("`cargo tree` listed no package".to_owned());
+    }
+    Ok(packages)
+}
+
 /// Runs `cargo` with `args` in `root` and returns its standard output.
 fn run_tree(cargo: &std::ffi::OsStr, root: &Path, args: &[String]) -> Result<String, String> {
     let output = Command::new(cargo)

@@ -324,6 +324,23 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
             policy_active = Some(packages);
         }
     }
+    // Without `[graph]`, what any feature or platform builds: an advisory in a
+    // crate nothing builds is unlikely to matter. `cargo tree --offline` only
+    // reads the manifests; when it cannot run, no advisory is ranked that way.
+    if policy_active.is_none() && !advisories.is_empty() {
+        match cargoscope_cargo::targets::built_packages(root) {
+            Ok(packages) => policy_active = Some(packages),
+            Err(error) => warnings.push(format!(
+                "advisory relevance: `cargo tree --offline` could not list what the project builds ({}); run `cargo fetch` so that advisories in crates no feature builds are ranked unlikely",
+                error
+                    .lines()
+                    .next()
+                    .unwrap_or("failed")
+                    .trim_start_matches("`cargo tree`: ")
+                    .trim_start_matches("error: ")
+            )),
+        }
+    }
 
     // Only labels in the report: a failure leaves the dependencies unlabelled.
     let direct_kinds = cargoscope_cargo::direct_dependency_kinds(root).unwrap_or_default();
