@@ -29,6 +29,9 @@ const MAX_INDEX_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const MAX_API_BYTES: u64 = 4 * 1024 * 1024;
 const API_INTERVAL: Duration = Duration::from_secs(1);
 const NO_LICENSE: &str = "";
+/// Index entries downloaded at the same time. The sparse index is served by
+/// a CDN without a rate limit, and Cargo queries it in parallel too.
+const INDEX_PARALLELISM: usize = 16;
 
 /// Returns whether a Cargo source is crates.io.
 #[must_use]
@@ -247,9 +250,13 @@ pub fn refresh_with_options(
     let local_sources = local_registry_sources(cargo_home);
     let mut clock = ApiClock::default();
 
+    let names: Vec<&str> = wanted.keys().copied().collect();
+    let mut entries = fetch_index_entries(&index_agent, &names);
     for (name, versions) in wanted {
-        let url = format!("{INDEX_URL}/{}", index_path(name));
-        match fetch_text(&index_agent, &url, MAX_INDEX_BYTES) {
+        let entry = entries
+            .remove(name)
+            .unwrap_or_else(|| Err("not downloaded".to_owned()));
+        match entry {
             Ok(text) => {
                 let target = versions_dir.join(name);
                 fs::write(&target, format_versions(&parse_index(&text)))
@@ -324,6 +331,34 @@ pub fn refresh_with_options(
     let stamp = root.join(FETCHED_AT_FILE);
     fs::write(&stamp, seconds.to_string()).map_err(io_error(&stamp))?;
     Ok(summary)
+}
+
+/// Downloads the sparse index entry of every crate in `names`, several at a
+/// time, keyed by crate name.
+fn fetch_index_entries<'a>(
+    agent: &ureq::Agent,
+    names: &[&'a str],
+) -> BTreeMap<&'a str, Result<String, String>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Mutex, PoisonError};
+
+    let next = AtomicUsize::new(0);
+    let entries = Mutex::new(BTreeMap::new());
+    std::thread::scope(|scope| {
+        for _ in 0..INDEX_PARALLELISM.min(names.len()) {
+            scope.spawn(|| {
+                while let Some(&name) = names.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let url = format!("{INDEX_URL}/{}", index_path(name));
+                    let entry = fetch_text(agent, &url, MAX_INDEX_BYTES);
+                    entries
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .insert(name, entry);
+                }
+            });
+        }
+    });
+    entries.into_inner().unwrap_or_else(PoisonError::into_inner)
 }
 
 pub(crate) fn fetch_text(agent: &ureq::Agent, url: &str, limit: u64) -> Result<String, String> {
