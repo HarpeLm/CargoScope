@@ -8,7 +8,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.90%2B-orange.svg)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-[Quick Start](#quick-start) · [Install](#install) · [GitHub Action](#github-action) · [Updating Dependencies](#updating-dependencies-like-dependabot) · [Policy](#dependency-policy) · [Benchmarks](tests/corpus/README.md) · [Changelog](CHANGELOG.md)
+[Quick Start](#quick-start) · [Install](#install) · [GitHub Action](#github-action) · [Updating Dependencies](#updating-dependencies-like-dependabot) · [Policy](#dependency-policy) · [Benchmarks](tests/corpus/README.md) · [Compatibility](docs/compatibility.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
 
 </div>
 
@@ -306,14 +306,14 @@ time 0.1.45 (RUSTSEC-2020-0071)
 
 For each vulnerability with a fix, CargoScope tries the smallest fixed version first with `cargo update --precise ... --dry-run`, so Cargo, which knows every version requirement, decides whether `Cargo.lock` can move without changing a manifest.
 
-When the vulnerable package is a direct dependency and its own requirement is what blocks the fix (`chrono = "=0.4.19"`, or `time = "0.1"` while the fix is in 0.2.23), CargoScope retries with the requirement raised to the fixed version, in every manifest that declares it (`[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`, `[target.'...']` tables and `[workspace.dependencies]`; inline and table forms, comments and formatting kept). The report then says which manifests change:
+When a manifest requirement is what blocks the fix (`chrono = "=0.4.19"`, or `time = "0.1"` while the fix is in 0.2.23), CargoScope retries with the requirement raised to the fixed version in every workspace manifest that declares a matching requirement (`[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`, `[target.'...']` tables, and `[workspace.dependencies]`; inline, table, and dotted-key forms, with pins, comments, and formatting preserved). Updating `[workspace.dependencies]` propagates automatically to members inheriting via `workspace = true` (which keep their `workspace = true` entries intact), while declarations on unrelated major version lines elsewhere in the workspace are left untouched. The report then says which manifests change:
 
 ```
 chrono 0.4.19 (RUSTSEC-2020-0159)
   - update to 0.4.20 (in Cargo.toml)
 ```
 
-The edit is refused when another dependency would still keep the vulnerable version in `Cargo.lock`. Entries inherited with `workspace = true` and path or git dependencies are left alone. When nothing works, Cargo's explanation shows which dependency to upgrade or which requirement to relax.
+The edit is refused when another dependency would still keep the vulnerable version in `Cargo.lock`. Path and git dependencies are left alone. When nothing works, Cargo's explanation shows which dependency to upgrade or which requirement to relax.
 
 Nothing is written without `--apply`: the dry run only tries the manifest edits and restores them. With `--apply`, `Cargo.lock` gets the exact smallest fixed version and the manifests the requirement `"<version>"`. This runs `cargo update`, which may read the registry index; it compiles and runs nothing.
 
@@ -452,7 +452,7 @@ Already using cargo-deny? Without a `cargoscope.toml`, CargoScope reads your `de
 cargoscope scan . --precise
 ```
 
-Confirms unused dependencies with the compiler (`cargo check --all-targets --all-features`, in `target/cargoscope-precise`): rustc's `unused_crate_dependencies` lint, or, from Rust 1.100, Cargo's own `unused_dependencies` lint. Cargo's lint does not check dev-dependencies, which then keep their static result. **It compiles the project, so build scripts and proc macros run**: use it on code you trust. It is never enabled by default, and covers only the current platform.
+Confirms unused dependencies with the compiler (`cargo check --all-targets --all-features`, in `target/cargoscope-precise`): rustc's `unused_crate_dependencies` lint, or, from Rust 1.100, Cargo's own `unused_dependencies` lint. Cargo's lint skips dev-dependencies (which keep their static result) and dependencies that also appear transitively. When the compiler reports a dependency unused despite a static reference in source or doctests (for example a doctest-only dev-dependency or a `#[cfg(not(feature = "std"))]` branch masked by `--all-features`), CargoScope keeps it as `possibly-unused`. Measured across 76 repositories (72 compiling, 8,158 packages): `100.0%` precision (`16/16`) on the 35-repo blind held-out set ([precise-benchmark.md](tests/corpus/precise-benchmark.md)). **It compiles the project, so build scripts and proc macros run**: use it on code you trust. It is never enabled by default, and covers only the current platform.
 
 ## Removing Unused Dependencies
 
@@ -482,6 +482,11 @@ ignore-unused = [
 ```
 
 A reason is required. Ignored dependencies stay visible in the report with their reason. Unused dependencies never fail the scan.
+
+## Security and Compatibility
+
+- **Security policy & threat model**: see [SECURITY.md](SECURITY.md) for vulnerability reporting, offline/no-code-execution guarantees, and parser limits (`unsafe_code = "forbid"`).
+- **Compatibility & MSRV policy**: see [docs/compatibility.md](docs/compatibility.md) for the `1.x` CLI/exit-code/JSON/SARIF/CycloneDX stability contract and the Rust `1.90`+ MSRV policy.
 
 ## License
 

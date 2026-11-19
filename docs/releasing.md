@@ -8,8 +8,8 @@ A release is started by pushing a version tag. Everything else runs in GitHub Ac
 | crates.io (`cargo install cargoscope`) | `publish-crates.yml`, called by `release.yml` | `CARGO_REGISTRY_TOKEN` secret |
 | Homebrew (`brew install HarpeLm/tap/cargoscope`) | `release.yml` | `HarpeLm/homebrew-tap` repository and `HOMEBREW_TAP_TOKEN` secret |
 | npm (`npx cargoscope`) | `release.yml` | `NPM_TOKEN` secret |
-| PyPI (`pip install cargoscope`, `uvx cargoscope`) | `pypi.yml`, **not enabled yet** | PyPI trusted publisher (no token), then restore the tag trigger in `pypi.yml` |
-| GitHub Action (`uses: HarpeLm/CargoScope@v0.7.0`) | `action.yml` at the repository root | The GitHub Release |
+| PyPI (`pip install cargoscope`, `uvx cargoscope`) | `pypi.yml` | `pypi` GitHub environment (configured) + PyPI Pending Publisher (no token) |
+| GitHub Action (`uses: HarpeLm/CargoScope@v0.8.0`) | `action.yml` at the repository root | The GitHub Release |
 | Container images (`ghcr.io/harpelm/cargoscope`) | `docker/Dockerfile`, `.github/workflows/docker.yml` | The Docker workflow, once Release succeeds (or by hand with a tag) |
 
 ## v0.1.0 checklist

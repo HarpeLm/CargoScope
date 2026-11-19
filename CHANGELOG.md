@@ -2,6 +2,13 @@
 
 All notable changes to CargoScope are documented in this file.
 
+## Unreleased (0.9.0-dev)
+
+- Governance & stability contracts: added [SECURITY.md](SECURITY.md) (vulnerability reporting, offline/no-code-execution threat model, `unsafe_code = "forbid"`, and parser limits) and [docs/compatibility.md](docs/compatibility.md) (`1.x` CLI/exit-code/JSON/SARIF/CycloneDX stability guarantees and Rust `1.90`+ MSRV policy).
+- `cargoscope fix --advisories` and `--updates` workspace propagation: updates `[workspace.dependencies]` (including renamed and dotted-key entries) and implicit local path members without touching `workspace = true` declarations, filters manifest edits by the vulnerable version so unrelated major version lines elsewhere in a workspace are never downgraded, and passes unambiguous `name@version` package specs to `cargo update` for multi-version lockfiles.
+- `--precise` at scale (`tests/corpus/precise-benchmark.md`): measured across 76 repositories (72 compiling, 8,158 packages) on both Rust `1.99.1` and `1.100.0`; fixed `precise::refine` so compiler-only findings where static analysis saw a source/doctest reference (doctest-only dev-dependencies and mutually-exclusive `#[cfg(not(feature = ...))]` branches masked by `--all-features`) stay `possibly-unused` instead of `likely-unused`, reaching `100.0%` precision (`16/16`) on the 35-repo blind held-out set.
+- PyPI Trusted Publisher workflow (`.github/workflows/pypi.yml`): enabled version-tag trigger and `publish` job targeting the `pypi` GitHub Actions environment.
+
 ## 0.8.0 (2026-11-18)
 
 - Update PR comment commands (#23): `/cargoscope rebase`, `/cargoscope recreate`, and `/cargoscope ignore this version | major version | minor version | dependency` (also `@cargoscope ...`) via `cargoscope fix --updates --comment-command ... --pr-body ...` and `action.yml` on `issue_comment` events.
