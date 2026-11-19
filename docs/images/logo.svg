@@ -1,47 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="CargoScope logo">
-  <defs>
-    <linearGradient id="logo-bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#131924"/>
-      <stop offset="100%" stop-color="#0b0f17"/>
-    </linearGradient>
-    <linearGradient id="logo-crate" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#fb923c"/>
-      <stop offset="100%" stop-color="#ea580c"/>
-    </linearGradient>
-    <linearGradient id="logo-ring" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#38bdf8"/>
-      <stop offset="100%" stop-color="#0ea5e9"/>
-    </linearGradient>
-  </defs>
-
-  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#logo-bg)" stroke="#30363d" stroke-width="2"/>
-
-  <!-- Scope rings -->
-  <circle cx="64" cy="64" r="46" fill="none" stroke="url(#logo-ring)" stroke-width="2.2" stroke-opacity="0.35"/>
-  <circle cx="64" cy="64" r="34" fill="none" stroke="url(#logo-ring)" stroke-width="1.5" stroke-dasharray="6 5" stroke-opacity="0.65"/>
-
-  <!-- Crosshair ticks -->
-  <line x1="64" y1="12" x2="64" y2="26" stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round"/>
-  <line x1="64" y1="102" x2="64" y2="116" stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round"/>
-  <line x1="12" y1="64" x2="26" y2="64" stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round"/>
-  <line x1="102" y1="64" x2="116" y2="64" stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round"/>
-
-  <!-- Dependency graph lines to outer nodes -->
-  <line x1="43" y1="52" x2="31" y2="39" stroke="#475569" stroke-width="2" stroke-linecap="round"/>
-  <line x1="85" y1="52" x2="97" y2="39" stroke="#475569" stroke-width="2" stroke-linecap="round"/>
-  <line x1="43" y1="76" x2="31" y2="89" stroke="#475569" stroke-width="2" stroke-linecap="round"/>
-
-  <!-- Outer crate nodes -->
-  <circle cx="30" cy="38" r="5" fill="#1e293b" stroke="#38bdf8" stroke-width="2"/>
-  <circle cx="98" cy="38" r="5" fill="#1e293b" stroke="#fb923c" stroke-width="2"/>
-  <circle cx="30" cy="90" r="5" fill="#1e293b" stroke="#94a3b8" stroke-width="2"/>
-
-  <!-- Central Rust crate hexagon -->
-  <polygon points="64,39 85.6,51.5 85.6,76.5 64,89 42.4,76.5 42.4,51.5" fill="url(#logo-crate)" stroke="#fed7aa" stroke-width="1.5" stroke-linejoin="round"/>
-  <polyline points="43,52 64,64 85,52" fill="none" stroke="#0d1117" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
-  <line x1="64" y1="64" x2="64" y2="88" stroke="#0d1117" stroke-width="2.4" stroke-linecap="round"/>
-
-  <!-- Verified status badge -->
-  <circle cx="95" cy="95" r="14" fill="#22c55e" stroke="#0d1117" stroke-width="3.5"/>
-  <polyline points="88.5,95.5 93,100 102,90.5" fill="none" stroke="#052e16" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96" role="img" aria-label="CargoScope logo">
+  <circle cx="48" cy="48" r="38" fill="none" stroke="#E2622B" stroke-width="5"/>
+  <line x1="48" y1="2" x2="48" y2="18" stroke="#E2622B" stroke-width="5" stroke-linecap="round"/>
+  <line x1="48" y1="78" x2="48" y2="94" stroke="#E2622B" stroke-width="5" stroke-linecap="round"/>
+  <line x1="2" y1="48" x2="18" y2="48" stroke="#E2622B" stroke-width="5" stroke-linecap="round"/>
+  <line x1="78" y1="48" x2="94" y2="48" stroke="#E2622B" stroke-width="5" stroke-linecap="round"/>
+  <rect x="35" y="35" width="26" height="26" rx="3" fill="#E2622B"/>
 </svg>
