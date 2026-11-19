@@ -80,6 +80,23 @@ impl ColorChoice {
     }
 }
 
+/// The width the text report fits in: `COLUMNS` when set, else the width of
+/// the terminal that standard output is, else unknown.
+pub(crate) fn terminal_width(writes_to_file: bool) -> Option<usize> {
+    if let Some(columns) = std::env::var("COLUMNS")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|&columns| columns > 0)
+    {
+        return Some(columns);
+    }
+    if writes_to_file {
+        return None;
+    }
+    terminal_size::terminal_size_of(std::io::stdout())
+        .map(|(terminal_size::Width(columns), _)| usize::from(columns))
+}
+
 pub fn parse_scan_options(
     mut arguments: impl Iterator<Item = String>,
 ) -> Result<ScanOptions, String> {
@@ -794,6 +811,7 @@ fn write_report(
                 color: options.color.enabled(options.output.is_some()),
                 next_steps: true,
                 duration_ms: Some(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)),
+                width: terminal_width(options.output.is_some()),
             },
         ),
         OutputFormat::Json => cargoscope_report::render_json(root, report),

@@ -35,6 +35,9 @@ pub struct TextOptions {
     pub next_steps: bool,
     /// Wall-clock scan duration in milliseconds, shown in the HUD header when present.
     pub duration_ms: Option<u64>,
+    /// Terminal width in columns that the default report fits in; `None`
+    /// when unknown (100 columns are assumed).
+    pub width: Option<usize>,
 }
 
 pub(crate) fn scope(package: &Package) -> &'static str {
@@ -1057,6 +1060,7 @@ mod tests {
         color: false,
         next_steps: true,
         duration_ms: None,
+        width: None,
     };
     use cargoscope_core::{
         AdvisoryFinding, AdvisoryKind, Checks, DependencyKind, Inventory, Package, PackageInfo,
@@ -1354,6 +1358,7 @@ mod tests {
                 color: false,
                 next_steps: true,
                 duration_ms: None,
+                width: None,
             },
         );
         assert!(text.contains("- openssl-sys [possibly-unused] in [dependencies] of Cargo.toml\n"));

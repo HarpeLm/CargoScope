@@ -141,6 +141,7 @@ fn audit(
             cargoscope_report::TextOptions {
                 verbose: options.verbose,
                 color: options.color.enabled(options.output.is_some()),
+                width: crate::scan::terminal_width(options.output.is_some()),
                 ..cargoscope_report::TextOptions::default()
             },
         ),

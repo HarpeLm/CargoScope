@@ -19,7 +19,26 @@ use cargoscope_core::{
 
 use crate::TextOptions;
 
-const HUD_MIN_WIDTH: usize = 75;
+/// The width assumed when the terminal's is unknown (a pipe, a file, CI).
+const DEFAULT_WIDTH: usize = 100;
+/// The narrowest width the report lays itself out for.
+const NARROWEST_WIDTH: usize = 60;
+/// The widest the report gets, however wide the terminal.
+const WIDEST_WIDTH: usize = 120;
+/// Where advisory detail lines start.
+const DETAIL_INDENT: usize = 10;
+
+/// The plain six-character label of a severity, as the pills show it.
+fn severity_label(severity: Option<Severity>) -> (usize, &'static str) {
+    let label = match severity {
+        Some(Severity::Critical) => "[CRIT]",
+        Some(Severity::High) => "[HIGH]",
+        Some(Severity::Medium) => "[MED ]",
+        Some(Severity::Low) => "[LOW ]",
+        Some(Severity::None) | None => "[UNKN]",
+    };
+    (6, label)
+}
 
 /// ANSI styling, or none.
 #[derive(Debug, Clone, Copy)]
@@ -222,11 +241,153 @@ fn truncate(text: &str, width: usize) -> String {
     }
 }
 
+/// Visible width of `text`: its characters, without ANSI styles and OSC 8 links.
+fn visible_len(text: &str) -> usize {
+    let mut count = 0;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            skip_escape(&mut chars);
+        } else {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Skips the rest of an escape sequence after its `ESC`, returning it.
+fn skip_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    let mut sequence = String::from('\u{1b}');
+    match chars.next() {
+        Some('[') => {
+            sequence.push('[');
+            for c in chars.by_ref() {
+                sequence.push(c);
+                if ('@'..='~').contains(&c) {
+                    break;
+                }
+            }
+        }
+        Some(']') => {
+            sequence.push(']');
+            while let Some(c) = chars.next() {
+                sequence.push(c);
+                if c == '\u{7}' {
+                    break;
+                }
+                if c == '\u{1b}' && chars.peek() == Some(&'\\') {
+                    sequence.push('\\');
+                    chars.next();
+                    break;
+                }
+            }
+        }
+        Some(other) => sequence.push(other),
+        None => {}
+    }
+    sequence
+}
+
+/// Cuts a styled line to `width` visible characters, ending it with `…` and
+/// closing any open style or link.
+fn clip(line: &str, width: usize) -> String {
+    if visible_len(line) <= width {
+        return line.to_owned();
+    }
+    let mut out = String::new();
+    let mut count = 0;
+    let mut styled = false;
+    let mut in_link = false;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            let sequence = skip_escape(&mut chars);
+            if let Some(target) = sequence.strip_prefix("\u{1b}]8;;") {
+                in_link = !(target.starts_with('\u{1b}') || target.starts_with('\u{7}'));
+            } else if sequence.starts_with("\u{1b}[") {
+                styled = sequence != "\u{1b}[0m";
+            }
+            out.push_str(&sequence);
+            continue;
+        }
+        if count + 1 >= width {
+            break;
+        }
+        out.push(c);
+        count += 1;
+    }
+    out.push('…');
+    if in_link {
+        out.push_str("\u{1b}]8;;\u{1b}\\");
+    }
+    if styled {
+        out.push_str("\u{1b}[0m");
+    }
+    out
+}
+
+/// Word-wraps plain `text` into lines of at most `width` characters.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(10);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split(' ').filter(|word| !word.is_empty()) {
+        let needed = if line.is_empty() {
+            word.chars().count()
+        } else {
+            line.chars().count() + 1 + word.chars().count()
+        };
+        if needed > width && !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+/// Writes dimmed `text`, wrapped to `width` and indented by `indent`.
+fn write_wrapped(out: &mut String, text: &str, indent: usize, width: usize, paint: Paint) {
+    for line in wrap(text, width.saturating_sub(indent)) {
+        let _ = writeln!(out, "{}{}", " ".repeat(indent), paint.dim(&line));
+    }
+}
+
+/// The name shown for the project: its directory's name.
+fn project_name(project_root: &Path) -> String {
+    project_root
+        .canonicalize()
+        .ok()
+        .as_deref()
+        .unwrap_or(project_root)
+        .file_name()
+        .map_or_else(
+            || project_root.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        )
+}
+
 /// Renders the complete default Telemetry HUD dashboard (`!options.verbose`).
 pub(crate) fn render_hud(project_root: &Path, report: &Report, options: TextOptions) -> String {
     let paint = Paint::new(options.color);
     let mut out = String::new();
-    let width = hud_header(&mut out, project_root, report, options.duration_ms, paint);
+    let columns = options
+        .width
+        .unwrap_or(DEFAULT_WIDTH)
+        .clamp(NARROWEST_WIDTH, WIDEST_WIDTH);
+    let width = hud_header(
+        &mut out,
+        project_root,
+        report,
+        options.duration_ms,
+        columns,
+        paint,
+    );
 
     let mut showed_any_section = false;
     if report.checks.advisories {
@@ -263,7 +424,14 @@ pub(crate) fn render_hud(project_root: &Path, report: &Report, options: TextOpti
     }
 
     for warning in &report.warnings {
-        let _ = writeln!(out, "\n  {} {warning}", paint.yellow("warning:"));
+        let mut lines = wrap(&format!("warning: {warning}"), width.saturating_sub(2)).into_iter();
+        if let Some(first) = lines.next() {
+            let rest = first.strip_prefix("warning:").unwrap_or(&first);
+            let _ = writeln!(out, "\n  {}{rest}", paint.yellow("warning:"));
+        }
+        for line in lines {
+            let _ = writeln!(out, "  {line}");
+        }
     }
 
     let date_note = report
@@ -284,7 +452,12 @@ pub(crate) fn render_hud(project_root: &Path, report: &Report, options: TextOpti
     if options.next_steps {
         next_steps(&mut out, report, false, paint);
     }
-    out
+    let mut fitted = String::with_capacity(out.len());
+    for line in out.lines() {
+        fitted.push_str(&clip(line, width));
+        fitted.push('\n');
+    }
+    fitted
 }
 
 /// Renders the boxed Telemetry HUD header and returns its outer character width.
@@ -293,6 +466,7 @@ fn hud_header(
     project_root: &Path,
     report: &Report,
     duration_ms: Option<u64>,
+    columns: usize,
     paint: Paint,
 ) -> usize {
     // Build KPI cells as (plain_width, styled_text).
@@ -370,15 +544,13 @@ fn hud_header(
         }
     }
 
-    // Middle row: "│  <cell>  │  <cell>  │"
+    // Middle rows: "│  <cell>  │  <cell>  │", as many as the width needs.
     let sep_plain = "  │  ";
     let sep_styled = format!("  {}  ", paint.dim("│"));
-    let kpi_plain_len: usize = cells.iter().map(|(w, _)| *w).sum::<usize>()
-        + cells.len().saturating_sub(1) * sep_plain.chars().count();
+    let sep_len = sep_plain.chars().count();
 
     // Right-hand telemetry tag on top border.
-    let target_raw = project_root.display().to_string();
-    let target_short = truncate(&target_raw, 24);
+    let target_short = truncate(&project_name(project_root), 24);
     let mode = if report.unused_precise {
         "precise"
     } else {
@@ -392,12 +564,11 @@ fn hud_header(
     let right_plain = meta_parts.join(" · ");
 
     let left_plain = format!("◎ CARGOSCOPE {VERSION}");
-    // Outer box width: fits both top bar and KPI strip cleanly.
+    // The box spans the report's width; KPI cells wrap onto more rows when needed.
     // Top bar: "╭─ " (3) + left + " " (1) + dashes (>=2) + " " (1) + right + " ─╮" (3)
-    let top_min = 3 + left_plain.chars().count() + 1 + 2 + 1 + right_plain.chars().count() + 3;
-    // Middle bar: "│  " (3) + kpi + "  │" (3)
-    let mid_min = 3 + kpi_plain_len + 3;
-    let width = HUD_MIN_WIDTH.max(top_min).max(mid_min);
+    let top_fixed = 3 + left_plain.chars().count() + 1 + 2 + 1 + 3;
+    let width = columns;
+    let right_plain = truncate(&right_plain, width.saturating_sub(top_fixed).max(1));
 
     let dash_count = width
         .saturating_sub(3 + left_plain.chars().count() + 1 + 1 + right_plain.chars().count() + 3);
@@ -417,19 +588,41 @@ fn hud_header(
         paint.scope("─╮")
     );
 
-    let kpi_styled: String = cells
-        .iter()
-        .map(|(_, s)| s.as_str())
-        .collect::<Vec<_>>()
-        .join(&sep_styled);
-    let right_pad = width.saturating_sub(3 + kpi_plain_len + 1);
-    let _ = writeln!(
-        out,
-        "{}  {kpi_styled}{}{}",
-        paint.scope("│"),
-        " ".repeat(right_pad),
-        paint.scope("│")
-    );
+    let inner = width.saturating_sub(6);
+    let mut rows: Vec<Vec<&(usize, String)>> = vec![Vec::new()];
+    let mut row_len = 0;
+    for cell in &cells {
+        let row = rows.last_mut().expect("rows starts with one row");
+        let needed = if row.is_empty() {
+            cell.0
+        } else {
+            row_len + sep_len + cell.0
+        };
+        if needed > inner && !row.is_empty() {
+            rows.push(vec![cell]);
+            row_len = cell.0;
+        } else {
+            row.push(cell);
+            row_len = needed;
+        }
+    }
+    for row in rows {
+        let row_plain_len =
+            row.iter().map(|(w, _)| *w).sum::<usize>() + row.len().saturating_sub(1) * sep_len;
+        let kpi_styled: String = row
+            .iter()
+            .map(|(_, s)| s.as_str())
+            .collect::<Vec<_>>()
+            .join(&sep_styled);
+        let right_pad = width.saturating_sub(3 + row_plain_len + 1);
+        let _ = writeln!(
+            out,
+            "{}  {kpi_styled}{}{}",
+            paint.scope("│"),
+            " ".repeat(right_pad),
+            paint.scope("│")
+        );
+    }
 
     let _ = writeln!(
         out,
@@ -637,46 +830,110 @@ fn hud_advisories(out: &mut String, report: &Report, width: usize, paint: Paint)
             .map(|(_, _, p, _)| p.chars().count())
             .max()
             .unwrap_or(0);
+        let id_width = rows
+            .iter()
+            .map(|(_, findings, _, _)| {
+                findings[0].id.chars().count()
+                    + if findings.len() > 1 {
+                        format!(" +{}", findings.len() - 1).len()
+                    } else {
+                        0
+                    }
+            })
+            .max()
+            .unwrap_or(0);
+        // The fix column moves to the detail line when the row would not fit.
+        let fix_inline = 2 + 6 + 2 + name_width + 2 + fix_width + 2 + 13 + 2 + id_width <= width;
 
         for (index, findings, fix_plain, fix_styled) in rows {
             let package = &report.inventory.packages[index];
-            let (pill, _) = paint.severity_pill(worst(findings));
             let name_plain_len = package.name.len() + 1 + package.version.len();
+            let name_pad = " ".repeat(name_width.saturating_sub(name_plain_len));
             let crate_relevance = best_relevance(findings);
             let (rel_styled, rel_len) = format_relevance(crate_relevance, paint);
-            let id_summary = match findings.as_slice() {
-                [only] => advisory_id_link(only, paint),
-                many => format!(
-                    "{} {}",
-                    advisory_id_link(many[0], paint),
-                    paint.dim(&format!("+{}", many.len() - 1))
-                ),
+            let rel_pad = " ".repeat(13_usize.saturating_sub(rel_len));
+            let more = if findings.len() > 1 {
+                format!(" +{}", findings.len() - 1)
+            } else {
+                String::new()
             };
+            let fix_column = if fix_inline {
+                format!(
+                    "{fix_styled}{}  ",
+                    " ".repeat(fix_width.saturating_sub(fix_plain.chars().count()))
+                )
+            } else {
+                String::new()
+            };
+
+            if crate_relevance == AdvisoryRelevance::Unlikely {
+                // One dimmed line: these crates are not built, so they stay quiet.
+                let (_, pill_label) = severity_label(worst(findings));
+                let reason = findings
+                    .iter()
+                    .find_map(|finding| finding.relevance_reason.as_deref())
+                    .map(|reason| {
+                        if reason.contains("is not built") {
+                            "not built".to_owned()
+                        } else {
+                            reason.to_owned()
+                        }
+                    })
+                    .unwrap_or_default();
+                let fix_plain_column = if fix_inline {
+                    format!(
+                        "{fix_plain}{}  ",
+                        " ".repeat(fix_width.saturating_sub(fix_plain.chars().count()))
+                    )
+                } else {
+                    String::new()
+                };
+                let line = format!(
+                    "  {pill_label}  {} {}{name_pad}  {fix_plain_column}◌ unlikely{rel_pad}  {}{more}",
+                    package.name, package.version, findings[0].id
+                );
+                if reason.is_empty() {
+                    let _ = writeln!(out, "{}", paint.dim(&line));
+                } else if line.chars().count() + 2 + reason.chars().count() <= width {
+                    let _ = writeln!(out, "{}", paint.dim(&format!("{line}  {reason}")));
+                } else {
+                    let _ = writeln!(out, "{}", paint.dim(&line));
+                    write_wrapped(out, &reason, DETAIL_INDENT, width, paint);
+                }
+                continue;
+            }
+
+            let (pill, _) = paint.severity_pill(worst(findings));
+            let id_summary = format!(
+                "{}{}",
+                advisory_id_link(findings[0], paint),
+                paint.dim(&more)
+            );
             let _ = writeln!(
                 out,
-                "  {pill}  {} {}{}  {fix_styled}{}  {rel_styled}{}  {id_summary}",
+                "  {pill}  {} {}{name_pad}  {fix_column}{rel_styled}{rel_pad}  {id_summary}",
                 paint.bold(&package.name),
                 paint.dim(&package.version),
-                " ".repeat(name_width.saturating_sub(name_plain_len)),
-                " ".repeat(fix_width.saturating_sub(fix_plain.chars().count())),
-                " ".repeat(13_usize.saturating_sub(rel_len)),
             );
             let mut detail_parts = Vec::new();
+            if !fix_inline {
+                detail_parts.push(format!("fix {fix_plain}"));
+            }
             if let Some(chain) = short_chain(report, index) {
                 detail_parts.push(format!("via {chain}"));
             }
             if findings.len() == 1 {
-                detail_parts.push(truncate(&findings[0].title, 48));
+                detail_parts.push(findings[0].title.clone());
+            }
+            if !detail_parts.is_empty() {
+                write_wrapped(out, &detail_parts.join(" · "), DETAIL_INDENT, width, paint);
             }
             if crate_relevance != AdvisoryRelevance::AffectsYou
                 && let Some(reason) = findings
                     .iter()
                     .find_map(|finding| finding.relevance_reason.as_deref())
             {
-                detail_parts.push(reason.to_owned());
-            }
-            if !detail_parts.is_empty() {
-                let _ = writeln!(out, "          {}", paint.dim(&detail_parts.join(" · ")));
+                write_wrapped(out, reason, DETAIL_INDENT, width, paint);
             }
         }
     }
@@ -697,7 +954,18 @@ fn hud_advisories(out: &mut String, report: &Report, width: usize, paint: Paint)
         let kind_width = notices.keys().map(|kind| kind.len()).max().unwrap_or(0);
         for (kind, mut names) in notices {
             names.sort();
-            let shown: Vec<String> = names.iter().take(6).cloned().collect();
+            // As many names as fit on the line, keeping room for "+N".
+            let room = width.saturating_sub(2 + kind_width + 2 + 5);
+            let mut shown: Vec<String> = Vec::new();
+            let mut used = 0;
+            for name in names.iter().take(6) {
+                let needed = used + if shown.is_empty() { 0 } else { 2 } + name.chars().count();
+                if needed > room && !shown.is_empty() {
+                    break;
+                }
+                used = needed;
+                shown.push(name.clone());
+            }
             let more = names.len().saturating_sub(shown.len());
             let more = if more > 0 {
                 format!(" {}", paint.dim(&format!("+{more}")))
@@ -762,12 +1030,25 @@ fn hud_policy(out: &mut String, report: &Report, width: usize, paint: Paint) -> 
             .get(violation.package)
             .map(|pkg| format!("{} {} ", paint.bold(&pkg.name), paint.dim(&pkg.version)))
             .unwrap_or_default();
-        let _ = writeln!(
-            out,
-            "  {icon} {}  {target}{}",
-            paint.dim(violation.rule.as_str()),
-            violation.message
-        );
+        let first = format!("  {icon} {}  {target}", paint.dim(violation.rule.as_str()));
+        // The message wraps under the line rather than being cut.
+        let words: Vec<&str> = violation.message.split(' ').collect();
+        let room = width.saturating_sub(visible_len(&first));
+        let mut taken = 0;
+        let mut used = 0;
+        for word in &words {
+            let needed = used + usize::from(taken > 0) + word.chars().count();
+            if needed > room && taken > 0 {
+                break;
+            }
+            used = needed;
+            taken += 1;
+        }
+        let _ = writeln!(out, "{first}{}", words[..taken].join(" "));
+        let rest = words[taken..].join(" ");
+        for line in wrap(&rest, width.saturating_sub(6)) {
+            let _ = writeln!(out, "      {line}");
+        }
         if let Some(chain) = short_chain(report, violation.package) {
             let _ = writeln!(out, "      {}", paint.dim(&format!("via {chain}")));
         }
@@ -1316,7 +1597,13 @@ fn hud_licenses(out: &mut String, report: &Report, width: usize, paint: Paint) -
     if unknown > 0 {
         summary_parts.push(format!("{unknown} unknown"));
     }
-    let _ = writeln!(out, "  {bar}  {}", paint.dim(&summary_parts.join(" · ")));
+    let summary = summary_parts.join(" · ");
+    if 2 + BAR_WIDTH + 2 + summary.chars().count() <= width {
+        let _ = writeln!(out, "  {bar}  {}", paint.dim(&summary));
+    } else {
+        let _ = writeln!(out, "  {bar}");
+        write_wrapped(out, &summary, 2, width, paint);
+    }
     true
 }
 
@@ -1438,7 +1725,10 @@ pub(crate) fn style_sections(text: &str, paint: Paint) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Paint, crate_fix, format_duration, mass_bar, plural, style_sections, truncate};
+    use super::{
+        Paint, clip, crate_fix, format_duration, mass_bar, plural, style_sections, truncate,
+        visible_len, wrap,
+    };
     use cargoscope_core::{AdvisoryFinding, AdvisoryKind, AdvisoryRelevance};
 
     fn finding(patched: &[&str]) -> AdvisoryFinding {
@@ -1505,5 +1795,26 @@ mod tests {
         assert_eq!(mass_bar(5, 10, false, Paint::new(false)), "█████░░░░░");
         assert_eq!(format_duration(24), "24 ms");
         assert_eq!(format_duration(1250), "1.25s");
+    }
+
+    #[test]
+    fn lines_fit_the_width_without_breaking_styles_or_links() {
+        let paint = Paint::new(true);
+        let line = format!(
+            "{} {}",
+            paint.red("vulnerable"),
+            paint.link("https://example.test", "RUSTSEC-2026-0001")
+        );
+        assert_eq!(visible_len(&line), 28);
+        assert_eq!(clip(&line, 40), line);
+        let cut = clip(&line, 15);
+        assert_eq!(visible_len(&cut), 15);
+        assert!(cut.ends_with("…\u{1b}]8;;\u{1b}\\"), "{cut:?}");
+        let plain = clip("a long plain line", 7);
+        assert_eq!(plain, "a long…");
+        assert_eq!(
+            wrap("via a › b › c · A title that is long", 16),
+            ["via a › b › c ·", "A title that is", "long"]
+        );
     }
 }

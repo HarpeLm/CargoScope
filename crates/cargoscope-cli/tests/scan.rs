@@ -1878,7 +1878,9 @@ allow-git = ["https://github.com/myorg/"]
     );
     // As in cargo-deny: an allowed license no package uses is a warning.
     assert!(
-        text.contains("⚠ license  policy-demo 0.1.0 license `BSD-3-Clause` is allowed but no checked package uses it (unused-allowed-license)"),
+        text.contains(
+            "⚠ license  policy-demo 0.1.0 license `BSD-3-Clause` is allowed but no checked package"
+        ) && text.contains("(unused-allowed-license)"),
         "{text}"
     );
     assert!(!text.contains("confidence-threshold"), "{text}");
