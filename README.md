@@ -1,82 +1,90 @@
 <div align="center">
 
-![CargoScope](docs/images/banner.svg)
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/images/banner-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/banner.svg">
+  <img alt="CargoScope — One offline report for your Rust/Cargo dependencies" src="docs/images/banner.svg">
+</picture>
+
+<br/>
 
 [![Crates.io](https://img.shields.io/crates/v/cargoscope.svg)](https://crates.io/crates/cargoscope)
 [![CI](https://github.com/HarpeLm/CargoScope/actions/workflows/ci.yml/badge.svg)](https://github.com/HarpeLm/CargoScope/actions/workflows/ci.yml)
 [![Container](https://img.shields.io/badge/ghcr.io-harpelm%2Fcargoscope-blue)](https://github.com/HarpeLm/CargoScope/pkgs/container/cargoscope)
-[![Rust](https://img.shields.io/badge/rust-1.90%2B-orange.svg)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.90%2B-orange.svg)](docs/compatibility.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-[Quick Start](#quick-start) · [Install](#install) · [GitHub Action](#github-action) · [Updating Dependencies](#updating-dependencies-like-dependabot) · [Policy](#dependency-policy) · [Benchmarks](tests/corpus/README.md) · [Compatibility](docs/compatibility.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
+[Quick Start](#quick-start) · [Install](#install) · [GitHub Action](#github-action) · [How It Works](#how-it-works) · [Benchmarks](#benchmarks) · [Docs](#documentation) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
 
 </div>
 
-![cargoscope scan on a small project: two vulnerable crates with their fix version and chain, one unused dependency, licenses, outdated versions and the next commands to run](docs/images/scan.gif)
+![CargoScope Telemetry HUD scanning a Rust project](docs/images/scan.gif)
 
-CargoScope is an open-source CLI, written in Rust, for Rust/Cargo projects. One command produces one report: inventory, security advisories, available versions, licenses, likely-unused dependencies, and the dependency chain behind each finding. No more running cargo-audit, cargo-deny, cargo-machete and cargo-tree separately and reconciling their output.
+CargoScope is a 100% Rust CLI for Rust/Cargo projects that replaces five separate dependency tools with **one fast offline report**: resolved inventory, RustSec advisories ranked by relevance (`affects-you` / `possibly` / `unlikely`), static and compiler-verified unused dependencies, `deny.toml` license/ban/source policies, SemVer updates, maintenance health, and automated fixes or PRs.
 
-## Principles
+## Benchmarks
 
-- **Local, no account**: the first scan needs no account and no online service.
-- **Your code never leaves your machine**: nothing is uploaded.
-- **No silent writes**: CargoScope never modifies your files, except `cargoscope fix --apply` and `cargoscope init`, which you run on purpose.
-- **Evidence first**: every finding shows its evidence, its source and the date of its data.
-- **No code execution**: CargoScope reads files directly and never runs build scripts or project code by default. To rank advisories, `scan` asks `cargo tree --offline --locked` which crates any feature or platform builds; that command only reads the manifests, compiles nothing and never uses the network.
+| Median offline scan | Advisory parity | Policy parity | Unused-dependency precision |
+|---|---|---|---|
+| **`22 ms`** | **`1,376 / 1,376`** | **`44 / 44`** | **`100%` (`--precise`) / `98.9%` (static)** |
+| Across 72 compiled repos (0 code exec) | Identical to `cargo-audit` (74 unseen repos) | Identical to `cargo-deny` (`deny.toml`) | 35 blind `--precise` repos / 80-repo `rustc` judge |
 
-## Status
+Full methodology, exact commits, and raw outputs: [tests/corpus/README.md](tests/corpus/README.md) & [precise-benchmark.md](tests/corpus/precise-benchmark.md).
 
-**Version 0.8.0.** One offline `scan` covers RustSec advisories (ranked by relevance — `affects-you`, `possibly`, `unlikely` — with dependency chains and fix versions), static unused dependencies (with `--precise` rustc verification), `cargo-deny`-compatible license/ban/source policies (`deny.toml` supported out of the box), outdated and yanked crates (SemVer compatible vs breaking), maintenance risks (archived, stale, or single-owner crates), and duplicate versions — exported as text, JSON, SARIF, CycloneDX 1.5 (with VEX `not_affected` for `unlikely` advisories), or standalone HTML, plus multi-project aggregation via `cargoscope aggregate`.
+## Quick Start
 
-- **Action & fixes**: `cargoscope fix` removes unused deps, patches advisories (`--advisories`), and opens Dependabot-style update PRs (`--updates` / [CargoScope-Bot](https://github.com/marketplace/actions/cargoscope-bot) with `/cargoscope rebase`, `recreate`, and `ignore` comment commands) including changelogs, MSRV/license checks, and `Cargo.lock` diffs; `cargoscope audit-bin` checks compiled binaries, and container images live on `ghcr.io/harpelm/cargoscope`.
-- **Measured parity**: matches `cargo-audit` 0.23.0 on 1,376 advisories across 74 unseen repos, `cargo-deny` 0.20.2 on all 44 tested `deny.toml` projects, and reaches 98.9% post-fix precision on unused dependencies in an 80-repo rustc benchmark ([methodology & raw data](tests/corpus/README.md)).
-- **History & feedback**: see [CHANGELOG.md](CHANGELOG.md) for release notes (`0.1.0`–`0.8.0`). It is young — please report anything wrong in the [feedback issue](https://github.com/HarpeLm/CargoScope/issues/1).
+```sh
+# 1. Instant zero-network scan (inventory + unused dependencies)
+cargoscope scan . --checks inventory,unused
 
-**New here?** [Try CargoScope in two minutes](docs/try-it.md), then tell us how it went.
+# 2. Full scan: download RustSec + crates.io metadata once, then inspect offline
+cargoscope scan . --update --fast
 
-### At a Glance: What One Scan Replaces
+# 3. Preview fixes without modifying any file (pass --apply to write)
+cargoscope fix .                 # remove likely-unused deps & clean [features]
+cargoscope fix --advisories .    # bump Cargo.lock & matching workspace manifests
+cargoscope fix --updates .       # Dependabot-style compatible/breaking upgrades
 
-| Capability | Replaces / Compares to | How CargoScope handles it |
-|---|---|---|
-| **Security advisories & binary audit** | `cargo-audit` | Matches `cargo-audit` on 1,376 RustSec advisories, ranks relevance (`affects-you` / `possibly` / `unlikely`), adds `--ignore-unlikely` & CycloneDX VEX, and audits binaries (`audit-bin`) |
-| **Unused dependencies** | `cargo-machete`, `cargo-shear` | Lexer-based static analysis with per-finding evidence (98.9% post-fix precision vs 1 error against 8 for `cargo-shear`), plus opt-in `rustc` `--precise` & `cargoscope fix` |
-| **Licenses, bans & sources** | `cargo-deny` | Reads `deny.toml` natively (`cargoscope init` also translates it), checks SPDX/files, feature & build-script bans, and `[graph]` targets — 34/34 project parity |
-| **Versions, yanked & maintenance** | `cargo-outdated`, `cargo-tree` | Classifies `compatible` vs `breaking` updates, flags yanked crates, archived/stale/single-owner risks, duplicate versions, and exclusive pruning weights (`cargoscope why`) |
-| **PR updates & CI reporting** | Dependabot | Opens security & SemVer update PRs with MSRV/license diffs and changelogs, supports `/cargoscope rebase \| recreate \| ignore`, SARIF, HTML, and `cargoscope aggregate` |
+# 4. Bootstrap cargoscope.toml (or migrate deny.toml) and GitHub CI workflow
+cargoscope init --ci
+```
+
+New here? Follow the [two-minute walkthrough](docs/try-it.md) or read the full [command reference](docs/commands.md).
 
 ## Install
 
 ```sh
-# Prebuilt binary, macOS and Linux
+# macOS / Linux prebuilt binary
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/HarpeLm/CargoScope/releases/latest/download/cargoscope-installer.sh | sh
 
-# Prebuilt binary, Windows (PowerShell)
-irm https://github.com/HarpeLm/CargoScope/releases/latest/download/cargoscope-installer.ps1 | iex
-
-# Homebrew
+# Homebrew (macOS / Linux)
 brew install HarpeLm/tap/cargoscope
 
-# From crates.io
+# crates.io
 cargo install cargoscope
 
-# Without installing, through npm
-npx cargoscope scan .
+# npm (downloads the native binary, no JS engine logic)
+npx cargoscope scan . --update
 ```
 
-From a clone of this repository: `cargo install --path crates/cargoscope-cli`.
+> **PyPI (`pip install cargoscope` / `uvx cargoscope scan .`)**: the Trusted Publisher workflow ([pypi.yml](.github/workflows/pypi.yml)) is configured and ships Python wheels starting with `v0.9.0`.
 
-### Container image
+<details>
+<summary>Windows PowerShell, Docker (ghcr.io/harpelm/cargoscope), and GitLab CI</summary>
 
-`ghcr.io/harpelm/cargoscope` runs CargoScope without installing anything (linux/amd64 and linux/arm64). The default image is enough for `scan`, `update`, `why` and `audit-bin`; the `full` tag adds Cargo, which `fix` and `scan --precise` need.
+```powershell
+# Windows prebuilt binary (PowerShell)
+irm https://github.com/HarpeLm/CargoScope/releases/latest/download/cargoscope-installer.ps1 | iex
+```
 
 ```sh
+# Docker container (linux/amd64 and linux/arm64; use `:full` when running `fix` or `--precise`)
 docker run --rm -v "$PWD:/src" -v cargoscope-cache:/cache ghcr.io/harpelm/cargoscope update .
 docker run --rm -v "$PWD:/src" -v cargoscope-cache:/cache ghcr.io/harpelm/cargoscope scan .
 ```
 
-The `cargoscope-cache` volume keeps the downloaded advisory and crates.io data between runs. In GitLab CI, where the image's entrypoint must be cleared:
-
 ```yaml
+# GitLab CI
 cargoscope:
   image:
     name: ghcr.io/harpelm/cargoscope:0.8.0
@@ -86,13 +94,50 @@ cargoscope:
     - cargoscope scan . --format sarif --output cargoscope.sarif --fail-on high
 ```
 
-Tags: `<version>` and `latest`, `<version>-full` and `full`. The images are built after each release from its Linux binaries ([docker.yml](.github/workflows/docker.yml)).
+</details>
+
+## What One Scan Replaces
+
+| Capability | Replaces | What CargoScope adds |
+|---|---|---|
+| **Advisories & binary audit** | `cargo-audit` | Matches `cargo-audit` on 1,376 advisories, ranks relevance (`affects-you` / `possibly` / `unlikely`), adds `--ignore-unlikely`, CycloneDX VEX, and `audit-bin` |
+| **Unused dependencies** | `cargo-machete`, `cargo-shear` | Lexer-based static analysis with per-finding evidence, opt-in `rustc` `--precise` mode, `[features]` & `[workspace.dependencies]` cleanup via `fix` |
+| **Licenses, bans & sources** | `cargo-deny` | Reads `deny.toml` natively (`cargoscope init` also migrates it), checks SPDX/license files, feature & build-script bans, and `[graph]` targets (44/44 parity) |
+| **Versions, yanked & weights** | `cargo-outdated`, `cargo-tree` | Splits `compatible` vs `breaking` updates, flags archived/stale/single-owner crates, duplicate versions, and pruning weights (`cargoscope why`) |
+| **PR automation & CI** | Dependabot | Opens security & SemVer PRs with MSRV/license diffs, changelogs, `/cargoscope rebase \| recreate \| ignore`, offline HTML, SARIF, and `aggregate` |
+
+## How It Works
+
+![CargoScope pipeline and crate architecture](docs/images/pipeline.svg)
+
+- **Local & offline by default**: `scan`, `why`, `compare`, `aggregate`, and `audit-bin` make zero network requests unless you run `cargoscope update` (or `scan --update`).
+- **No code execution**: manifests, lockfiles, policies, and `.rs` tokens are read directly — build scripts and proc macros never run unless you opt into `--precise`.
+- **No silent writes**: nothing on disk changes except when you explicitly pass `cargoscope fix --apply` or `cargoscope init`.
+- **Evidence first**: every finding shows its dependency chain, provenance, and cache date.
+- **Memory safe (`unsafe_code = "forbid"`)**: enforced workspace-wide with hardened symlink, depth, and file-size bounds ([SECURITY.md](SECURITY.md)).
+
+## Visual Outputs & Automated PRs
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="docs/commands.md#cargoscope-scan"><img src="docs/images/html-report.svg" alt="CargoScope offline HTML report" width="100%"/></a>
+      <br/>
+      <strong>Self-contained HTML, SARIF &amp; CycloneDX</strong><br/>
+      Export one offline report (<code>--format html</code>), GitHub Code Scanning results (<code>--format sarif</code>), CycloneDX 1.5 VEX SBOMs (<code>--format cyclonedx</code>), or merge multiple repos via <code>cargoscope aggregate</code>.
+    </td>
+    <td width="50%" valign="top">
+      <a href="docs/github-action.md"><img src="docs/images/pr-preview.svg" alt="CargoScope-Bot pull request preview" width="100%"/></a>
+      <br/>
+      <strong>Automated PRs via CargoScope-Bot</strong><br/>
+      Schedule security (<code>fix --advisories</code>) and SemVer update PRs with MSRV/license checks, <code>diff.rs</code> links, changelogs, Cargo refusal reasons, and <code>/cargoscope rebase | ignore</code> commands.
+    </td>
+  </tr>
+</table>
 
 ## GitHub Action
 
-On the GitHub Marketplace the action is listed as [**CargoScope-Bot**](https://github.com/marketplace/actions/cargoscope-bot) (the name CargoScope belongs to another GitHub account; it was listed as Dep Scout up to 0.7.0); it runs CargoScope.
-
-Minimal step you can drop into an existing CI job (no extra `permissions:` needed):
+Drop [**CargoScope-Bot**](https://github.com/marketplace/actions/cargoscope-bot) into any CI workflow (downloads the prebuilt binary, caches RustSec/crates.io data, and comments PR diffs when permissions allow):
 
 ```yaml
       - uses: HarpeLm/CargoScope@v0.8.0
@@ -101,393 +146,29 @@ Minimal step you can drop into an existing CI job (no extra `permissions:` neede
           upload-sarif: false
 ```
 
-Or generate a full workflow with `cargoscope init --ci` (which also enables SARIF code scanning and PR comments when permissions allow):
+For full SARIF uploads, scheduled security PRs, and Dependabot-style update PRs, see [docs/github-action.md](docs/github-action.md).
 
-```yaml
-permissions:
-  contents: read
-  security-events: write   # optional: to upload SARIF to code scanning
-  pull-requests: write     # optional: to comment on pull requests
+## Documentation
 
-jobs:
-  cargoscope:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: HarpeLm/CargoScope@v0.8.0
-        with:
-          fail-on: high        # or none, to report without failing
-```
-
-The action downloads the prebuilt binary (no compilation), caches advisory data for a day, prints the report in the log, and uploads SARIF results to the Security tab when permissions and Code Scanning are available (missing permissions do not fail the job). Inputs: `version`, `path`, `fail-on`, `checks`, `sarif`, `upload-sarif`, `comment`, `new-only`.
-
-On a pull request, the action also scans the base branch and comments with only what the pull request changes: new and resolved advisories, new yanked versions, new likely-unused dependencies, and added, removed or changed packages. A later run updates the same comment. Advisories already on the base branch do not fail the pull request (`new-only: false` to fail on all of them). Pull requests from forks get a read-only token: the comparison then goes to the job summary instead of a comment. The comment needs CargoScope 0.2.0 or later.
-
-## Quick Start
-
-```sh
-# Instant zero-network check (inventory and likely-unused dependencies)
-cargoscope scan . --checks inventory,unused
-
-# Fast first full scan (downloads advisories + crates.io versions/licenses in a few seconds, then scans)
-cargoscope scan . --update --fast
-
-# Or download everything first (including 1 req/s maintenance indicators) then scan offline:
-cargoscope update .            # use --fast / --no-maintenance to skip 1 req/s maintenance requests
-cargoscope scan .
-```
-
-### Example Output
-
-On an older command-line DNS client (colors on a terminal, trimmed):
-
-```
-CargoScope 0.8.0  . · 106 packages · data from 2026-11-15
-
-  ✖ 7 vulnerable crates   ⚠ 22 notices   ✔ no unused dependency   ↑ 14 outdated   ◆ 10 to watch
-
-Vulnerabilities
-  ✖ openssl-src 111.15.0+1.1.1k  8 advisories, up to critical  fix: 111.25.0 fixes all
-      via dns-transport › native-tls › openssl-sys › openssl-src
-  ✖ rustls 0.19.1                2 advisories, up to high  fix: 0.23.46 fixes all
-      via dns-transport › rustls
-  ✖ webpki 0.21.4                high: webpki: CPU denial of service in certificat…  fix: 0.22.2
-      via dns-transport › webpki
-  ...
-
-Notices (not vulnerabilities)
-  unmaintained  adler, ansi_term, atty, failure, json, ring +11
-  unsound       atty, bumpalo, failure, openssl, rand
-
-Licenses: 100 registry packages, 16 license expressions (MIT/Apache-2.0 47, MIT OR Apache-2.0 22, MIT 12), 2 unknown
-
-Outdated packages: 80 (14 direct)
-- base64 0.13.0 -> 0.13.1 (compatible), 0.23.1 (breaking), published 2026-08-04
-- byteorder 1.4.3 -> 1.5.0 (compatible), published 2023-10-06
-  ...
-
-Next steps
-  › cargoscope fix --advisories  update 7 vulnerable crates, dry run first
-  › cargoscope fix --updates     update 14 outdated direct dependencies
-  › cargoscope scan --verbose    every advisory and package in full
-```
-
-Each vulnerable crate takes one line, with the smallest version that fixes all its advisories, the shortest chain that pulls it in, and whether it is likely to affect shipped code (advisories in crates no feature or platform builds, dev-only crates, unbuilt `[graph]` targets, mismatched platforms, or uncalled `[affected.functions]` are ranked `possibly` or `unlikely` with the reason, and sorted after `affects-you`; what is built comes from `cargo tree --offline --locked --all-features --target all`, or from `[graph]` when set, and when Cargo cannot list it, for instance before `cargo fetch`, the report says so and nothing is ranked unlikely for that reason); informational advisories (unmaintained, unsound, yanked) are grouped by kind. `--verbose` gives the full report instead: every advisory with its ID, link and fix, every resolved package with its chain, and the lists the short report cuts. Colors are used only on a terminal; `--color never`, `--color always` or the `NO_COLOR` variable change that, and a report written with `--output` has none. The JSON report carries the same chains in a `path` field.
-
-### Behind a Proxy
-
-`cargoscope update` follows the usual environment variables: `HTTPS_PROXY` for the `https://` downloads (RustSec, crates.io), then `ALL_PROXY`, in upper or lower case, with `http://[user:password@]host:port` as value. `NO_PROXY` lists the hosts that go direct (`*`, `crates.io`, `.example.com`; a domain covers its subdomains), and localhost always does. Only `http://` proxies are supported; an unusable proxy setting is an error that names the variable, not a silent direct connection.
-
-## More Usage
-
-```sh
-cargoscope scan . --format json --output report.json         # versioned JSON report
-cargoscope scan . --format sarif --output results.sarif       # SARIF 2.1.0 for GitHub code scanning
-cargoscope scan . --format cyclonedx --output bom.cdx.json    # CycloneDX 1.5 SBOM (components, licenses, advisories)
-cargoscope scan . --format html --output report.html          # self-contained offline HTML report
-cargoscope aggregate a.json b.json --format html -o org.html  # merge reports across multiple projects
-cargoscope why serde_json                                     # all reverse chains & pruning weight for a crate
-cargoscope scan . --fail-on high                    # fail only on high or critical vulnerabilities
-cargoscope scan . --fail-on high --ignore-unlikely  # also skip unlikely advisories (dev-only, uncalled, unbuilt)
-cargoscope scan . --fail-on none                    # never fail CI on findings
-cargoscope scan . --checks inventory,unused          # run only some checks (no download needed)
-cargoscope scan . --show-uncertain                  # also list possibly-unused dependencies
-cargoscope scan . --verbose                         # full report: every advisory and resolved package
-```
-
-By default, any security vulnerability fails the scan (exit code 1); vulnerabilities without a CVSS score count at every threshold, and informational advisories never fail. Set `CARGOSCOPE_CACHE_DIR` to choose where downloaded data is stored. Use `--fail-on none` to add CargoScope to CI alongside your existing tools without blocking builds. Exit codes: `0` OK, `1` threshold reached, `2` execution error.
-
-The JSON report follows a published schema with a compatibility policy: see [docs/json-report.md](docs/json-report.md). SARIF results cover advisories (pointing at the package in `Cargo.lock`), yanked versions in use, and likely-unused dependencies (pointing at their line in `Cargo.toml`).
-
-## Roadmap
-
-| Version | Focus |
+| Guide | Covers |
 |---|---|
-| **v0.1** | Unified Rust report: inventory, RustSec advisories, crates.io versions, licenses, unused candidates, dependency paths, text/JSON/SARIF, all distribution channels, GitHub Action |
-| **v0.2** | Measured precision: compiler-oracle benchmark, opt-in `--precise` mode |
-| **v0.3** | Report comparison, baselines, license and source policies |
-| **v0.4** | Delivered: `cargoscope fix` for unused dependencies, heaviest direct dependencies, `multiple-versions` rule (maintenance indicators and justified recommendations moved later) |
-| **v0.5** | Delivered: `fix --advisories`, `audit-bin`, `deny.toml` parity, `[graph]` scoping, per-crate licenses |
-| **v0.6** | Delivered: offline HTML report (`--format html`), SemVer compatible vs breaking updates, CycloneDX 1.5 SBOM, `cargoscope why`, full `deny.toml` parity (34 of 34 projects) |
-| **v0.7** | Delivered: Dependabot-style update pull requests with `[updates]` settings, maintenance indicators, cargo-deny-level licenses and build-time crate inspection, third blind benchmark |
-| **v0.8** | Delivered: advisory relevance ranking (`affects-you` / `possibly` / `unlikely`, `--ignore-unlikely`, CycloneDX VEX), multi-project aggregation (`cargoscope aggregate`), update PR comment commands (`/cargoscope rebase`, `recreate`, `ignore`), `--color` across all commands, full formats in `audit-bin`, and `dep:` / `--include-uncertain` support in `cargoscope fix` |
-| **1.0** | Stable CLI, JSON schema and compatibility policy |
+| [docs/try-it.md](docs/try-it.md) | 2-minute walkthrough on a sample project |
+| [docs/commands.md](docs/commands.md) | Full CLI reference (`scan`, `update` & proxies, `--precise`, `fix`, `why`, `audit-bin`, `compare`, `aggregate`, `init`) |
+| [docs/github-action.md](docs/github-action.md) | **CargoScope-Bot** CI workflows, security PRs, Dependabot-style `[updates]`, and `/cargoscope` commands |
+| [docs/policy.md](docs/policy.md) | Policy rules (`cargoscope.toml`, `deny.toml` & `.cargo/audit.toml`), licenses, `[bans.build]`, and `[graph]` scoping |
+| [docs/json-report.md](docs/json-report.md) | Versioned JSON output (`format_version: 1`) and [JSON schema](docs/schema/report-v1.json) |
+| [docs/compatibility.md](docs/compatibility.md) | `1.x` stability contract (CLI, exit codes `0`/`1`/`2`, JSON/SARIF/CycloneDX), SemVer, and MSRV (`1.90`+) |
+| [SECURITY.md](SECURITY.md) | Vulnerability reporting and CargoScope's offline/no-execution threat model |
+| [tests/corpus/README.md](tests/corpus/README.md) | Benchmarks against `rustc`, `cargo-audit`, `cargo-deny`, `cargo-shear`, and `cargo-machete` |
+| [SPEC.md](SPEC.md) & [CHANGELOG.md](CHANGELOG.md) | Full specification, roadmap (`0.1`–`1.0`), and release history |
 
-CargoScope supports **Rust/Cargo only**. Other ecosystems are not planned until the Rust experience is clearly better than combining existing tools. See [SPEC.md](SPEC.md) for the full specification.
+## Contributing & License
 
-## Architecture
-
-![CargoScope pipeline and crate architecture](docs/images/pipeline.svg)
-
-```
-cargoscope/
-├── crates/
-│   ├── cargoscope-cli/        # commands, options, exit codes
-│   ├── cargoscope-core/       # data model, orchestration, configuration
-│   ├── cargoscope-cargo/      # Cargo parsing, resolution, unused analysis
-│   ├── cargoscope-advisory/   # RustSec database, crates.io cache and maintenance
-│   └── cargoscope-report/     # text, JSON, SARIF, CycloneDX and HTML
-└── tests/                     # fixtures and integration tests
-```
-
-Pipeline: **discover → parse → analyze → report**.
-
-## Contributing
-
-Contributions are welcome, especially false-positive reports for unused-dependency detection. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Contributions and false-positive reports are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) or open a note on the [feedback issue](https://github.com/HarpeLm/CargoScope/issues/1).
 
 ```sh
 cargo test --workspace
-cargo clippy -- -W clippy::pedantic
-cargo run -p cargoscope -- scan .
+cargo clippy --workspace --all-targets -- -D warnings
 ```
-
-Unused-dependency detection is measured on a labelled corpus of 70 real repositories (about 91–94% precision on unseen code, above the 90% criterion of v0.1; on the same packages, cargo-machete's default mode has about 41% precision, see [the comparison](tests/corpus/cargo-machete.md), a [blind benchmark](tests/corpus/blind-benchmark.md) against cargo-machete, cargo-audit and cargo-deny, and a [benchmark judged by rustc](tests/corpus/compiler-benchmark.md) on 73 popular crates: 100% precision on `main` across 12 judged findings — 91.7% on the initial blind run — and more than twice cargo-machete's recall there; [against cargo-shear](tests/corpus/cargo-shear.md), CargoScope errs less and now finds as many removable library dependencies (13 of 14 each, with no CargoScope mistake against 2 for cargo-shear); a [second blind test judged by rustc on 56 new repositories](tests/corpus/blind-judge/README.md), with no mistake in CargoScope's default output; and a [third blind test on 80 mid-size repositories](tests/corpus/blind-judge-3/README.md), where cargo-shear did better (93.5% precision against 87.8%, mostly symbolic-link sources CargoScope did not read, now fixed: 98.9% on the same verdicts; after narrowing two cautious rules, 82% of rustc's unused dependencies found against cargo-shear's 94%, with 1 mistake against its 8), and where CargoScope matched cargo-audit on 1,376 advisories and cargo-deny on every policy finding): see [tests/corpus](tests/corpus/README.md) for the method and the honest numbers.
-
-## Crates in Several Versions
-
-The report lists crates resolved in more than one version (for example `syn` 1 and 2), which Cargo compiles once per version. Every version but the newest shows the chain that pulls it in: that is the dependency to update to remove the duplicate. The JSON report has them in `duplicates`, and `compare` and the pull request comment list new ones.
-
-With `multiple-versions = "deny"` under `[bans]` in `cargoscope.toml`, a duplicate fails the scan, as in cargo-deny; `skip-multiple-versions` lists crates accepted anyway (see [docs/policy.md](docs/policy.md)).
-
-The list comes from `Cargo.lock`, which covers every platform and also optional dependencies that may never be enabled: on [uv](https://github.com/astral-sh/uv), it finds the 35 crates that `cargo tree --duplicates --target all --all-features` reports, plus one only present in the lockfile.
-
-## Heaviest Direct Dependencies
-
-```
-Heaviest direct dependencies: packages that would leave the tree without each one
-- ureq 2.12.1: 54 of the 72 packages it pulls in
-- tar 0.4.46: 7 of the 11 packages it pulls in
-- jsonschema 0.61.2 (dev): 57 of the 79 packages it pulls in
-```
-
-Dependencies declared only under `[dev-dependencies]` or `[build-dependencies]` are labelled `(dev)` or `(build)` and listed after the others, since they do not ship with the project; the same label marks a duplicate pulled in through them. For each direct dependency, the report counts the packages that would leave the dependency tree if no member depended on it directly (itself included), and the size of its own tree: the first number is what removing or replacing it saves. The five heaviest are shown (all with `--verbose`), and the JSON report has every direct dependency in `direct_weights`. Like the rest of the report, it comes from `Cargo.lock`.
-
-## Maintenance Indicators
-
-"What do we rely on that is fragile?" For every direct dependency from crates.io, the report says when one of these is true:
-
-```
-Maintenance: 3 of 18 direct dependencies to watch
-- ansi_term 0.12.1: no release since 2019-09-02
-- atty 0.2.14: no release since 2020-01-05; single owner (softprops)
-- cfg-if 1.0.0: repository archived (https://github.com/rust-lang/cfg-if)
-```
-
-- **Archived repository**: GitHub marks the repository read-only. The repository is the one declared by the crate's newest release, since crates that move keep their old URL in older versions.
-- **Stale**: no release of any version for 2 years or more before the data was downloaded. Many finished crates are stale and fine; it is a question to ask, not a verdict.
-- **Single owner**: one crates.io owner and no team. If that person leaves, nobody can publish a fix. The `rust-lang-owner` account counts as a team.
-
-`cargoscope update` downloads this data for direct dependencies only: the owners from the crates.io API (one request per second, as its crawler policy asks), the repository from the local registry sources or the API, and the archived status from the GitHub API, with `GITHUB_TOKEN` or `GH_TOKEN` when set (60 requests an hour without one; if the limit is reached, the archived status stays unknown and is fetched at the next update). The data is kept for a week, so later updates are quick. Pass `--fast` (or `--no-maintenance`) to `cargoscope update` to skip this data when you want a quick first update. The JSON report has it on each package (`last_release`, `owners`, `repository`, `archived`, `maintenance`). These indicators never fail the scan.
-
-## Comparing Reports and Baselines
-
-```sh
-cargoscope scan . --format json --output baseline.json        # once, on main
-cargoscope scan . --baseline baseline.json                     # later: only new advisories fail
-cargoscope compare baseline.json current.json                  # what changed between two reports
-```
-
-`compare` lists new and resolved advisories, new yanked versions, new and resolved likely-unused dependencies, new and resolved crates in several versions, and version changes, as text, JSON (`--format json`) or Markdown for a pull request comment (`--format markdown`). It exits with 1 when new advisories reach `--fail-on`.
-
-## Updating Vulnerable Packages
-
-```sh
-cargoscope fix --advisories .            # dry run: what can be updated, and what blocks the rest
-cargoscope fix --advisories . --apply    # updates Cargo.lock, and Cargo.toml when a requirement blocks the fix
-```
-
-```
-chrono 0.4.19 (RUSTSEC-2020-0159)
-  - update to 0.4.20
-time 0.1.45 (RUSTSEC-2020-0071)
-  = cannot update: error: failed to select a version for the requirement `time = "^0.1.43"` / required by package `chrono v0.4.19`
-```
-
-For each vulnerability with a fix, CargoScope tries the smallest fixed version first with `cargo update --precise ... --dry-run`, so Cargo, which knows every version requirement, decides whether `Cargo.lock` can move without changing a manifest.
-
-When a manifest requirement is what blocks the fix (`chrono = "=0.4.19"`, or `time = "0.1"` while the fix is in 0.2.23), CargoScope retries with the requirement raised to the fixed version in every workspace manifest that declares a matching requirement (`[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`, `[target.'...']` tables, and `[workspace.dependencies]`; inline, table, and dotted-key forms, with pins, comments, and formatting preserved). Updating `[workspace.dependencies]` propagates automatically to members inheriting via `workspace = true` (which keep their `workspace = true` entries intact), while declarations on unrelated major version lines elsewhere in the workspace are left untouched. The report then says which manifests change:
-
-```
-chrono 0.4.19 (RUSTSEC-2020-0159)
-  - update to 0.4.20 (in Cargo.toml)
-```
-
-The edit is refused when another dependency would still keep the vulnerable version in `Cargo.lock`. Path and git dependencies are left alone. When nothing works, Cargo's explanation shows which dependency to upgrade or which requirement to relax.
-
-Nothing is written without `--apply`: the dry run only tries the manifest edits and restores them. With `--apply`, `Cargo.lock` gets the exact smallest fixed version and the manifests the requirement `"<version>"`. This runs `cargo update`, which may read the registry index; it compiles and runs nothing.
-
-### Security update pull requests
-
-The GitHub Action can open the pull request itself, on a schedule:
-
-```yaml
-on:
-  schedule:
-    - cron: "0 6 * * *"   # every day
-  workflow_dispatch:
-
-permissions:
-  contents: write
-  pull-requests: write
-  actions: write          # only for ci-workflow
-  security-events: write
-
-jobs:
-  security-updates:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: HarpeLm/CargoScope@v0.8.0
-        with:
-          fail-on: none
-          open-pr: true
-          pr-per-package: false  # optional: one PR per vulnerable package
-          ci-workflow: ci.yml   # optional: starts your CI on the pull request
-```
-
-It runs `cargoscope fix --advisories --apply`; when `Cargo.lock` or a `Cargo.toml` changes, it commits both, pushes the branch `cargoscope/security-updates` and opens a pull request listing the fixed advisories, the versions before and after, and what stays vulnerable with Cargo's reason. A later run updates the same pull request. With `pr-per-package: true`, it opens one pull request per vulnerable package (on branch `cargoscope/security-updates/<package>`) and closes security pull requests that no longer apply. Two GitHub rules apply:
-
-- With the default token, the repository must allow GitHub Actions to create pull requests (Settings, Actions, General, Workflow permissions). A personal access token or a GitHub App token passed as `token` does not need it.
-- A pull request opened with the default token starts no workflow. `ci-workflow` works around it: a `workflow_dispatch` started by the default token does run, and its checks show on the pull request commit (your CI needs a `workflow_dispatch` trigger). A personal access token or a GitHub App token starts the usual pull request workflows.
-
-## Updating Dependencies (like Dependabot)
-
-```sh
-cargoscope update .                              # once: the newest versions on crates.io
-cargoscope fix --updates .                       # dry run: newest compatible version of each direct dependency
-cargoscope fix --updates --breaking . --apply    # also newer major versions, raising the requirement in Cargo.toml
-```
-
-```
-cvss 2.2.0 -> 3.0.0 (breaking) (in crates/cargoscope-advisory/Cargo.toml)
-toml_edit 0.22.27 -> 0.25.19: cannot update: another dependency still requires toml_edit 0.22.27
-ureq 2.12.1 -> 3.5.2 (breaking) (in crates/cargoscope-advisory/Cargo.toml)
-```
-
-Each direct dependency from crates.io moves to its newest SemVer-compatible version in `Cargo.lock` (`cargo update --precise`, so Cargo checks every requirement). With `--breaking`, the newest major version is tried first: its requirement is raised in every manifest that declares the crate, and kept only if Cargo accepts it; otherwise the compatible update is made and the refusal is shown. Nothing is compiled: a breaking update may need code changes, which the pull request's CI shows.
-
-The Action opens the pull requests on a schedule, one per dependency as Dependabot does, titled `Bump serde from 1.0.200 to 1.0.210`:
-
-```yaml
-on:
-  schedule:
-    - cron: "0 6 * * 1"   # every Monday
-  issue_comment:
-    types: [created]      # respond to /cargoscope rebase | recreate | ignore this ...
-  workflow_dispatch:
-
-permissions:
-  contents: write
-  pull-requests: write
-
-jobs:
-  dependency-updates:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: HarpeLm/CargoScope@v0.8.0
-        with:
-          fail-on: none
-          upload-sarif: false
-          updates: compatible      # or breaking; open-pr: true adds security updates
-          updates-grouped: false   # true: one pull request for every update
-          ci-workflow: ci.yml      # optional: starts your CI on each pull request
-          labels: dependencies     # optional, created when missing
-          reviewers: my-org/rust   # optional users or teams
-          commit-prefix: "chore(deps): "
-          auto-merge: patch        # none, patch or minor: merge once the checks pass
-```
-
-Which updates are proposed, and how they are grouped, is set in `cargoscope.toml`, with the keys of `dependabot.yml`:
-
-```toml
-[updates]
-open-pull-requests-limit = 5   # groups first, then one pull request per crate
-include-dev = true             # also update dev-dependencies (default)
-ignore = [
-  { name = "tokio", update-types = ["major"], reason = "migrating later" },
-  { name = "aws-*" },                          # every update of these crates
-  { name = "regex", versions = [">= 2"] },
-]
-groups = [
-  { name = "serde", patterns = ["serde*"] },  # "Bump the serde group with 3 updates"
-  { name = "patches", update-types = ["patch"], dependency-type = "production" },
-]
-```
-
-`auto-merge` uses GitHub's auto-merge, which waits for the checks a branch protection rule requires: **without required checks, GitHub merges at once**, before any CI runs. Require your CI checks on the default branch before turning it on.
-
-Update types count the SemVer component that changes, as Dependabot does (`0.8.1 -> 0.9.0` is a minor update). An ignored major version falls back to the compatible update. Each update in a pull request links its source diff ([diff.rs](https://diff.rs)) and, for GitHub repositories, its release notes. The pull request also says, for each update: when the new version was published, the advisories it fixes or brings, a license change, the minimum Rust version it needs against the project's `rust-version`, and maintenance concerns; what else changes in `Cargo.lock`; the release notes in between, from the crate's changelog or its GitHub releases (mentions and issue references are neutralised, as Dependabot does, so nobody is notified); and the `[updates] ignore` rule that skips it. Anything that needs a decision (a major version, a higher minimum Rust version, a new license, a new advisory) is listed first. A pinned requirement (`=0.4.19`) is moved and stays pinned (`=0.4.45`). Building the body reads the crate files from Cargo's cache or crates.io, and the GitHub releases with `GITHUB_TOKEN` when set.
-
-A later run updates each pull request in place, and closes the ones the base branch no longer needs (merged by hand, or already up to date). Maintainers can also comment `/cargoscope rebase`, `/cargoscope recreate`, `/cargoscope ignore this version`, `/cargoscope ignore this major version`, `/cargoscope ignore this minor version`, or `/cargoscope ignore this dependency` (`@cargoscope ...` works too) on an update pull request when `issue_comment` is enabled on the workflow. The two GitHub rules of the security pull requests apply. Compared with Dependabot: CargoScope needs this workflow file (Dependabot needs a `dependabot.yml` for version updates too), covers Cargo only, and writes in the pull request which updates Cargo refused and why.
-
-## Auditing a Compiled Binary
-
-```sh
-cargoscope update                      # once, for the advisory database
-cargoscope audit-bin target/release/my-app
-```
-
-Reports the advisories of the crates compiled into a Rust binary, with the chain that pulls each one in. It is exact for binaries built with [`cargo auditable build`](https://github.com/rust-secure-code/cargo-auditable), which embeds the dependency tree; on a test project it gives the same findings as `cargo audit bin`. Without that data, it falls back to the crate paths that panic messages keep in the binary: that list is incomplete, has no tree, and the report says so. The file is only read, never run. Options: `--format text|json|sarif|cyclonedx|html`, `--output FILE`, `--fail-on`, `--color`, `--verbose`.
-
-## Ignoring an Advisory
-
-```toml
-# cargoscope.toml
-[advisories]
-ignore-unlikely = true   # do not fail --fail-on for unlikely advisories
-ignore = [{ id = "RUSTSEC-2020-0071", reason = "only used by a build tool", until = "2027-01-31" }]
-```
-
-Ignored advisories stay visible with their reason, but never fail the scan; in SARIF they are suppressed, and in CycloneDX both ignored and `unlikely` advisories carry VEX `not_affected` analysis. See [docs/policy.md](docs/policy.md).
-
-## Dependency Policy
-
-Already using cargo-deny? Without a `cargoscope.toml`, CargoScope reads your `deny.toml` and lists what it cannot translate. Run `cargoscope init` to generate a starter `cargoscope.toml` (or migrate an existing `deny.toml` and `.cargo/audit.toml` into `cargoscope.toml`), and `cargoscope init --ci` to create `.github/workflows/cargoscope.yml`. A `cargoscope.toml` next to `Cargo.toml` enforces allowed licenses (with per-crate exceptions and clarifications), allowed sources, banned crates and features (`[bans] features`), and, optionally, a single version per crate, in the spirit of cargo-deny. With `[graph]` (`targets`, `features`, `all-features`, `no-default-features`, `exclude-dev`), the rules only apply to the packages that build uses. Violations fail the scan. See [docs/policy.md](docs/policy.md).
-
-## Compiler-Accurate Mode
-
-```sh
-cargoscope scan . --precise
-```
-
-Confirms unused dependencies with the compiler (`cargo check --all-targets --all-features`, in `target/cargoscope-precise`): rustc's `unused_crate_dependencies` lint, or, from Rust 1.100, Cargo's own `unused_dependencies` lint. Cargo's lint skips dev-dependencies (which keep their static result) and dependencies that also appear transitively. When the compiler reports a dependency unused despite a static reference in source or doctests (for example a doctest-only dev-dependency or a `#[cfg(not(feature = "std"))]` branch masked by `--all-features`), CargoScope keeps it as `possibly-unused`. Measured across 76 repositories (72 compiling, 8,158 packages): `100.0%` precision (`16/16`) on the 35-repo blind held-out set ([precise-benchmark.md](tests/corpus/precise-benchmark.md)). **It compiles the project, so build scripts and proc macros run**: use it on code you trust. It is never enabled by default, and covers only the current platform.
-
-## Removing Unused Dependencies
-
-```sh
-cargoscope fix .            # dry run: shows what would be removed, writes nothing
-cargoscope fix . --apply    # removes them from the Cargo.toml files
-cargo check                 # updates Cargo.lock and confirms the build
-```
-
-```
-crates/app/Cargo.toml
-  - remove `rand` from [dependencies]
-  - remove `pretty_assertions` from [dev-dependencies]
-Cargo.toml
-  - remove `rand` from [workspace.dependencies]: no member uses it anymore
-```
-
-By default only likely-unused dependencies are removed (pass `--include-uncertain`, or name a crate explicitly with `--only`, to include possibly-unused findings; ignored dependencies are never touched). A dependency is removed from its section and from the same section of `[target.'...']` tables, cleaning `dep:<crate>`, `<crate>/feature`, and `<crate>?/feature` entries from `[features]` automatically (implicit optional features without `dep:` are still left in place). An entry of `[workspace.dependencies]` that no member uses anymore after the removal goes too. `--only rand,log` limits the removal to those dependencies. The manifests are edited with `toml_edit`, so formatting, order and the other comments stay as they were (a comment on the removed line goes with it). `fix` never runs `cargo`: run `cargo check` yourself afterwards. Add `--precise` to confirm the candidates with rustc first.
-
-## Ignoring an Unused-Dependency Finding
-
-```toml
-[package.metadata.cargoscope]
-ignore-unused = [
-  { name = "once_cell", reason = "used by code generated in build.rs" },
-]
-```
-
-A reason is required. Ignored dependencies stay visible in the report with their reason. Unused dependencies never fail the scan.
-
-## Security and Compatibility
-
-- **Security policy & threat model**: see [SECURITY.md](SECURITY.md) for vulnerability reporting, offline/no-code-execution guarantees, and parser limits (`unsafe_code = "forbid"`).
-- **Compatibility & MSRV policy**: see [docs/compatibility.md](docs/compatibility.md) for the `1.x` CLI/exit-code/JSON/SARIF/CycloneDX stability contract and the Rust `1.90`+ MSRV policy.
-
-## License
 
 Licensed under the [MIT License](LICENSE).
