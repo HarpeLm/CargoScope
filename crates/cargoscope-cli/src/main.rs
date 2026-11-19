@@ -76,7 +76,7 @@ const FIX_USAGE: &str =
       `/cargoscope rebase` or `/cargoscope ignore this major version`.
       Needs the crates.io data of `cargoscope update`; compiles nothing.";
 
-const SCAN_USAGE: &str = "  cargoscope scan [PATH] [--update] [--no-maintenance | --fast] [--format text|json|sarif|cyclonedx|html] [--output FILE] [--fail-on THRESHOLD] [--ignore-unlikely] [--show-uncertain] [--verbose] [--precise] [--color WHEN]
+const SCAN_USAGE: &str = "  cargoscope scan [PATH] [--update] [--no-maintenance | --fast] [--format text|json|sarif|cyclonedx|html] [--output FILE] [--fail-on THRESHOLD] [--ignore-unlikely] [--rustsec-only] [--show-uncertain] [--verbose] [--precise] [--color WHEN]
       Report on a Cargo project, read-only and offline (unless --update is given).
 
 Options for scan:
@@ -96,6 +96,8 @@ Options for scan:
                        (cargoscope.toml) fail unless THRESHOLD is none.
   --ignore-unlikely    Do not fail --fail-on for advisories ranked unlikely
                        (dev-only, mismatched [graph] target, or uncalled function).
+  --rustsec-only       Report RustSec advisories only, as cargo-audit does, without
+                       the GitHub and malicious-crate advisories that OSV adds.
   --show-uncertain     Also list possibly-unused dependencies.
   --precise            Confirm unused dependencies with rustc (cargo check, all
                        targets and features). COMPILES THE PROJECT: build
@@ -341,6 +343,16 @@ fn run_update(
             eprintln!("CargoScope could not update the advisory database: {error}");
             return Err(ExitCode::from(2));
         }
+    }
+    // OSV adds what RustSec lacks; without it, scans still have RustSec.
+    match cargoscope_advisory::osv::update(&cache, cargoscope_advisory::osv::DEFAULT_OSV_URL) {
+        Ok(summary) => say(&format!(
+            "OSV advisories not in RustSec updated: {} (GitHub advisories and malicious crates)",
+            summary.advisories
+        )),
+        Err(error) => eprintln!(
+            "warning: OSV advisories not updated ({error}); scans use RustSec alone until the next update"
+        ),
     }
 
     let loaded_inventory;

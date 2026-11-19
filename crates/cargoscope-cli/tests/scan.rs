@@ -3373,3 +3373,64 @@ fn advisories_in_crates_no_feature_builds_are_ranked_unlikely() {
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn osv_advisories_add_to_rustsec_unless_rustsec_only() {
+    let cache = std::env::temp_dir().join(format!("cargoscope-osv-scan-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&cache);
+    let rustsec = cache.join("advisory-db/crates/serde_json");
+    std::fs::create_dir_all(&rustsec).expect("create cache");
+    std::fs::copy(
+        fixture("advisory-cache/advisory-db/crates/serde_json/CARGOSCOPE-TEST-0001.md"),
+        rustsec.join("CARGOSCOPE-TEST-0001.md"),
+    )
+    .expect("copy advisory");
+    let osv_entry = |name: &str, id: &str, aliases: &str| {
+        let dir = cache.join("osv/crates").join(name);
+        std::fs::create_dir_all(&dir).expect("create OSV dir");
+        std::fs::write(
+            dir.join(format!("{id}.json")),
+            format!(
+                r#"{{"id":"{id}","aliases":{aliases},"summary":"{id} from OSV","published":"2026-11-01T00:00:00Z","database_specific":{{"severity":"HIGH"}},"affected":[{{"package":{{"ecosystem":"crates.io","name":"{name}"}},"ranges":[{{"type":"SEMVER","events":[{{"introduced":"0"}},{{"fixed":"9.0.0"}}]}}]}}]}}"#
+            ),
+        )
+        .expect("write OSV entry");
+    };
+    osv_entry("serde_json", "GHSA-test-only-ghsa", "[]");
+    // The same issue as the RustSec advisory, through its CVE alias.
+    osv_entry("serde_json", "GHSA-test-same-cve0", r#"["CVE-TEST-0001"]"#);
+    osv_entry("itoa", "MAL-2026-0001", "[]");
+
+    let ids = |extra: &[&str]| -> Vec<String> {
+        let mut args = vec!["--format", "json", "--fail-on", "none"];
+        args.extend_from_slice(extra);
+        let report: serde_json::Value =
+            serde_json::from_slice(&scan_with_cache("simple", &args, &cache).stdout)
+                .expect("JSON report");
+        let mut ids: Vec<String> = report["advisories"]
+            .as_array()
+            .expect("advisories")
+            .iter()
+            .map(|advisory| advisory["id"].as_str().expect("id").to_owned())
+            .collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(
+        ids(&[]),
+        [
+            "CARGOSCOPE-TEST-0001",
+            "GHSA-test-only-ghsa",
+            "MAL-2026-0001"
+        ]
+    );
+    assert_eq!(ids(&["--rustsec-only"]), ["CARGOSCOPE-TEST-0001"]);
+
+    let text = stdout(&scan_with_cache("simple", &["--fail-on", "none"], &cache));
+    assert!(text.contains("MAL-2026-0001"), "{text}");
+    assert!(
+        text.contains("Malicious crate: MAL-2026-0001 from OSV"),
+        "{text}"
+    );
+    let _ = std::fs::remove_dir_all(&cache);
+}

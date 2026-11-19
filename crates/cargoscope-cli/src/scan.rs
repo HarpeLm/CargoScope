@@ -42,6 +42,7 @@ pub struct ScanOptions {
     pub update: bool,
     pub include_maintenance: bool,
     pub ignore_unlikely: bool,
+    pub rustsec_only: bool,
 }
 
 /// When the text report uses colors (`--color`).
@@ -114,6 +115,7 @@ pub fn parse_scan_options(
         update: false,
         include_maintenance: true,
         ignore_unlikely: false,
+        rustsec_only: false,
     };
     let mut path_given = false;
 
@@ -152,6 +154,7 @@ pub fn parse_scan_options(
                 options.include_maintenance = false;
             }
             "--ignore-unlikely" if inline_value.is_none() => options.ignore_unlikely = true,
+            "--rustsec-only" if inline_value.is_none() => options.rustsec_only = true,
             other if other.starts_with('-') => return Err(format!("Unknown option: {other}")),
             _ if path_given => return Err("Only one scan path may be provided.".to_owned()),
             _ => {
@@ -236,7 +239,7 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
     let mut warnings = Vec::new();
 
     let (mut advisories, advisory_db_date) = if checks.advisories {
-        check_advisories(root, &inventory, &mut warnings)?
+        check_advisories(root, &inventory, options.rustsec_only, &mut warnings)?
     } else {
         (Vec::new(), None)
     };
@@ -407,10 +410,18 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
 pub(crate) fn check_advisories(
     root: &Path,
     inventory: &Inventory,
+    rustsec_only: bool,
     warnings: &mut Vec<String>,
 ) -> Result<(Vec<AdvisoryFinding>, Option<String>), ExitCode> {
     let database = cargoscope_advisory::cache_dir()
         .and_then(|dir| AdvisoryDatabase::open(&dir))
+        .map(|database| {
+            if rustsec_only {
+                database.rustsec_only()
+            } else {
+                database
+            }
+        })
         .map_err(|error| execution_error(root, &error))?;
     let check = database.check(inventory);
     if database.fetched_on.is_none() {

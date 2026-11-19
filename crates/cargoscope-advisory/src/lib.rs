@@ -17,6 +17,7 @@ use cargoscope_core::{AdvisoryFinding, AdvisoryKind, AdvisoryRelevance, Inventor
 pub mod crate_files;
 pub mod crates_io;
 mod maintenance;
+pub mod osv;
 mod proxy;
 
 /// Where the RustSec database archive is downloaded from.
@@ -228,12 +229,16 @@ fn advisory_entry(path: &Path) -> Option<(String, String)> {
         .then(|| ((*crate_name).to_owned(), (*file_name).to_owned()))
 }
 
-/// A locally cached RustSec database.
+/// A locally cached RustSec database, with the OSV advisories RustSec does
+/// not have when they were downloaded too.
 #[derive(Debug, Clone)]
 pub struct AdvisoryDatabase {
     root: PathBuf,
+    osv_root: Option<PathBuf>,
     /// When the database was downloaded, as `YYYY-MM-DD` (UTC).
     pub fetched_on: Option<String>,
+    /// When the OSV advisories were downloaded, if they were.
+    pub osv_fetched_on: Option<String>,
 }
 
 /// Result of checking an inventory against the database.
@@ -256,7 +261,22 @@ impl AdvisoryDatabase {
             .ok()
             .and_then(|text| text.trim().parse::<u64>().ok())
             .map(utc_date);
-        Ok(Self { root, fetched_on })
+        let osv_root = Some(cache_dir.join(osv::OSV_DIR)).filter(|dir| dir.join("crates").is_dir());
+        let osv_fetched_on = osv_root.as_deref().and_then(osv::fetched_on);
+        Ok(Self {
+            root,
+            osv_root,
+            fetched_on,
+            osv_fetched_on,
+        })
+    }
+
+    /// Leaves out the OSV advisories: RustSec only, as `cargo-audit` reports.
+    #[must_use]
+    pub fn rustsec_only(mut self) -> Self {
+        self.osv_root = None;
+        self.osv_fetched_on = None;
+        self
     }
 
     /// Returns the advisories that affect crates.io packages of `inventory`.
@@ -273,16 +293,19 @@ impl AdvisoryDatabase {
                 continue;
             };
             let crate_dir = self.root.join("crates").join(&package.name);
-            let Ok(entries) = fs::read_dir(&crate_dir) else {
-                continue;
-            };
-            let mut files: Vec<PathBuf> = entries
+            let mut files: Vec<PathBuf> = fs::read_dir(&crate_dir)
+                .into_iter()
+                .flatten()
                 .filter_map(Result::ok)
                 .map(|entry| entry.path())
                 .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
                 .collect();
             files.sort();
 
+            // IDs and aliases of the crate's RustSec advisories: an OSV entry
+            // naming one of them is the same issue.
+            let mut rustsec_ids: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
             for file in files {
                 let parsed = fs::read_to_string(&file)
                     .ok()
@@ -291,11 +314,38 @@ impl AdvisoryDatabase {
                     check.unreadable.push(file);
                     continue;
                 };
+                rustsec_ids.insert(advisory.id.clone());
+                rustsec_ids.extend(advisory.aliases.iter().cloned());
                 if advisory.withdrawn || advisory.package != package.name {
                     continue;
                 }
                 if advisory.affects(&version) {
                     check.findings.push(advisory.into_finding(index, &version));
+                }
+            }
+
+            let Some(osv_root) = &self.osv_root else {
+                continue;
+            };
+            for file in osv::crate_files(osv_root, &package.name) {
+                let parsed = fs::read_to_string(&file)
+                    .ok()
+                    .and_then(|text| osv::OsvAdvisory::parse(&text, &package.name));
+                let Some(advisory) = parsed else {
+                    check.unreadable.push(file);
+                    continue;
+                };
+                if advisory.is_withdrawn()
+                    || rustsec_ids.contains(&advisory.id)
+                    || advisory
+                        .aliases
+                        .iter()
+                        .any(|alias| rustsec_ids.contains(alias))
+                {
+                    continue;
+                }
+                if advisory.affects(&version) {
+                    check.findings.push(advisory.into_finding(index));
                 }
             }
         }
@@ -453,7 +503,7 @@ impl Advisory {
     }
 }
 
-fn severity_from_cvss(vector: &str) -> Option<Severity> {
+pub(crate) fn severity_from_cvss(vector: &str) -> Option<Severity> {
     let cvss = cvss::Cvss::from_str(vector).ok()?;
     Some(match cvss.severity() {
         cvss::Severity::None => Severity::None,

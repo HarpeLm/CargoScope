@@ -790,7 +790,7 @@ pub fn run(
     let inventory: Inventory = cargoscope_cargo::scan_cargo_project(root)
         .map_err(|error| execution_error(root, &error))?;
     let mut warnings = Vec::new();
-    let (findings, _) = crate::scan::check_advisories(root, &inventory, &mut warnings)?;
+    let (findings, _) = crate::scan::check_advisories(root, &inventory, false, &mut warnings)?;
     for warning in &warnings {
         eprintln!("warning: {warning}");
     }
