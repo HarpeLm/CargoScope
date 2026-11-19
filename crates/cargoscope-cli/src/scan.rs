@@ -603,16 +603,44 @@ fn short_function_name(path: &str) -> &str {
         .unwrap_or(path)
 }
 
-fn format_functions(functions: &[String]) -> String {
-    let mut shown: Vec<String> = functions
+/// The affected functions in words, with the verb that agrees with them:
+/// "`decompress()` is" or "`Seekable::decompress()`, `AdvancedSeekable::decompress()` are".
+/// Functions that share a name are shown with their type, and duplicates once.
+fn format_functions(functions: &[String]) -> (String, &'static str) {
+    let short_names: Vec<&str> = functions
+        .iter()
+        .map(|path| short_function_name(path))
+        .collect();
+    let mut labels: Vec<String> = Vec::new();
+    for (path, name) in functions.iter().zip(&short_names) {
+        let shared = short_names.iter().filter(|other| *other == name).count() > 1;
+        let label = if shared {
+            // `zstd_safe::seekable::Seekable::decompress` -> `Seekable::decompress`
+            let mut parts: Vec<&str> = path
+                .trim()
+                .trim_end_matches("()")
+                .rsplit("::")
+                .take(2)
+                .collect();
+            parts.reverse();
+            parts.join("::")
+        } else {
+            (*name).to_owned()
+        };
+        if !labels.contains(&label) {
+            labels.push(label);
+        }
+    }
+    let count = labels.len();
+    let mut shown: Vec<String> = labels
         .iter()
         .take(2)
-        .map(|path| format!("`{}()`", short_function_name(path)))
+        .map(|label| format!("`{label}()`"))
         .collect();
-    if functions.len() > 2 {
-        shown.push(format!("+{} more", functions.len() - 2));
+    if count > 2 {
+        shown.push(format!("+{} more", count - 2));
     }
-    shown.join(", ")
+    (shown.join(", "), if count > 1 { "are" } else { "is" })
 }
 
 /// Evaluates how likely each advisory is to affect the scanned project's shipped
@@ -699,15 +727,15 @@ pub(crate) fn evaluate_advisory_relevance(
                     .dependents_of(finding.package)
                     .into_iter()
                     .any(|idx| !inventory.packages[idx].root);
-                let list = format_functions(&finding.affected_functions);
+                let (list, verb) = format_functions(&finding.affected_functions);
                 if pkg.direct && !used_by_other_dep {
                     finding.relevance = AdvisoryRelevance::Unlikely;
                     finding.relevance_reason =
-                        Some(format!("{list} is never called in project sources"));
+                        Some(format!("{list} {verb} never called in project sources"));
                 } else {
                     finding.relevance = AdvisoryRelevance::Possibly;
                     finding.relevance_reason = Some(format!(
-                        "{list} is not called directly in project sources (used transitively)"
+                        "{list} {verb} not called directly in project sources (used transitively)"
                     ));
                 }
             }
@@ -875,6 +903,36 @@ fn sarif_locations(root: &Path, report: &Report) -> SarifLocations {
 #[cfg(test)]
 mod tests {
     use super::{ActivePackages, OutputFormat, parse_scan_options};
+
+    #[test]
+    fn affected_functions_read_well() {
+        let list = |paths: &[&str]| {
+            super::format_functions(&paths.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>())
+        };
+        assert_eq!(
+            list(&["zstd_safe::DCtx::decompress_stream"]),
+            ("`decompress_stream()`".to_owned(), "is")
+        );
+        // Same name on two types: keep the type, so the names differ.
+        assert_eq!(
+            list(&[
+                "zstd_safe::seekable::Seekable::decompress",
+                "zstd_safe::seekable::AdvancedSeekable::decompress",
+            ]),
+            (
+                "`Seekable::decompress()`, `AdvancedSeekable::decompress()`".to_owned(),
+                "are"
+            )
+        );
+        assert_eq!(
+            list(&[
+                "rustix::fs::fgetxattr",
+                "rustix::fs::flistxattr",
+                "rustix::fs::fremovexattr"
+            ]),
+            ("`fgetxattr()`, `flistxattr()`, +1 more".to_owned(), "are")
+        );
+    }
     use crate::FailOn;
     use cargoscope_core::{AdvisoryFinding, AdvisoryKind, Inventory, Severity};
     use std::collections::{BTreeMap, BTreeSet};
