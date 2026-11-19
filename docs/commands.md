@@ -49,6 +49,7 @@ cargoscope scan . --format cyclonedx --output bom.cdx.json     # CycloneDX 1.5 S
 cargoscope scan . --format html --output report.html           # self-contained offline HTML report
 cargoscope scan . --fail-on high                               # exit 1 only on high/critical vulnerabilities
 cargoscope scan . --fail-on high --ignore-unlikely             # also skip unlikely advisories
+cargoscope scan . --rustsec-only                               # RustSec advisories only, as cargo-audit reports
 cargoscope scan . --fail-on none                               # always exit 0 unless execution error
 cargoscope scan . --show-uncertain                             # include possibly-unused dependencies
 cargoscope scan . --verbose                                    # full listing of all packages & advisories
@@ -56,6 +57,12 @@ cargoscope scan . --color auto|always|never                    # override termin
 ```
 
 **Exit codes:** `0` = OK, `1` = finding reached `--fail-on` or policy error, `2` = execution, usage, or configuration error.
+
+### Advisory sources
+
+`cargoscope update` downloads the [RustSec advisory database](https://github.com/rustsec/advisory-db) and the crates.io export of [OSV](https://osv.dev). From OSV, CargoScope keeps only what RustSec does not have: GitHub security advisories (`GHSA-…`) and malicious crates (`MAL-…`, always reported as critical). An OSV entry whose ID or alias (a CVE, say) is an alias of a RustSec advisory is the same issue and is left out, so nothing is reported twice. RustSec stays the source of the affected functions, operating systems and architectures that rank relevance; OSV advisories carry none, so they are ranked by dependency kind and build scope only.
+
+`--rustsec-only` reports RustSec advisories alone, which is what `cargo-audit` reports. If OSV cannot be downloaded, `update` prints a warning and scans use RustSec alone.
 
 ### Advisory relevance (`affects-you`, `possibly`, `unlikely`)
 

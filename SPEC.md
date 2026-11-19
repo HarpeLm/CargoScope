@@ -207,7 +207,7 @@ Manifests, lockfiles and sources are treated as untrusted input:
 ### v0.1 commands
 
 ```sh
-# Download the RustSec database and refresh crates.io data (only network access)
+# Download the RustSec and OSV advisories and refresh crates.io data (only network access)
 cargoscope update
 
 # Full report in the terminal, read-only, no network

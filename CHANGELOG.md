@@ -4,6 +4,7 @@ All notable changes to CargoScope are documented in this file.
 
 ## Unreleased
 
+- Advisories from OSV: `cargoscope update` also downloads the crates.io export of OSV (3.8 MB) and keeps the GitHub security advisories (`GHSA-…`) and malicious crates (`MAL-…`, reported as critical) that RustSec does not have; entries naming a RustSec advisory's ID or alias are left out, so nothing is reported twice. On `russh 0.55.0`, a scan finds 15 GitHub advisories RustSec lacks. `--rustsec-only` reports RustSec alone, as `cargo-audit` does.
 - `cargoscope update` downloads sparse index entries 16 at a time: a first `update --fast` on an 841-crate project drops from 49 s to 7 s, with identical cached data. crates.io API calls keep their one-per-second pace.
 - `cargoscope update` shows a live `Maintenance data: 34/89 direct dependencies...` counter on a terminal while it fetches maintenance data (nothing in pipes or CI logs).
 - Terminal report: the weight and license bars use line glyphs (`━━━━──────`), so consecutive rows no longer merge and the bars read without color.

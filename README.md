@@ -29,7 +29,7 @@
 
 | Check | What you get | Instead of |
 |---|---|---|
-| **Advisories** | RustSec, ranked by whether your build is exposed: `affects-you`, `possibly`, `unlikely` | `cargo-audit` |
+| **Advisories** | RustSec, plus GitHub advisories and malicious crates from OSV, ranked by whether your build is exposed: `affects-you`, `possibly`, `unlikely` | `cargo-audit` |
 | **Unused dependencies** | Static analysis, or checked by the compiler with `--precise` | `cargo-machete`, `cargo-shear` |
 | **Policy** | Licenses, bans and sources, read from `cargoscope.toml` or your `deny.toml` | `cargo-deny` |
 | **Versions** | Compatible and breaking updates, yanked crates, duplicates, maintenance | `cargo-outdated` |
@@ -97,7 +97,7 @@ cargoscope:
 </div>
 
 ```sh
-cargoscope update             # download RustSec and crates.io data once
+cargoscope update             # download RustSec, OSV and crates.io data once
 cargoscope scan               # the report, offline
 
 cargoscope fix                # remove unused dependencies (dry run, --apply to write)
@@ -138,7 +138,7 @@ Scans every pull request, and can open security and update pull requests on a sc
 
 | Median offline scan | Advisories vs `cargo-audit` | Policy vs `cargo-deny` | Unused precision |
 |:---:|:---:|:---:|:---:|
-| 22 ms | 1,376 / 1,376 | 44 / 44 | 100% with `--precise` |
+| 22 ms | 1,376 / 1,376 (`--rustsec-only`) | 44 / 44 | 100% with `--precise` |
 
 <p align="center">
 <a href="tests/corpus/README.md">Methodology and raw results</a>
