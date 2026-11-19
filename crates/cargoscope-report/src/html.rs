@@ -144,7 +144,12 @@ pub fn render_html(
     now: Option<u64>,
 ) -> String {
     let counts = ReportCounts::from_report(report);
-    let target = project_root.display().to_string();
+    // `.` names nothing: show the project's real directory.
+    let target = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf())
+        .display()
+        .to_string();
     let escaped_target = escape_html(&target);
     let mut out = String::with_capacity(16 * 1024);
 
@@ -185,96 +190,83 @@ pub fn render_html(
 }
 
 fn render_header(out: &mut String, escaped_target: &str, report: &Report, counts: &ReportCounts) {
-    let (badge_label, badge_color) = if counts.active_vulnerabilities > 0 {
+    let (status, tone) = if counts.active_vulnerabilities > 0 {
         let n = counts.active_vulnerabilities;
-        let noun = if n == 1 {
-            "vulnerability"
-        } else {
-            "vulnerabilities"
-        };
-        (format!("{n} {noun}"), "#cf222e")
+        (
+            format!(
+                "{n} {}",
+                if n == 1 {
+                    "vulnerability"
+                } else {
+                    "vulnerabilities"
+                }
+            ),
+            "danger",
+        )
     } else if counts.policy_errors > 0 {
         let n = counts.policy_errors;
-        let noun = if n == 1 {
-            "policy error"
-        } else {
-            "policy errors"
-        };
-        (format!("{n} {noun}"), "#cf222e")
+        (
+            format!(
+                "{n} {}",
+                if n == 1 {
+                    "policy error"
+                } else {
+                    "policy errors"
+                }
+            ),
+            "danger",
+        )
     } else if counts.likely_unused > 0 || counts.yanked > 0 || counts.policy_warnings > 0 {
-        ("warnings".to_owned(), "#bf8700")
+        ("needs attention".to_owned(), "warn")
     } else {
-        ("clean".to_owned(), "#1a7f37")
+        ("all clear".to_owned(), "ok")
     };
-
-    let advisory_date = report.advisory_db_date.as_deref().unwrap_or("unknown");
+    let advisory_date = report.advisory_db_date.as_deref().unwrap_or("never");
     let registry_date = report.registry_date.as_deref().unwrap_or("never");
-    let checks = report.checks.enabled().join(", ");
+    let name = escaped_target
+        .rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(escaped_target);
 
-    out.push_str("<header class=\"report-header\">\n<div class=\"header-top\">\n<div>\n");
+    out.push_str("<header class=\"report-header\">\n<div class=\"brand\">");
+    out.push_str(LOGO_SVG);
     let _ = writeln!(
         out,
-        "<h1>CargoScope <span class=\"ver\">{}</span></h1>",
+        "<span>CargoScope</span><span class=\"ver\">{}</span></div>",
         escape_html(VERSION)
     );
     let _ = writeln!(
         out,
-        "<p class=\"subtitle\">Target: <code>{escaped_target}</code></p>"
+        "<div class=\"title-row\"><h1>{name}</h1><span class=\"status status-{tone}\"><span class=\"dot\"></span>{}</span></div>",
+        escape_html(&status)
     );
+    let _ = writeln!(out, "<p class=\"path\"><code>{escaped_target}</code></p>");
     let _ = writeln!(
         out,
         "<p class=\"summary-line\">{}</p>",
         escape_html(&summary(report))
     );
-    out.push_str("</div>\n<div class=\"header-badge\">");
-    render_badge_svg(out, &badge_label, badge_color);
-    out.push_str("</div>\n</div>\n<div class=\"meta-pills\">\n");
-    let _ = writeln!(
+    let _ = write!(
         out,
-        "<span class=\"pill\">Checks: {}</span>",
-        escape_html(&checks)
-    );
-    let _ = writeln!(
-        out,
-        "<span class=\"pill\">RustSec DB: {}</span>",
-        escape_html(advisory_date)
-    );
-    let _ = writeln!(
-        out,
-        "<span class=\"pill\">crates.io cache: {}</span>",
-        escape_html(registry_date)
+        "<p class=\"meta\">RustSec {} &middot; crates.io {} &middot; checks: {}",
+        escape_html(advisory_date),
+        escape_html(registry_date),
+        escape_html(&report.checks.enabled().join(", "))
     );
     if report.unused_precise {
-        out.push_str("<span class=\"pill pill-info\">Unused mode: --precise</span>\n");
+        out.push_str(" &middot; unused confirmed with <code>--precise</code>");
     }
-    out.push_str("</div>\n</header>\n");
+    out.push_str("</p>\n</header>\n");
 }
 
-fn render_badge_svg(out: &mut String, right_text: &str, right_color: &str) {
-    let left = "CargoScope";
-    let left_w = 84;
-    let right_w = (right_text.len() * 7 + 20).max(58);
-    let total_w = left_w + right_w;
-    let right_x = left_w + right_w / 2;
-    let safe_right = escape_html(right_text);
-    let _ = writeln!(
-        out,
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{total_w}\" height=\"22\" role=\"img\" aria-label=\"CargoScope: {safe_right}\">\
-<clipPath id=\"r\"><rect width=\"{total_w}\" height=\"22\" rx=\"4\" fill=\"#fff\"/></clipPath>\
-<g clip-path=\"url(#r)\"><rect width=\"{left_w}\" height=\"22\" fill=\"#24292f\"/>\
-<rect x=\"{left_w}\" width=\"{right_w}\" height=\"22\" fill=\"{right_color}\"/></g>\
-<g fill=\"#fff\" text-anchor=\"middle\" font-family=\"ui-sans-serif,system-ui,sans-serif\" font-size=\"11\" font-weight=\"600\">\
-<text x=\"{}\" y=\"15\">{left}</text><text x=\"{right_x}\" y=\"15\">{safe_right}</text></g></svg>",
-        left_w / 2
-    );
-}
+const LOGO_SVG: &str = "<svg width=\"22\" height=\"22\" viewBox=\"0 0 96 96\" aria-hidden=\"true\"><circle cx=\"48\" cy=\"48\" r=\"38\" fill=\"none\" stroke=\"#E2622B\" stroke-width=\"7\"/><path d=\"M48 2v16M48 78v16M2 48h16M78 48h16\" stroke=\"#E2622B\" stroke-width=\"7\" stroke-linecap=\"round\"/><rect x=\"35\" y=\"35\" width=\"26\" height=\"26\" rx=\"3\" fill=\"#E2622B\"/></svg>";
 
 fn render_kpi_grid(out: &mut String, report: &Report, counts: &ReportCounts) {
     out.push_str("<section class=\"kpi-grid\" aria-label=\"Summary metrics\">\n");
     render_kpi_card(
         out,
         "#advisories",
-        "Security Advisories",
+        "Security advisories",
         if !report.checks.advisories {
             "skipped".to_owned()
         } else {
@@ -298,7 +290,7 @@ fn render_kpi_grid(out: &mut String, report: &Report, counts: &ReportCounts) {
     render_kpi_card(
         out,
         "#policy",
-        "Policy Violations",
+        "Policy violations",
         if !report.checks.policy {
             "skipped".to_owned()
         } else if report.policy.is_none() {
@@ -318,7 +310,7 @@ fn render_kpi_grid(out: &mut String, report: &Report, counts: &ReportCounts) {
     render_kpi_card(
         out,
         "#unused",
-        "Likely Unused",
+        "Likely unused",
         if !report.checks.unused {
             "skipped".to_owned()
         } else {
@@ -337,7 +329,7 @@ fn render_kpi_grid(out: &mut String, report: &Report, counts: &ReportCounts) {
     render_kpi_card(
         out,
         "#versions",
-        "Versions Health",
+        "Versions",
         if !report.checks.versions {
             "skipped".to_owned()
         } else {
@@ -358,7 +350,7 @@ fn render_kpi_grid(out: &mut String, report: &Report, counts: &ReportCounts) {
     render_kpi_card(
         out,
         "#graph",
-        "Graph &amp; Packages",
+        "Packages",
         counts.packages.to_string(),
         &format!("{} multi-version crate(s)", counts.duplicates),
         if counts.duplicates > 0 {
@@ -397,8 +389,8 @@ fn render_controls(out: &mut String) {
 <button class=\"tab\" data-section=\"advisories\" type=\"button\">Advisories</button>\n\
 <button class=\"tab\" data-section=\"policy\" type=\"button\">Policy</button>\n\
 <button class=\"tab\" data-section=\"unused\" type=\"button\">Unused</button>\n\
-<button class=\"tab\" data-section=\"versions\" type=\"button\">Versions &amp; Licenses</button>\n\
-<button class=\"tab\" data-section=\"supply-chain\" type=\"button\">Supply Chain</button>\n\
+<button class=\"tab\" data-section=\"versions\" type=\"button\">Versions and licenses</button>\n\
+<button class=\"tab\" data-section=\"supply-chain\" type=\"button\">Supply chain</button>\n\
 <button class=\"tab\" data-section=\"graph\" type=\"button\">Graph</button>\n\
 <button class=\"tab\" data-section=\"inventory\" type=\"button\">Inventory</button>\n\
 </div>\n</div>\n",
@@ -424,7 +416,7 @@ fn render_advisories_section(out: &mut String, report: &Report) {
     );
     let _ = writeln!(
         out,
-        "<h2>Security Advisories <span class=\"count-pill\">{}</span></h2>",
+        "<h2>Security advisories <span class=\"count-pill\">{}</span></h2>",
         report.advisories.len()
     );
     if !report.checks.advisories {
@@ -438,10 +430,20 @@ fn render_advisories_section(out: &mut String, report: &Report) {
 
     out.push_str(
         "<div class=\"table-wrap\"><table>\n<thead><tr>\
-<th>ID</th><th>Severity</th><th>Package</th><th>Title &amp; Chain</th><th>Fix / Status</th>\
+<th>ID</th><th>Severity</th><th>Package</th><th>Title and chain</th><th>Fix</th>\
 </tr></thead>\n<tbody>\n",
     );
-    for finding in &report.advisories {
+    // Vulnerabilities first, worst first; then notices; ignored ones last.
+    let mut ordered: Vec<&cargoscope_core::AdvisoryFinding> = report.advisories.iter().collect();
+    ordered.sort_by_key(|finding| {
+        (
+            finding.ignored.is_some(),
+            !matches!(finding.kind, cargoscope_core::AdvisoryKind::Vulnerability),
+            finding.relevance,
+            std::cmp::Reverse(finding.severity),
+        )
+    });
+    for finding in ordered {
         let package = &report.inventory.packages[finding.package];
         let sev_text = label(finding);
         let sev_class = if finding.ignored.is_some() {
@@ -528,16 +530,16 @@ fn render_advisories_section(out: &mut String, report: &Report) {
 fn render_policy_section(out: &mut String, report: &Report) {
     out.push_str("<section id=\"policy\" class=\"report-section\" data-section=\"policy\">\n");
     if !report.checks.policy {
-        out.push_str("<h2>Policy Violations</h2>\n<p class=\"empty\">Policy check was skipped.</p>\n</section>\n");
+        out.push_str("<h2>Policy violations</h2>\n<p class=\"empty\">Policy check was skipped.</p>\n</section>\n");
         return;
     }
     let Some(violations) = &report.policy else {
-        out.push_str("<h2>Policy Violations</h2>\n<p class=\"empty\">No cargoscope.toml or deny.toml policy configured.</p>\n</section>\n");
+        out.push_str("<h2>Policy violations</h2>\n<p class=\"empty\">No cargoscope.toml or deny.toml policy configured.</p>\n</section>\n");
         return;
     };
     let _ = writeln!(
         out,
-        "<h2>Policy Violations <span class=\"count-pill\">{}</span></h2>",
+        "<h2>Policy violations <span class=\"count-pill\">{}</span></h2>",
         violations.len()
     );
     if violations.is_empty() {
@@ -549,7 +551,7 @@ fn render_policy_section(out: &mut String, report: &Report) {
 
     out.push_str(
         "<div class=\"table-wrap\"><table>\n<thead><tr>\
-<th>Rule</th><th>Level</th><th>Package</th><th>Message &amp; Chain</th>\
+<th>Rule</th><th>Level</th><th>Package</th><th>Message and chain</th>\
 </tr></thead>\n<tbody>\n",
     );
     for violation in violations {
@@ -592,7 +594,7 @@ fn render_unused_section(
     out.push_str("<section id=\"unused\" class=\"report-section\" data-section=\"unused\">\n");
     let _ = writeln!(
         out,
-        "<h2>Unused Dependencies <span class=\"count-pill\">{} likely</span></h2>",
+        "<h2>Unused dependencies <span class=\"count-pill\">{} likely</span></h2>",
         counts.likely_unused
     );
     if !report.checks.unused {
@@ -618,7 +620,7 @@ fn render_unused_section(
     } else {
         out.push_str(
             "<div class=\"table-wrap\"><table>\n<thead><tr>\
-<th>Dependency</th><th>Confidence</th><th>Section &amp; Manifest</th><th>Evidence</th>\
+<th>Dependency</th><th>Confidence</th><th>Section and manifest</th><th>Evidence</th>\
 </tr></thead>\n<tbody>\n",
         );
         for finding in visible {
@@ -692,7 +694,7 @@ fn render_unused_section(
 
 fn render_versions_licenses_section(out: &mut String, report: &Report, counts: &ReportCounts) {
     out.push_str("<section id=\"versions\" class=\"report-section\" data-section=\"versions\">\n");
-    out.push_str("<h2>Versions &amp; Licenses</h2>\n<div class=\"split-grid\">\n");
+    out.push_str("<h2>Versions and licenses</h2>\n<div class=\"split-grid\">\n");
 
     let reg_pkgs = registry_packages(report);
     out.push_str("<div class=\"panel\">\n<h3>Licenses</h3>\n");
@@ -702,7 +704,7 @@ fn render_versions_licenses_section(out: &mut String, report: &Report, counts: &
         out.push_str("<p class=\"empty\">No registry packages in lockfile.</p>\n");
     } else {
         out.push_str(
-            "<div class=\"table-wrap\"><table>\n<thead><tr><th>SPDX License</th><th>Packages</th></tr></thead>\n<tbody>\n",
+            "<div class=\"table-wrap\"><table>\n<thead><tr><th>License</th><th>Packages</th></tr></thead>\n<tbody>\n",
         );
         for (license, count) in sorted_license_counts(&reg_pkgs) {
             let _ = writeln!(
@@ -715,7 +717,7 @@ fn render_versions_licenses_section(out: &mut String, report: &Report, counts: &
     }
     out.push_str("</div>\n");
 
-    out.push_str("<div class=\"panel\">\n<h3>Yanked &amp; Outdated Direct</h3>\n");
+    out.push_str("<div class=\"panel\">\n<h3>Yanked and outdated direct dependencies</h3>\n");
     if !report.checks.versions {
         out.push_str("<p class=\"empty\">Versions check was skipped.</p>\n");
     } else {
@@ -795,7 +797,7 @@ fn render_versions_licenses_section(out: &mut String, report: &Report, counts: &
 
 fn render_maintenance_panel(out: &mut String, report: &Report) {
     let rows = crate::maintenance_rows(report);
-    out.push_str("<h3>Maintenance of Direct Dependencies</h3>\n");
+    out.push_str("<h3>Maintenance of direct dependencies</h3>\n");
     if rows.is_empty() {
         out.push_str("<p class=\"empty empty-ok\">No archived, stale or single-owner direct dependency found.</p>\n");
         return;
@@ -832,12 +834,12 @@ fn render_supply_chain_section(out: &mut String, report: &Report, now: Option<u6
     out.push_str(
         "<section id=\"supply-chain\" class=\"report-section\" data-section=\"supply-chain\">\n",
     );
-    out.push_str("<h2>Supply Chain</h2>\n<div class=\"split-grid\">\n");
+    out.push_str("<h2>Supply chain</h2>\n<div class=\"split-grid\">\n");
 
     let recent = crate::recent_releases(report, now);
     let _ = writeln!(
         out,
-        "<div class=\"panel\">\n<h3>Recent Releases <span class=\"muted\">(last {} hours)</span></h3>",
+        "<div class=\"panel\">\n<h3>Recent releases <span class=\"muted\">(last {} hours)</span></h3>",
         cargoscope_core::RECENT_RELEASE_HOURS
     );
     if !report.checks.versions || now.is_none() {
@@ -847,7 +849,7 @@ fn render_supply_chain_section(out: &mut String, report: &Report, now: Option<u6
     } else {
         out.push_str("<p class=\"muted\">Compromised releases are usually caught within days: review these before relying on them.</p>\n");
         out.push_str(
-            "<div class=\"table-wrap\"><table>\n<thead><tr><th>Package</th><th>Published</th><th>Pulled In By</th></tr></thead>\n<tbody>\n",
+            "<div class=\"table-wrap\"><table>\n<thead><tr><th>Package</th><th>Published</th><th>Pulled in by</th></tr></thead>\n<tbody>\n",
         );
         for (index, hours) in recent {
             let pkg = &report.inventory.packages[index];
@@ -865,7 +867,7 @@ fn render_supply_chain_section(out: &mut String, report: &Report, now: Option<u6
     }
     out.push_str("</div>\n");
 
-    out.push_str("<div class=\"panel\">\n<h3>Published Audits <span class=\"muted\">(cargo-vet)</span></h3>\n");
+    out.push_str("<div class=\"panel\">\n<h3>Published audits <span class=\"muted\">(cargo-vet)</span></h3>\n");
     match crate::audit_coverage(report) {
         None => out.push_str(
             "<p class=\"empty\">No published audits downloaded; run <code>cargoscope update</code>.</p>\n",
@@ -896,9 +898,16 @@ fn render_supply_chain_section(out: &mut String, report: &Report, now: Option<u6
                 })
                 .map(|(index, _)| index)
                 .collect();
+            let mut direct = direct;
+            direct.sort_by_key(|&index| {
+                report.package_info[index]
+                    .audits
+                    .as_deref()
+                    .is_none_or(<[cargoscope_core::Audit]>::is_empty)
+            });
             if !direct.is_empty() {
                 out.push_str(
-                    "<div class=\"table-wrap\"><table>\n<thead><tr><th>Direct Dependency</th><th>Audit of the Version in Use</th></tr></thead>\n<tbody>\n",
+                    "<div class=\"table-wrap\"><table>\n<thead><tr><th>Direct dependency</th><th>Audit of the version in use</th></tr></thead>\n<tbody>\n",
                 );
                 for index in direct {
                     let pkg = &report.inventory.packages[index];
@@ -937,7 +946,7 @@ fn render_supply_chain_section(out: &mut String, report: &Report, now: Option<u6
     out.push_str("</div>\n</div>\n");
 
     let (rows, counted) = crate::unsafe_rows(report);
-    out.push_str("<div class=\"panel\">\n<h3>Unsafe Code</h3>\n");
+    out.push_str("<div class=\"panel\">\n<h3>Unsafe code</h3>\n");
     if counted == 0 {
         out.push_str(
             "<p class=\"empty\">No dependency sources on disk; run <code>cargo fetch</code>.</p>\n",
@@ -975,15 +984,15 @@ fn render_supply_chain_section(out: &mut String, report: &Report, now: Option<u6
 
 fn render_graph_section(out: &mut String, report: &Report) {
     out.push_str("<section id=\"graph\" class=\"report-section\" data-section=\"graph\">\n");
-    out.push_str("<h2>Dependency Graph Insights</h2>\n<div class=\"split-grid\">\n");
+    out.push_str("<h2>Dependency graph</h2>\n<div class=\"split-grid\">\n");
 
     let heavy = sorted_heavy_weights(report);
-    out.push_str("<div class=\"panel\">\n<h3>Heaviest Direct Dependencies</h3>\n");
+    out.push_str("<div class=\"panel\">\n<h3>Heaviest direct dependencies</h3>\n");
     if heavy.is_empty() {
         out.push_str("<p class=\"empty\">No direct dependency exclusively pulls extra transitive packages.</p>\n");
     } else {
         out.push_str(
-            "<div class=\"table-wrap\"><table>\n<thead><tr><th>Package</th><th>Kinds</th><th>Exclusive / Tree</th></tr></thead>\n<tbody>\n",
+            "<div class=\"table-wrap\"><table>\n<thead><tr><th>Package</th><th>Kinds</th><th>Exclusive / tree</th></tr></thead>\n<tbody>\n",
         );
         for (index, exclusive, tree) in heavy {
             let pkg = &report.inventory.packages[index];
@@ -1006,14 +1015,14 @@ fn render_graph_section(out: &mut String, report: &Report) {
     out.push_str("</div>\n");
 
     let duplicates = report.inventory.duplicates();
-    out.push_str("<div class=\"panel\">\n<h3>Crates in Several Versions</h3>\n");
+    out.push_str("<div class=\"panel\">\n<h3>Crates in several versions</h3>\n");
     if duplicates.is_empty() {
         out.push_str(
             "<p class=\"empty empty-ok\">No duplicate crate versions in Cargo.lock.</p>\n",
         );
     } else {
         out.push_str(
-            "<div class=\"table-wrap\"><table>\n<thead><tr><th>Crate</th><th>Versions &amp; Chains Pulling Older Versions</th></tr></thead>\n<tbody>\n",
+            "<div class=\"table-wrap\"><table>\n<thead><tr><th>Crate</th><th>Versions and the chains that pull older ones</th></tr></thead>\n<tbody>\n",
         );
         for (name, indices) in duplicates {
             let versions: Vec<&str> = indices
@@ -1057,12 +1066,12 @@ fn render_inventory_section(out: &mut String, report: &Report) {
     );
     let _ = writeln!(
         out,
-        "<h2>Resolved Packages <span class=\"count-pill\">{}</span></h2>",
+        "<h2>Resolved packages <span class=\"count-pill\">{}</span></h2>",
         report.inventory.packages.len()
     );
     out.push_str(
         "<div class=\"table-wrap\"><table>\n<thead><tr>\
-<th>Package</th><th>Version</th><th>Scope</th><th>License</th><th>Status</th><th>Path from Root</th>\
+<th>Package</th><th>Version</th><th>Scope</th><th>License</th><th>Status</th><th>Path from root</th>\
 </tr></thead>\n<tbody>\n",
     );
     for (index, pkg) in report.inventory.packages.iter().enumerate() {
@@ -1114,144 +1123,147 @@ fn render_inventory_section(out: &mut String, report: &Report) {
 }
 
 const STYLE_CSS: &str = r#":root {
-  --bg: #f6f8fa;
+  --bg: #fafaf9;
   --surface: #ffffff;
-  --surface-alt: #f0f3f6;
-  --border: #d0d7de;
-  --text: #1f2328;
-  --muted: #656d76;
-  --accent: #0969da;
-  --danger: #cf222e;
-  --danger-bg: #ffebe9;
-  --warn: #9a6700;
-  --warn-bg: #fff8c5;
-  --ok: #1a7f37;
-  --ok-bg: #dafbe1;
-  --info: #0969da;
-  --info-bg: #ddf4ff;
+  --surface-alt: #f2f1ef;
+  --border: #e6e4e0;
+  --text: #1c1b19;
+  --muted: #6f6c66;
+  --accent: #c2541f;
+  --danger: #c4314b;
+  --danger-bg: rgba(196, 49, 75, 0.1);
+  --warn: #9a6400;
+  --warn-bg: rgba(178, 120, 0, 0.12);
+  --ok: #2f7d46;
+  --ok-bg: rgba(47, 125, 70, 0.1);
+  --info: #3b6fb6;
+  --info-bg: rgba(59, 111, 182, 0.1);
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0d1117;
-    --surface: #161b22;
-    --surface-alt: #21262d;
-    --border: #30363d;
-    --text: #e6edf3;
-    --muted: #8b949e;
-    --accent: #58a6ff;
-    --danger: #f85149;
-    --danger-bg: rgba(248, 81, 73, 0.16);
-    --warn: #d29922;
-    --warn-bg: rgba(210, 153, 34, 0.16);
-    --ok: #3fb950;
-    --ok-bg: rgba(63, 185, 80, 0.16);
-    --info: #58a6ff;
-    --info-bg: rgba(88, 166, 255, 0.16);
+    --bg: #0c0d0f;
+    --surface: #131417;
+    --surface-alt: #1b1d21;
+    --border: #24272c;
+    --text: #e8e6e3;
+    --muted: #8b8f97;
+    --accent: #e8743b;
+    --danger: #f2706b;
+    --danger-bg: rgba(242, 112, 107, 0.12);
+    --warn: #e2b54f;
+    --warn-bg: rgba(226, 181, 79, 0.12);
+    --ok: #7fcb8f;
+    --ok-bg: rgba(127, 203, 143, 0.1);
+    --info: #8ab4f0;
+    --info-bg: rgba(138, 180, 240, 0.1);
   }
 }
 * { box-sizing: border-box; }
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Helvetica, Arial, sans-serif;
   background: var(--bg);
   color: var(--text);
-  line-height: 1.5;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  font-variant-numeric: tabular-nums;
 }
-.container { max-width: 1220px; margin: 0 auto; padding: 24px 16px 48px; }
-.report-header, .report-section, .kpi-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-.report-header { padding: 20px 24px; margin-bottom: 16px; }
-.header-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
-h1 { margin: 0 0 6px; font-size: 1.55rem; }
-.ver { font-weight: 400; color: var(--muted); font-size: 1rem; }
-.subtitle { margin: 0 0 6px; color: var(--muted); }
-.summary-line { margin: 0; font-weight: 500; }
-.meta-pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-.pill {
-  font-size: 0.8rem;
-  padding: 2px 10px;
-  border-radius: 999px;
-  background: var(--surface-alt);
-  border: 1px solid var(--border);
-}
-.pill-info { background: var(--info-bg); color: var(--info); border-color: transparent; }
-.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px; }
-.kpi-card {
-  display: block;
-  text-decoration: none;
-  color: inherit;
-  padding: 14px 16px;
-  border-top: 3px solid var(--border);
-}
-.kpi-card:hover { border-color: var(--accent); }
-.kpi-danger { border-top-color: var(--danger); }
-.kpi-warn { border-top-color: var(--warn); }
-.kpi-ok { border-top-color: var(--ok); }
-.kpi-info { border-top-color: var(--info); }
-.kpi-label { font-size: 0.82rem; color: var(--muted); font-weight: 600; }
-.kpi-value { font-size: 1.45rem; font-weight: 700; margin: 4px 0; }
+.container { max-width: 1180px; margin: 0 auto; padding: 40px 24px 64px; }
+.report-header { padding: 0 0 28px; margin-bottom: 28px; border-bottom: 1px solid var(--border); }
+.brand { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; font-weight: 600; color: var(--muted); letter-spacing: 0.01em; }
+.brand svg { flex: none; }
+.ver { font-weight: 400; }
+.title-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 18px; }
+h1 { margin: 0; font-size: 2rem; font-weight: 600; letter-spacing: -0.02em; }
+.status { display: inline-flex; align-items: center; gap: 7px; padding: 4px 12px; border-radius: 999px; font-size: 0.82rem; font-weight: 600; }
+.status .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.status-danger { background: var(--danger-bg); color: var(--danger); }
+.status-warn { background: var(--warn-bg); color: var(--warn); }
+.status-ok { background: var(--ok-bg); color: var(--ok); }
+.path { margin: 6px 0 0; color: var(--muted); font-size: 0.85rem; word-break: break-all; }
+.summary-line { margin: 14px 0 0; font-size: 0.98rem; }
+.meta { margin: 6px 0 0; color: var(--muted); font-size: 0.82rem; }
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1px; margin-bottom: 28px; background: var(--border); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.kpi-card { display: block; text-decoration: none; color: inherit; padding: 18px 20px; background: var(--surface); position: relative; }
+.kpi-card:hover { background: var(--surface-alt); text-decoration: none; }
+.kpi-label { font-size: 0.8rem; color: var(--muted); display: flex; align-items: center; gap: 7px; }
+.kpi-label::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.kpi-danger .kpi-label::before { background: var(--danger); }
+.kpi-warn .kpi-label::before { background: var(--warn); }
+.kpi-ok .kpi-label::before { background: var(--ok); }
+.kpi-info .kpi-label::before { background: var(--info); }
+.kpi-value { font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; margin: 6px 0 2px; }
 .kpi-detail { font-size: 0.8rem; color: var(--muted); }
 .controls {
   position: sticky;
   top: 0;
   z-index: 10;
   background: var(--bg);
-  padding: 10px 0 14px;
+  padding: 12px 0;
+  margin-bottom: 20px;
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 12px 20px;
   align-items: center;
+  border-bottom: 1px solid var(--border);
 }
 #search-input {
-  flex: 1 1 260px;
+  flex: 1 1 240px;
   padding: 8px 12px;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
-  font-size: 0.92rem;
+  font-size: 0.9rem;
 }
-.tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+#search-input:focus { outline: none; border-color: var(--accent); }
+.tabs { display: flex; flex-wrap: wrap; gap: 2px; }
 .tab {
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-  padding: 6px 12px;
-  border-radius: 999px;
-  font-size: 0.82rem;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 0.85rem;
   cursor: pointer;
 }
-.tab.is-active { background: var(--accent); color: #fff; border-color: var(--accent); }
-.alert-box { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; border: 1px solid var(--border); }
+.tab:hover { color: var(--text); background: var(--surface-alt); }
+.tab.is-active { color: var(--text); background: var(--surface-alt); box-shadow: inset 0 -2px 0 var(--accent); }
+.alert-box { padding: 12px 16px; border-radius: 10px; margin-bottom: 20px; border: 1px solid var(--border); font-size: 0.9rem; }
 .alert-warn { background: var(--warn-bg); }
 .alert-danger { background: var(--danger-bg); }
-.report-section { padding: 18px 20px; margin-bottom: 16px; }
-h2 { margin: 0 0 12px; font-size: 1.15rem; display: flex; align-items: center; gap: 8px; }
-h3 { margin: 0 0 10px; font-size: 0.98rem; }
+.report-section { padding: 0; margin-bottom: 44px; }
+h2 { margin: 0 0 14px; font-size: 1.2rem; font-weight: 600; letter-spacing: -0.01em; display: flex; align-items: center; gap: 10px; }
+h3 { margin: 0 0 12px; font-size: 0.95rem; font-weight: 600; }
 .count-pill {
-  font-size: 0.78rem;
+  font-size: 0.75rem;
   font-weight: 600;
-  padding: 2px 8px;
+  padding: 1px 8px;
   border-radius: 999px;
   background: var(--surface-alt);
   color: var(--muted);
 }
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; margin-bottom: 16px; min-width: 0; }
 .split-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 16px; }
+.split-grid .panel { margin-bottom: 0; }
+.report-section > .table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 4px 8px; }
 .table-wrap { overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
-th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
-th { color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; }
-code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.86em; }
+.panel .table-wrap { max-height: 460px; overflow: auto; margin: 0 -8px; padding: 0 8px; }
+.panel thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover td { background: var(--surface-alt); }
+th { color: var(--muted); font-weight: 500; font-size: 0.78rem; }
+td:first-child a { white-space: nowrap; }
+code { font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.86em; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 .badge {
   display: inline-block;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 0.76rem;
+  padding: 1px 7px;
+  border-radius: 5px;
+  font-size: 0.74rem;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -1268,7 +1280,7 @@ a:hover { text-decoration: underline; }
 .empty-ok { color: var(--ok); }
 .note { margin-top: 10px; font-size: 0.86rem; }
 .sub-details { margin-top: 12px; }
-footer { text-align: center; color: var(--muted); font-size: 0.82rem; margin-top: 24px; }
+footer { color: var(--muted); font-size: 0.8rem; margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--border); }
 @media print {
   .controls { display: none; }
   .report-header, .report-section, .kpi-card { break-inside: avoid; }
@@ -1473,7 +1485,7 @@ mod tests {
         ];
         let now = cargoscope_core::unix_seconds("2026-11-19T08:30:00Z");
         let html = render_html(Path::new("."), &report, false, now);
-        assert!(html.contains("data-section=\"supply-chain\" type=\"button\">Supply Chain"));
+        assert!(html.contains("data-section=\"supply-chain\" type=\"button\">Supply chain"));
         assert!(html.contains("<code>serde_json</code> <span class=\"muted\">1.0.100</span></td><td><span class=\"badge badge-warn\">6 h ago</span>"), "{html}");
         assert!(
             html.contains("<strong>1</strong> of 2 crates.io packages reviewed by an organisation")

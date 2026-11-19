@@ -643,7 +643,7 @@ fn html_exports_self_contained_report_with_findings_and_output_file() {
     assert!(unused_section(&unused_uncertain).contains("chrono"));
 
     let policy_html = stdout(&scan("policy", &["--format", "html", "--fail-on", "none"]));
-    assert!(policy_html.contains("Policy Violations"));
+    assert!(policy_html.contains("Policy violations"));
 }
 
 #[test]
