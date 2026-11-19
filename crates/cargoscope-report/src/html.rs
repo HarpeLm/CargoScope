@@ -340,6 +340,7 @@ fn render_actions(out: &mut String, report: &Report, now: Option<u64>) {
             )
         });
         let mut lines = String::new();
+        let mut fixable = 0;
         for (index, findings) in crates.iter().take(6) {
             let pkg = &report.inventory.packages[*index];
             let worst = findings.iter().filter_map(|f| f.severity).max();
@@ -365,14 +366,38 @@ fn render_actions(out: &mut String, report: &Report, now: Option<u64>) {
                 ""
             };
             let (fix, _) = crate::terminal::crate_fix(findings, &pkg.version);
-            let line = match fix {
-                Some(version) => format!(
+            // A fix outside the SemVer range of the resolved version cannot
+            // come from Cargo.lock alone when another crate pulls this one
+            // in: that crate has to accept the new version first.
+            let blocked_by = fix.as_ref().and_then(|version| {
+                let current = semver::Version::parse(&pkg.version).ok()?;
+                if pkg.direct || cargoscope_core::is_semver_compatible(&current, version) {
+                    return None;
+                }
+                let path = report.inventory.path_to(*index)?;
+                let parent = path.len().checked_sub(2).map(|at| path[at])?;
+                Some(&report.inventory.packages[parent])
+            });
+            if fix.is_some() && blocked_by.is_none() {
+                fixable += 1;
+            }
+            let line = match (fix, blocked_by) {
+                (Some(version), Some(parent)) => format!(
+                    "{} {}: fixed in {}, which {} {} does not accept yet ({advisories}){unlikely}. Update {} once a release allows it, or ask its maintainers",
+                    crate_name_html(pkg),
+                    escape_html(&pkg.version),
+                    diff_link(pkg, &version.to_string()),
+                    crate_name_html(parent),
+                    escape_html(&parent.version),
+                    escape_html(&parent.name)
+                ),
+                (Some(version), None) => format!(
                     "Update {} {} &rarr; {}: fixes {advisories}{unlikely}",
                     crate_name_html(pkg),
                     escape_html(&pkg.version),
                     diff_link(pkg, &version.to_string())
                 ),
-                None => format!(
+                (None, _) => format!(
                     "No fixed version of {} {} yet ({advisories}){unlikely}: consider replacing it",
                     crate_name_html(pkg),
                     escape_html(&pkg.version)
@@ -388,10 +413,27 @@ fn render_actions(out: &mut String, report: &Report, now: Option<u64>) {
             );
         }
         items.push(format!(
-            "<div class=\"action action-danger\"><h3>Fix {} vulnerable crate{}</h3><ul>{lines}</ul>{}</div>",
-            crates.len(),
-            if crates.len() == 1 { "" } else { "s" },
-            command_html("cargoscope fix --advisories", "preview; add --apply to write")
+            "<div class=\"action action-danger\"><h3>{}</h3><ul>{lines}</ul>{}</div>",
+            if fixable > 0 {
+                format!(
+                    "Fix {fixable} vulnerable crate{}",
+                    if fixable == 1 { "" } else { "s" }
+                )
+            } else {
+                format!(
+                    "{} vulnerable crate{} without a fix you can apply yet",
+                    crates.len(),
+                    if crates.len() == 1 { "" } else { "s" }
+                )
+            },
+            command_html(
+                "cargoscope fix --advisories",
+                if fixable > 0 {
+                    "preview; add --apply to write"
+                } else {
+                    "shows what blocks each update"
+                }
+            )
         ));
     }
 
@@ -2218,6 +2260,23 @@ mod tests {
             super::json_string("a\"<b>&"),
             "\"a\\\"\\u003cb\\u003e\\u0026\""
         );
+    }
+
+    #[test]
+    fn says_when_a_fix_waits_on_the_crate_that_pulls_it_in() {
+        let mut report = sample_report();
+        let mut finding = report.advisories[0].clone();
+        finding.package = 2;
+        finding.patched = vec![">= 2.0.0".to_owned()];
+        report.advisories = vec![finding];
+        let html = render_html(Path::new("."), &report, false, None);
+        assert!(
+            html.contains("<h3>1 vulnerable crate without a fix you can apply yet</h3>"),
+            "{html}"
+        );
+        assert!(html.contains("which <a class=\"crate\" data-direct=\"true\" href=\"https://crates.io/crates/serde_json/1.0.100\""));
+        assert!(html.contains("does not accept yet"));
+        assert!(html.contains("shows what blocks each update"));
     }
 
     #[test]
