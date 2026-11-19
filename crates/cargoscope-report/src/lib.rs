@@ -35,6 +35,9 @@ pub struct TextOptions {
     pub next_steps: bool,
     /// Wall-clock scan duration in milliseconds, shown in the HUD header when present.
     pub duration_ms: Option<u64>,
+    /// The scan time (Unix seconds), to list versions published shortly
+    /// before it; `None` lists none.
+    pub now: Option<u64>,
     /// Terminal width in columns that the default report fits in; `None`
     /// when unknown (100 columns are assumed).
     pub width: Option<usize>,
@@ -106,6 +109,9 @@ pub fn render_text(project_root: &Path, report: &Report, options: TextOptions) -
     render_registry_text(&mut out, report, options.verbose);
     render_duplicates_text(&mut out, report, verbose);
     render_weights_text(&mut out, report, options.verbose);
+    if report.checks.versions {
+        render_recent_text(&mut out, report, options.now);
+    }
     render_policy_text(&mut out, report, options.verbose);
 
     let _ = writeln!(out, "\nResolved packages: {}", inventory.packages.len());
@@ -572,6 +578,59 @@ fn render_registry_text(out: &mut String, report: &Report, verbose: bool) {
     }
 }
 
+/// Packages whose resolved version was published less than
+/// [`cargoscope_core::RECENT_RELEASE_HOURS`] before `now` (Unix seconds),
+/// with their age in hours, most recent first.
+pub(crate) fn recent_releases(report: &Report, now: Option<u64>) -> Vec<(usize, u64)> {
+    let Some(now) = now else {
+        return Vec::new();
+    };
+    let mut rows: Vec<(usize, u64)> = report
+        .package_info
+        .iter()
+        .enumerate()
+        .filter_map(|(index, info)| {
+            let published = cargoscope_core::unix_seconds(info.published.as_deref()?)?;
+            let hours = now.checked_sub(published)? / 3_600;
+            (hours < cargoscope_core::RECENT_RELEASE_HOURS).then_some((index, hours))
+        })
+        .collect();
+    rows.sort_by_key(|&(index, hours)| (hours, index));
+    rows
+}
+
+/// `6 h ago`, `2 days ago`.
+pub(crate) fn describe_age(hours: u64) -> String {
+    match hours {
+        0 => "less than an hour ago".to_owned(),
+        1..48 => format!("{hours} h ago"),
+        _ => format!("{} days ago", hours / 24),
+    }
+}
+
+fn render_recent_text(out: &mut String, report: &Report, now: Option<u64>) {
+    let rows = recent_releases(report, now);
+    if rows.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "\nRecent releases: {} published in the last {} hours (compromised releases are usually caught within days)",
+        terminal::plural(rows.len(), "package"),
+        cargoscope_core::RECENT_RELEASE_HOURS
+    );
+    for (index, hours) in rows {
+        let package = &report.inventory.packages[index];
+        let _ = writeln!(
+            out,
+            "- {} {}: published {}",
+            package.name,
+            package.version,
+            describe_age(hours)
+        );
+    }
+}
+
 /// Direct crates.io dependencies with maintenance concerns, in package order.
 pub(crate) fn maintenance_rows(
     report: &Report,
@@ -878,7 +937,7 @@ pub fn render_json(project_root: &Path, report: &Report) -> String {
         let outdated_kind = info.outdated_kind(&package.version);
         let _ = write!(
             out,
-            ",\"license\":{},\"latest_version\":{},\"latest_published\":{},\"latest_compatible\":{},\"compatible_published\":{},\"outdated\":{},\"outdated_kind\":\"{}\",\"yanked\":{},\"last_release\":{},\"owners\":{},\"repository\":{},\"archived\":{},\"maintenance\":{}}}",
+            ",\"license\":{},\"latest_version\":{},\"latest_published\":{},\"latest_compatible\":{},\"compatible_published\":{},\"outdated\":{},\"outdated_kind\":\"{}\",\"yanked\":{},\"last_release\":{},\"owners\":{},\"repository\":{},\"archived\":{},\"maintenance\":{},\"published\":{}}}",
             json_string_or_null(info.license.as_deref()),
             json_string_or_null(info.latest_version.as_deref()),
             json_string_or_null(info.latest_published.as_deref()),
@@ -902,6 +961,7 @@ pub fn render_json(project_root: &Path, report: &Report) -> String {
                     .map(|concern| concern.as_str().to_owned())
                     .collect::<Vec<_>>()
             ),
+            json_string_or_null(info.published.as_deref()),
         );
     }
     out.push_str("],");
@@ -1060,6 +1120,7 @@ mod tests {
         color: false,
         next_steps: true,
         duration_ms: None,
+        now: None,
         width: None,
     };
     use cargoscope_core::{
@@ -1113,6 +1174,40 @@ mod tests {
             warnings: Vec::new(),
             direct_kinds: std::collections::BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn lists_versions_published_shortly_before_the_scan() {
+        let mut report = sample(Vec::new());
+        report.package_info = vec![PackageInfo::default(); report.inventory.packages.len()];
+        report.package_info[1].published = Some("2026-11-19T02:00:00Z".to_owned());
+        report.package_info[2].published = Some("2026-11-10T02:00:00Z".to_owned());
+        let now = cargoscope_core::unix_seconds("2026-11-19T08:30:00Z");
+        let hud = render_text(
+            Path::new("."),
+            &report,
+            TextOptions {
+                now,
+                ..TextOptions::default()
+            },
+        );
+        assert!(
+            hud.contains("RECENT RELEASES (1 release in the last 72 h"),
+            "{hud}"
+        );
+        assert!(hud.contains("alpha 1.0.0  6 h ago"), "{hud}");
+        assert!(!hud.contains("beta 1.0.0  "), "{hud}");
+        let verbose = render_text(Path::new("."), &report, TextOptions { now, ..VERBOSE });
+        assert!(
+            verbose.contains("Recent releases: 1 package published in the last 72 hours"),
+            "{verbose}"
+        );
+        assert!(
+            verbose.contains("- alpha 1.0.0: published 6 h ago\n"),
+            "{verbose}"
+        );
+        // Without a scan time, nothing is listed.
+        assert!(!render_text(Path::new("."), &report, TextOptions::default()).contains("RECENT"));
     }
 
     #[test]
@@ -1281,7 +1376,7 @@ mod tests {
             "{\"id\":\"TEST-0001\",\"aliases\":[\"CVE-TEST\"],\"title\":\"Beta is broken\",\"date\":\"2025-05-05\",\"url\":\"https://example.test/report\",\"kind\":\"vulnerability\",\"informational\":null,\"severity\":\"high\",\"package\":{\"name\":\"beta\",\"version\":\"1.0.0\"},\"patched\":[\">= 1.2.0\"],\"path\":[{\"name\":\"app\",\"version\":\"1.0.0\"},{\"name\":\"alpha\",\"version\":\"1.0.0\"},{\"name\":\"beta\",\"version\":\"1.0.0\"}],\"ignored_reason\":null,\"relevance\":\"affects-you\",\"relevance_reason\":null}"
         ));
         assert!(json.contains(
-            "{\"name\":\"orphan\",\"version\":\"1.0.0\",\"scope\":\"transitive\",\"direct\":false,\"source\":null,\"path\":null,\"license\":null,\"latest_version\":null,\"latest_published\":null,\"latest_compatible\":null,\"compatible_published\":null,\"outdated\":false,\"outdated_kind\":\"none\",\"yanked\":null,\"last_release\":null,\"owners\":null,\"repository\":null,\"archived\":null,\"maintenance\":[]}"
+            "{\"name\":\"orphan\",\"version\":\"1.0.0\",\"scope\":\"transitive\",\"direct\":false,\"source\":null,\"path\":null,\"license\":null,\"latest_version\":null,\"latest_published\":null,\"latest_compatible\":null,\"compatible_published\":null,\"outdated\":false,\"outdated_kind\":\"none\",\"yanked\":null,\"last_release\":null,\"owners\":null,\"repository\":null,\"archived\":null,\"maintenance\":[],\"published\":null}"
         ));
         assert!(json.ends_with("\"unused\":[],\"warnings\":[]}\n"));
     }
@@ -1358,6 +1453,7 @@ mod tests {
                 color: false,
                 next_steps: true,
                 duration_ms: None,
+                now: None,
                 width: None,
             },
         );
@@ -1410,7 +1506,7 @@ mod tests {
                 "\"registry\":{\"source\":\"crates.io\",\"downloaded_on\":\"2026-02-03\"}"
             )
         );
-        assert!(json.contains("\"license\":\"MIT\",\"latest_version\":\"2.0.0\",\"latest_published\":\"2026-01-01\",\"latest_compatible\":\"1.4.0\",\"compatible_published\":\"2025-11-10\",\"outdated\":true,\"outdated_kind\":\"both\",\"yanked\":true,\"last_release\":null,\"owners\":null,\"repository\":null,\"archived\":null,\"maintenance\":[]}"));
+        assert!(json.contains("\"license\":\"MIT\",\"latest_version\":\"2.0.0\",\"latest_published\":\"2026-01-01\",\"latest_compatible\":\"1.4.0\",\"compatible_published\":\"2025-11-10\",\"outdated\":true,\"outdated_kind\":\"both\",\"yanked\":true,\"last_release\":null,\"owners\":null,\"repository\":null,\"archived\":null,\"maintenance\":[],\"published\":null}"));
     }
 
     #[test]

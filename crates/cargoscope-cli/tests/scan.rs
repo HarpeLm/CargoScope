@@ -264,7 +264,7 @@ fn json_output_includes_registry_data() {
     assert!(
         json.contains("\"registry\":{\"source\":\"crates.io\",\"downloaded_on\":\"2026-01-01\"}")
     );
-    assert!(json.contains("\"license\":\"MIT OR Apache-2.0\",\"latest_version\":\"1.0.200\",\"latest_published\":\"2025-12-01\",\"latest_compatible\":\"1.0.200\",\"compatible_published\":\"2025-12-01\",\"outdated\":true,\"outdated_kind\":\"compatible\",\"yanked\":false,\"last_release\":\"2025-12-20\",\"owners\":[\"dtolnay\"],\"repository\":\"https://github.com/serde-rs/json\",\"archived\":false,\"maintenance\":[\"single-owner\"]}"));
+    assert!(json.contains("\"license\":\"MIT OR Apache-2.0\",\"latest_version\":\"1.0.200\",\"latest_published\":\"2025-12-01\",\"latest_compatible\":\"1.0.200\",\"compatible_published\":\"2025-12-01\",\"outdated\":true,\"outdated_kind\":\"compatible\",\"yanked\":false,\"last_release\":\"2025-12-20\",\"owners\":[\"dtolnay\"],\"repository\":\"https://github.com/serde-rs/json\",\"archived\":false,\"maintenance\":[\"single-owner\"],\"published\":\"2024-09-01\"}"));
 }
 
 #[test]
@@ -3432,5 +3432,27 @@ fn osv_advisories_add_to_rustsec_unless_rustsec_only() {
         text.contains("Malicious crate: MAL-2026-0001 from OSV"),
         "{text}"
     );
+    let _ = std::fs::remove_dir_all(&cache);
+}
+
+#[test]
+fn old_advisory_data_gets_a_warning() {
+    let cache = std::env::temp_dir().join(format!("cargoscope-old-data-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&cache);
+    let db = cache.join("advisory-db");
+    std::fs::create_dir_all(db.join("crates")).expect("create cache");
+    let warns = |cache: &std::path::Path| {
+        stdout(&scan_with_cache("simple", &["--fail-on", "none"], cache))
+            .contains("days old: advisories published since are missing")
+    };
+    // The fixture database was downloaded on 2026-01-01.
+    std::fs::write(db.join("fetched-at"), "1767225600").expect("write date");
+    assert!(warns(&cache));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs();
+    std::fs::write(db.join("fetched-at"), now.to_string()).expect("write date");
+    assert!(!warns(&cache));
     let _ = std::fs::remove_dir_all(&cache);
 }

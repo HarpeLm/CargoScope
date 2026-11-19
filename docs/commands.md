@@ -64,6 +64,10 @@ cargoscope scan . --color auto|always|never                    # override termin
 
 `--rustsec-only` reports RustSec advisories alone, which is what `cargo-audit` reports. If OSV cannot be downloaded, `update` prints a warning and scans use RustSec alone.
 
+### Freshness
+
+A scan warns when the advisory data is more than 7 days old: advisories published after the download are missing until `cargoscope update` runs again. With crates.io data, the report also lists resolved versions published less than 72 hours before the scan (`RECENT RELEASES`). Compromised releases are usually caught and yanked within days, so a brand-new version deserves a look before you rely on it.
+
 ### Advisory relevance (`affects-you`, `possibly`, `unlikely`)
 
 Each advisory is ranked against what the project actually builds (using `cargo tree --offline --locked --all-features --target all`, or `[graph]` in `cargoscope.toml` when configured):

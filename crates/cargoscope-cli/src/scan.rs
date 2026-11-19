@@ -405,6 +405,9 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
     )
 }
 
+/// Advisory data older than this many days gets a warning.
+const STALE_ADVISORY_DAYS: u64 = 7;
+
 /// Matching advisories, with the `[advisories] ignore` entries applied, and
 /// the date of the database.
 pub(crate) fn check_advisories(
@@ -427,6 +430,20 @@ pub(crate) fn check_advisories(
     if database.fetched_on.is_none() {
         warnings
             .push("the advisory database has no download date; run `cargoscope update`".to_owned());
+    }
+    if let Some(age) = database
+        .fetched_on
+        .as_deref()
+        .and_then(cargoscope_advisory::unix_seconds)
+        .zip(cargoscope_advisory::unix_seconds(
+            &cargoscope_advisory::utc_today(),
+        ))
+        .map(|(fetched, today)| today.saturating_sub(fetched) / 86_400)
+        .filter(|&days| days > STALE_ADVISORY_DAYS)
+    {
+        warnings.push(format!(
+            "the advisory data is {age} days old: advisories published since are missing; run `cargoscope update`"
+        ));
     }
     if !check.unreadable.is_empty() {
         warnings.push(format!(
@@ -823,6 +840,10 @@ fn write_report(
                 next_steps: true,
                 duration_ms: Some(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)),
                 width: terminal_width(options.output.is_some()),
+                now: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|elapsed| elapsed.as_secs()),
             },
         ),
         OutputFormat::Json => cargoscope_report::render_json(root, report),

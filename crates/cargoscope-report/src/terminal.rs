@@ -398,6 +398,7 @@ pub(crate) fn render_hud(project_root: &Path, report: &Report, options: TextOpti
     }
     if report.checks.versions {
         showed_any_section |= hud_yanked(&mut out, report, width, paint);
+        showed_any_section |= hud_recent(&mut out, report, options.now, width, paint);
     }
     if report.checks.unused {
         showed_any_section |= hud_unused(&mut out, report, options.show_uncertain, width, paint);
@@ -1103,6 +1104,50 @@ fn hud_yanked(out: &mut String, report: &Report, width: usize, paint: Paint) -> 
             paint.dim(&format!(
                 "+ {} more — use --verbose for all",
                 yanked.len() - 5
+            ))
+        );
+    }
+    true
+}
+
+fn hud_recent(
+    out: &mut String,
+    report: &Report,
+    now: Option<u64>,
+    width: usize,
+    paint: Paint,
+) -> bool {
+    let rows = crate::recent_releases(report, now);
+    if rows.is_empty() {
+        return false;
+    }
+    let sub = format!(
+        "{} in the last {} h · review them before trusting",
+        plural(rows.len(), "release"),
+        cargoscope_core::RECENT_RELEASE_HOURS
+    );
+    section_rule(out, "RECENT RELEASES", Some(&sub), width, paint);
+    for &(index, hours) in rows.iter().take(5) {
+        let package = &report.inventory.packages[index];
+        let chain_note = short_chain(report, index)
+            .map(|c| format!("  {}", paint.dim(&format!("← {c}"))))
+            .unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "  {} {} {}  {}{chain_note}",
+            paint.yellow("◷"),
+            paint.bold(&package.name),
+            paint.dim(&package.version),
+            paint.yellow(&crate::describe_age(hours))
+        );
+    }
+    if rows.len() > 5 {
+        let _ = writeln!(
+            out,
+            "  {}",
+            paint.dim(&format!(
+                "+ {} more — use --verbose for all",
+                rows.len() - 5
             ))
         );
     }

@@ -524,6 +524,8 @@ pub fn utc_today() -> String {
     utc_date(seconds)
 }
 
+pub use cargoscope_core::unix_seconds;
+
 pub(crate) fn utc_date(seconds: u64) -> String {
     // Days-to-civil conversion (Howard Hinnant's algorithm).
     let days = i64::try_from(seconds / 86_400).unwrap_or(0) + 719_468;
@@ -689,6 +691,28 @@ Details.
             advisory_entry(Path::new("advisory-db-main/crates/demo/notes.txt")),
             None
         );
+    }
+
+    #[test]
+    fn reads_timestamps_as_unix_seconds() {
+        use super::unix_seconds;
+        assert_eq!(unix_seconds("1970-01-01"), Some(0));
+        assert_eq!(unix_seconds("2026-11-19T08:30:05Z"), Some(1_795_077_005));
+        assert_eq!(
+            unix_seconds("2026-11-19T08:30:05.123456Z"),
+            Some(1_795_077_005)
+        );
+        assert_eq!(
+            unix_seconds("2026-11-19T08:30:05+00:00"),
+            Some(1_795_077_005)
+        );
+        assert_eq!(
+            utc_date(unix_seconds("2024-02-29").expect("leap day")),
+            "2024-02-29"
+        );
+        assert_eq!(unix_seconds("2026-11-19T08:30:05+02:00"), None);
+        assert_eq!(unix_seconds("19-11-2026"), None);
+        assert_eq!(unix_seconds("2026-13-01"), None);
     }
 
     #[test]

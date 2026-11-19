@@ -149,7 +149,8 @@
         "name", "version", "scope", "direct", "source", "path", "license",
         "latest_version", "latest_published", "latest_compatible",
         "compatible_published", "outdated", "outdated_kind", "yanked",
-        "last_release", "owners", "repository", "archived", "maintenance"
+        "last_release", "owners", "repository", "archived", "maintenance",
+        "published"
       ],
       "properties": {
         "name": { "type": "string" },
@@ -178,7 +179,8 @@
           "type": "array",
           "items": { "enum": ["archived", "stale", "single-owner"] },
           "description": "Maintenance concerns: archived repository, no release for 2 years, single crates.io owner (since 0.7.0)."
-        }
+        },
+        "published": { "$ref": "#/$defs/nullable_string", "description": "Publication time of the resolved version, RFC 3339 UTC (a bare date in older caches); null when unknown (since 1.0.0)." }
       }
     },
     "violation": {
