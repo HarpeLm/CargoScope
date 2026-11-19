@@ -382,12 +382,30 @@ fn run_update(
             "Maintenance data of {direct} direct dependencies: up to {direct} s the first time (crates.io asks for one request per second; use --fast to skip), then kept for a week."
         ));
     }
-    match crates_io::refresh_with_options(
+    // A live counter on a terminal; nothing in pipes and CI logs.
+    let live = std::io::IsTerminal::is_terminal(&std::io::stderr());
+    let mut shown = false;
+    let mut progress = |event: crates_io::RefreshProgress| {
+        let crates_io::RefreshProgress::Maintenance { done, total } = event;
+        if !live {
+            return;
+        }
+        if done < total {
+            eprint!("\r\x1b[2KMaintenance data: {done}/{total} direct dependencies...");
+            shown = true;
+        } else if shown {
+            eprint!("\r\x1b[2K");
+        }
+        let _ = std::io::Write::flush(&mut std::io::stderr());
+    };
+    let refreshed = crates_io::refresh_with_progress(
         &cache,
         inventory,
         cargo_home.as_deref(),
         include_maintenance,
-    ) {
+        &mut progress,
+    );
+    match refreshed {
         Ok(summary) => {
             if include_maintenance {
                 say(&format!(
@@ -409,6 +427,9 @@ fn run_update(
             Ok(())
         }
         Err(error) => {
+            if live {
+                eprint!("\r\x1b[2K");
+            }
             eprintln!("CargoScope could not update crates.io data: {error}");
             Err(ExitCode::from(2))
         }

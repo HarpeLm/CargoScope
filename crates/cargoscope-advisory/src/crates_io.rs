@@ -212,6 +212,19 @@ pub fn refresh(
     refresh_with_options(cache_dir, inventory, cargo_home, true)
 }
 
+/// Progress of a registry refresh, for a live counter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshProgress {
+    /// `done` of the `total` direct dependencies whose maintenance data is
+    /// fetched (one crates.io request per second) are finished.
+    Maintenance {
+        /// Dependencies finished.
+        done: usize,
+        /// Dependencies to fetch.
+        total: usize,
+    },
+}
+
 /// Like [`refresh`], optionally skipping the `1 req/s` crates.io maintenance
 /// requests (`include_maintenance = false`).
 pub fn refresh_with_options(
@@ -219,6 +232,23 @@ pub fn refresh_with_options(
     inventory: &Inventory,
     cargo_home: Option<&Path>,
     include_maintenance: bool,
+) -> Result<RefreshSummary, AdvisoryError> {
+    refresh_with_progress(
+        cache_dir,
+        inventory,
+        cargo_home,
+        include_maintenance,
+        &mut |_| {},
+    )
+}
+
+/// Like [`refresh_with_options`], reporting progress to `progress`.
+pub fn refresh_with_progress(
+    cache_dir: &Path,
+    inventory: &Inventory,
+    cargo_home: Option<&Path>,
+    include_maintenance: bool,
+    progress: &mut dyn FnMut(RefreshProgress),
 ) -> Result<RefreshSummary, AdvisoryError> {
     let root = cache_dir.join(DIR);
     let versions_dir = root.join("versions");
@@ -319,8 +349,14 @@ pub fn refresh_with_options(
             .collect();
         direct.sort_unstable();
         direct.dedup_by(|a, b| a.0 == b.0);
-        let maintenance =
-            crate::maintenance::refresh(&root, &direct, &api_agent, &mut clock, &local_sources)?;
+        let maintenance = crate::maintenance::refresh(
+            &root,
+            &direct,
+            &api_agent,
+            &mut clock,
+            &local_sources,
+            &mut |done, total| progress(RefreshProgress::Maintenance { done, total }),
+        )?;
         summary.maintenance = maintenance.crates;
         summary.failures.extend(maintenance.failures);
     }

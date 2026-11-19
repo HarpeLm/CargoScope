@@ -205,14 +205,15 @@ pub(crate) struct Refreshed {
 }
 
 /// Fetches maintenance data for `crates` (name, newest version, resolved
-/// version), skipping
-/// crates whose cached data is complete and recent.
+/// version), skipping crates whose cached data is recent. `progress` is
+/// called with (done, total) before each crate to fetch and once at the end.
 pub(crate) fn refresh(
     root: &Path,
     crates: &[(&str, String, String)],
     api_agent: &ureq::Agent,
     clock: &mut ApiClock,
     local_sources: &[PathBuf],
+    progress: &mut dyn FnMut(usize, usize),
 ) -> Result<Refreshed, crate::AdvisoryError> {
     let dir = root.join(DIR);
     fs::create_dir_all(&dir).map_err(crate::io_error(&dir))?;
@@ -227,12 +228,18 @@ pub(crate) fn refresh(
     let mut github_blocked = false;
     let mut refreshed = Refreshed::default();
 
-    for (name, newest, resolved) in crates {
+    let is_recent = |previous: &Maintenance| {
+        previous.checked > 0 && now.saturating_sub(previous.checked) < MAX_AGE.as_secs()
+    };
+    let stale: Vec<&(&str, String, String)> = crates
+        .iter()
+        .filter(|(name, _, _)| !is_recent(&read(root, name).unwrap_or_default()))
+        .collect();
+
+    for (done, (name, newest, resolved)) in stale.iter().copied().enumerate() {
+        progress(done, stale.len());
         let name = *name;
         let previous = read(root, name).unwrap_or_default();
-        if previous.checked > 0 && now.saturating_sub(previous.checked) < MAX_AGE.as_secs() {
-            continue;
-        }
         let mut data = Maintenance {
             checked: now,
             ..previous
@@ -336,6 +343,9 @@ pub(crate) fn refresh(
         let target = dir.join(name);
         fs::write(&target, data.format()).map_err(crate::io_error(&target))?;
         refreshed.crates += 1;
+    }
+    if !stale.is_empty() {
+        progress(stale.len(), stale.len());
     }
     Ok(refreshed)
 }
