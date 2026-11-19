@@ -1762,18 +1762,19 @@ const FILTER_JS: &str = r#"(function () {
   var mapSearch = document.getElementById('map-search');
   var styles = getComputedStyle(document.documentElement);
   function css(name) { return styles.getPropertyValue(name).trim(); }
-  var colors = { root: css('--accent'), direct: css('--info'), trans: css('--muted'), vuln: css('--danger'), edge: css('--muted'), text: css('--text') };
+  var colors = { root: css('--accent'), direct: css('--info'), trans: css('--muted'), vuln: css('--danger'), edge: css('--muted'), text: css('--text'), bg: css('--surface-alt') };
   var labelFrom = data.nodes.map(function (d) { return d[3]; }).sort(function (a, b) { return b - a; })[Math.min(24, data.nodes.length - 1)] || 1;
   var n = data.nodes.length;
   var nodes = data.nodes.map(function (d, i) {
     return { i: i, name: d[0], version: d[1], kind: d[2], dependents: d[3], vuln: d[4] === 1, x: 0, y: 0, vx: 0, vy: 0, out: [], inn: [],
-      r: d[2] === 0 ? 10 : 2 + 2.6 * Math.sqrt(d[3]) };
+      r: d[2] === 0 ? 9 : d[3] <= 1 && d[2] === 2 && !d[4] ? 1.8 : 2.2 + 2.4 * Math.sqrt(d[3]) };
   });
   var edges = [];
   for (var e = 0; e < data.edges.length; e++) {
     var a = data.edges[e][0], b = data.edges[e][1];
     edges.push([a, b]); nodes[a].out.push(b); nodes[b].inn.push(a);
   }
+  var order = nodes.slice().sort(function (a, b) { return a.r - b.r; });
   // Start on rings by depth from the project, so the layout settles fast.
   var depth = new Array(n).fill(-1), queue = [];
   nodes.forEach(function (node) { if (node.kind === 0) { depth[node.i] = 0; queue.push(node.i); } });
@@ -1800,7 +1801,7 @@ const FILTER_JS: &str = r#"(function () {
     draw();
   }
   function step() {
-    var cell = 70, grid = {}, alpha = Math.max(0.02, 1 - ticks / maxTicks);
+    var cell = 95, grid = {}, alpha = Math.max(0.02, 1 - ticks / maxTicks);
     nodes.forEach(function (node) {
       var key = Math.floor(node.x / cell) + ',' + Math.floor(node.y / cell);
       (grid[key] = grid[key] || []).push(node);
@@ -1815,7 +1816,7 @@ const FILTER_JS: &str = r#"(function () {
           if (other === node) continue;
           var x = node.x - other.x, y = node.y - other.y, dist2 = x * x + y * y + 0.01;
           if (dist2 > cell * cell) continue;
-          var push = (260 + 40 * (node.r + other.r)) / dist2 * alpha;
+          var push = (300 + 90 * (node.r + other.r)) / dist2 * alpha;
           node.vx += x * push * 0.05; node.vy += y * push * 0.05;
         }
       }
@@ -1824,7 +1825,7 @@ const FILTER_JS: &str = r#"(function () {
     edges.forEach(function (edge) {
       var a = nodes[edge[0]], b = nodes[edge[1]];
       var x = b.x - a.x, y = b.y - a.y, dist = Math.sqrt(x * x + y * y) + 0.01;
-      var pull = (dist - (22 + a.r + b.r)) * 0.03 * alpha;
+      var pull = (dist - (18 + 1.6 * (a.r + b.r))) * 0.028 * alpha;
       var fx = x / dist * pull, fy = y / dist * pull;
       a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
     });
@@ -1852,9 +1853,11 @@ const FILTER_JS: &str = r#"(function () {
     ctx.translate(w / 2 + view.x, h / 2 + view.y);
     ctx.scale(view.k, view.k);
     var near = focus ? related(focus) : null;
-    ctx.lineWidth = 0.6 / view.k;
+
+    // Links: faint, so the hubs carry the picture.
+    ctx.lineWidth = 0.7 / view.k;
     ctx.strokeStyle = colors.edge;
-    ctx.globalAlpha = near ? 0.06 : 0.16;
+    ctx.globalAlpha = near ? 0.04 : 0.11;
     ctx.beginPath();
     edges.forEach(function (edge) {
       var a = nodes[edge[0]], b = nodes[edge[1]];
@@ -1862,8 +1865,8 @@ const FILTER_JS: &str = r#"(function () {
     });
     ctx.stroke();
     if (focus) {
-      ctx.globalAlpha = 1;
-      ctx.lineWidth = 1.4 / view.k;
+      ctx.globalAlpha = 0.9;
+      ctx.lineWidth = 1.5 / view.k;
       ctx.strokeStyle = colors.root;
       ctx.beginPath();
       focus.out.forEach(function (i) { ctx.moveTo(focus.x, focus.y); ctx.lineTo(nodes[i].x, nodes[i].y); });
@@ -1873,23 +1876,62 @@ const FILTER_JS: &str = r#"(function () {
       focus.inn.forEach(function (i) { ctx.moveTo(focus.x, focus.y); ctx.lineTo(nodes[i].x, nodes[i].y); });
       ctx.stroke();
     }
-    nodes.forEach(function (node) {
-      ctx.globalAlpha = near && !near[node.i] ? 0.15 : 1;
+
+    // Dots, small ones first so hubs stay on top, each with a thin outline.
+    ctx.lineWidth = 1.2 / view.k;
+    ctx.strokeStyle = colors.bg;
+    order.forEach(function (node) {
+      var faded = near && !near[node.i];
+      var leaf = node.r < 2;
+      ctx.globalAlpha = faded ? 0.08 : leaf && !near ? 0.45 : node.kind === 2 ? 0.8 : 1;
       ctx.fillStyle = color(node);
       ctx.beginPath();
-      ctx.arc(node.x, node.y, node.r, 0, Math.PI * 2);
+      ctx.arc(node.x, node.y, node === hover ? node.r * 1.4 + 1 : node.r, 0, Math.PI * 2);
       ctx.fill();
-    });
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = colors.text;
-    ctx.font = (11 / view.k) + 'px ui-sans-serif, system-ui, sans-serif';
-    nodes.forEach(function (node) {
-      var big = node.kind === 0 || node.vuln || (node.dependents >= labelFrom && node.dependents > 1) || node.r * view.k > 16;
-      if ((near && near[node.i]) || (!near && big) || node === hover) {
-        ctx.fillText(node.name, node.x + node.r + 3 / view.k, node.y + 4 / view.k);
+      if (!leaf) ctx.stroke();
+      if (node.vuln && !faded) {
+        ctx.globalAlpha = 0.9;
+        ctx.strokeStyle = colors.vuln;
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, node.r + 4 / view.k, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.strokeStyle = colors.bg;
       }
     });
     ctx.restore();
+
+    // Labels in screen space, most important first, never overlapping.
+    ctx.font = '500 11px ui-sans-serif, system-ui, sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    var placed = [];
+    var candidates = order.slice().reverse().filter(function (node) {
+      if (near) return near[node.i];
+      return node === hover || node.kind === 0 || node.vuln || (node.dependents >= labelFrom && node.dependents > 1) || node.r * view.k > 14;
+    });
+    candidates.sort(function (a, b) { return rank(b) - rank(a); });
+    candidates.forEach(function (node) {
+      var sx = w / 2 + view.x + node.x * view.k, sy = h / 2 + view.y + node.y * view.k;
+      var tx = sx + node.r * view.k + 5, width = ctx.measureText(node.name).width;
+      var box = { x: tx - 2, y: sy - 8, w: width + 4, h: 16 };
+      if (box.x > w || box.x + box.w < 0 || box.y > h || box.y + box.h < 0) return;
+      for (var p = 0; p < placed.length; p++) {
+        var o = placed[p];
+        if (box.x < o.x + o.w && box.x + box.w > o.x && box.y < o.y + o.h && box.y + box.h > o.y) return;
+      }
+      placed.push(box);
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = colors.bg;
+      ctx.strokeText(node.name, tx, sy);
+      ctx.fillStyle = node.vuln ? colors.vuln : node.kind === 0 ? colors.root : colors.text;
+      ctx.fillText(node.name, tx, sy);
+    });
+  }
+  function rank(node) {
+    if (node === hover) return 1e9;
+    if (node === focus) return 1e8;
+    return (node.kind === 0 ? 1e6 : 0) + (node.vuln ? 1e5 : 0) + node.dependents * 10 + node.r;
   }
   function animate() {
     for (var s = 0; s < 4 && ticks < maxTicks; s++) step();
