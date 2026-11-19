@@ -159,7 +159,9 @@ Prepared on 2026-11-19 (Release Candidate): governance & `1.x` stability contrac
 
 Released on 2026-11-19: PyPI wheel matrix fix (`macos-15-intel`, `macos-15`, native `ubuntu-22.04-arm`), checked with a manual `pypi.yml` run (6 wheels and sdist built) before tagging. No change to the CLI.
 
-- ⬜ `cargo fmt`, `clippy -D warnings`, `cargo test --workspace`, `cargo package`, `dist plan`; tag `v0.9.1` and verify all channels including the first PyPI publish.
+- ✅ `cargo fmt`, `clippy -D warnings`, `cargo test --workspace` (276 tests), `cargo package --workspace --exclude cargoscope-corpus`, `dist plan`. Tag `v0.9.1` pushed (2026-11-19) after a manual `pypi.yml` run built the 6 wheels and the sdist.
+- ✅ First PyPI publish through Trusted Publisher (no token): 6 wheels + sdist with attestations; `pip install cargoscope` and `uvx cargoscope` report 0.9.1. GitHub Release, crates.io (5 crates), Homebrew and the installer report 0.9.1; npm and Docker follow after processing.
+- ✅ Set the version back to `1.0.0-dev`.
 
 ## One-time setup (maintainer)
 

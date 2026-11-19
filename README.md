@@ -9,6 +9,7 @@
 <br/>
 
 [![Crates.io](https://img.shields.io/crates/v/cargoscope.svg)](https://crates.io/crates/cargoscope)
+[![PyPI](https://img.shields.io/pypi/v/cargoscope.svg)](https://pypi.org/project/cargoscope/)
 [![CI](https://github.com/HarpeLm/CargoScope/actions/workflows/ci.yml/badge.svg)](https://github.com/HarpeLm/CargoScope/actions/workflows/ci.yml)
 [![Container](https://img.shields.io/badge/ghcr.io-harpelm%2Fcargoscope-blue)](https://github.com/HarpeLm/CargoScope/pkgs/container/cargoscope)
 [![Rust](https://img.shields.io/badge/rust-1.90%2B-orange.svg)](docs/compatibility.md)
@@ -65,9 +66,10 @@ cargo install cargoscope
 
 # npm (downloads the native binary, no JS engine logic)
 npx cargoscope scan . --update
-```
 
-> **PyPI (`pip install cargoscope` / `uvx cargoscope scan .`)**: the Trusted Publisher workflow ([pypi.yml](.github/workflows/pypi.yml)) is configured and ships Python wheels starting with `v0.9.0`.
+# PyPI (Python wheel with the native binary, no Rust toolchain needed)
+pip install cargoscope        # or: uvx cargoscope scan . --update
+```
 
 <details>
 <summary>Windows PowerShell, Docker (ghcr.io/harpelm/cargoscope), and GitLab CI</summary>
