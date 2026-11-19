@@ -134,7 +134,15 @@ impl ReportCounts {
 /// Renders the scan report as a self-contained HTML5 document, terminated by a
 /// newline.
 #[must_use]
-pub fn render_html(project_root: &Path, report: &Report, show_uncertain: bool) -> String {
+///
+/// `now` (Unix seconds) is the scan time, to list versions published shortly
+/// before it; `None` lists none.
+pub fn render_html(
+    project_root: &Path,
+    report: &Report,
+    show_uncertain: bool,
+    now: Option<u64>,
+) -> String {
     let counts = ReportCounts::from_report(report);
     let target = project_root.display().to_string();
     let escaped_target = escape_html(&target);
@@ -160,6 +168,7 @@ pub fn render_html(project_root: &Path, report: &Report, show_uncertain: bool) -
     render_policy_section(&mut out, report);
     render_unused_section(&mut out, report, show_uncertain, &counts);
     render_versions_licenses_section(&mut out, report, &counts);
+    render_supply_chain_section(&mut out, report, now);
     render_graph_section(&mut out, report);
     render_inventory_section(&mut out, report);
     out.push_str("</main>\n");
@@ -389,6 +398,7 @@ fn render_controls(out: &mut String) {
 <button class=\"tab\" data-section=\"policy\" type=\"button\">Policy</button>\n\
 <button class=\"tab\" data-section=\"unused\" type=\"button\">Unused</button>\n\
 <button class=\"tab\" data-section=\"versions\" type=\"button\">Versions &amp; Licenses</button>\n\
+<button class=\"tab\" data-section=\"supply-chain\" type=\"button\">Supply Chain</button>\n\
 <button class=\"tab\" data-section=\"graph\" type=\"button\">Graph</button>\n\
 <button class=\"tab\" data-section=\"inventory\" type=\"button\">Inventory</button>\n\
 </div>\n</div>\n",
@@ -815,6 +825,152 @@ fn render_maintenance_panel(out: &mut String, report: &Report) {
         );
     }
     out.push_str("</tbody></table></div>\n");
+}
+
+/// Recent releases, published audits and `unsafe` code.
+fn render_supply_chain_section(out: &mut String, report: &Report, now: Option<u64>) {
+    out.push_str(
+        "<section id=\"supply-chain\" class=\"report-section\" data-section=\"supply-chain\">\n",
+    );
+    out.push_str("<h2>Supply Chain</h2>\n<div class=\"split-grid\">\n");
+
+    let recent = crate::recent_releases(report, now);
+    let _ = writeln!(
+        out,
+        "<div class=\"panel\">\n<h3>Recent Releases <span class=\"muted\">(last {} hours)</span></h3>",
+        cargoscope_core::RECENT_RELEASE_HOURS
+    );
+    if !report.checks.versions || now.is_none() {
+        out.push_str("<p class=\"empty\">Not checked.</p>\n");
+    } else if recent.is_empty() {
+        out.push_str("<p class=\"empty empty-ok\">No resolved version was published in the last 72 hours.</p>\n");
+    } else {
+        out.push_str("<p class=\"muted\">Compromised releases are usually caught within days: review these before relying on them.</p>\n");
+        out.push_str(
+            "<div class=\"table-wrap\"><table>\n<thead><tr><th>Package</th><th>Published</th><th>Pulled In By</th></tr></thead>\n<tbody>\n",
+        );
+        for (index, hours) in recent {
+            let pkg = &report.inventory.packages[index];
+            let via = chain(&report.inventory, index).unwrap_or_default();
+            let _ = writeln!(
+                out,
+                "<tr class=\"filter-row\"><td><code>{}</code> <span class=\"muted\">{}</span></td><td><span class=\"badge badge-warn\">{}</span></td><td><code>{}</code></td></tr>",
+                escape_html(&pkg.name),
+                escape_html(&pkg.version),
+                escape_html(&crate::describe_age(hours)),
+                escape_html(&via)
+            );
+        }
+        out.push_str("</tbody></table></div>\n");
+    }
+    out.push_str("</div>\n");
+
+    out.push_str("<div class=\"panel\">\n<h3>Published Audits <span class=\"muted\">(cargo-vet)</span></h3>\n");
+    match crate::audit_coverage(report) {
+        None => out.push_str(
+            "<p class=\"empty\">No published audits downloaded; run <code>cargoscope update</code>.</p>\n",
+        ),
+        Some(coverage) => {
+            let _ = writeln!(
+                out,
+                "<p><strong>{}</strong> of {} crates.io packages reviewed by an organisation, {} <span class=\"badge badge-ok\">safe-to-deploy</span>{}</p>",
+                coverage.audited,
+                coverage.counted,
+                coverage.deploy,
+                if coverage.organisations.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " <span class=\"muted\">&middot; {}</span>",
+                        escape_html(&coverage.organisations.join(", "))
+                    )
+                }
+            );
+            let direct: Vec<usize> = report
+                .package_info
+                .iter()
+                .enumerate()
+                .filter(|(index, info)| {
+                    let package = &report.inventory.packages[*index];
+                    info.audits.is_some() && package.direct && !package.root
+                })
+                .map(|(index, _)| index)
+                .collect();
+            if !direct.is_empty() {
+                out.push_str(
+                    "<div class=\"table-wrap\"><table>\n<thead><tr><th>Direct Dependency</th><th>Audit of the Version in Use</th></tr></thead>\n<tbody>\n",
+                );
+                for index in direct {
+                    let pkg = &report.inventory.packages[index];
+                    let audits = report.package_info[index]
+                        .audits
+                        .as_deref()
+                        .unwrap_or_default();
+                    let cell = if audits.is_empty() {
+                        "<span class=\"badge badge-warn\">not audited</span>".to_owned()
+                    } else {
+                        let best = audits.iter().map(|audit| audit.criteria).max();
+                        let class = if best == Some(cargoscope_core::AuditCriteria::SafeToDeploy) {
+                            "badge-ok"
+                        } else {
+                            "badge-warn"
+                        };
+                        let text = crate::describe_audits(audits);
+                        let (criteria, by) = text.split_once(' ').unwrap_or((text.as_str(), ""));
+                        format!(
+                            "<span class=\"badge {class}\">{}</span> <span class=\"muted\">{}</span>",
+                            escape_html(criteria),
+                            escape_html(by)
+                        )
+                    };
+                    let _ = writeln!(
+                        out,
+                        "<tr class=\"filter-row\"><td><code>{}</code> <span class=\"muted\">{}</span></td><td>{cell}</td></tr>",
+                        escape_html(&pkg.name),
+                        escape_html(&pkg.version)
+                    );
+                }
+                out.push_str("</tbody></table></div>\n");
+            }
+        }
+    }
+    out.push_str("</div>\n</div>\n");
+
+    let (rows, counted) = crate::unsafe_rows(report);
+    out.push_str("<div class=\"panel\">\n<h3>Unsafe Code</h3>\n");
+    if counted == 0 {
+        out.push_str(
+            "<p class=\"empty\">No dependency sources on disk; run <code>cargo fetch</code>.</p>\n",
+        );
+    } else if rows.is_empty() {
+        let _ = writeln!(
+            out,
+            "<p class=\"empty empty-ok\">None of the {counted} dependencies with sources on disk uses <code>unsafe</code>.</p>"
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "<p class=\"muted\">{} of {counted} dependencies with sources on disk use <code>unsafe</code>, counted from their sources.</p>",
+            rows.len()
+        );
+        out.push_str(
+            "<div class=\"table-wrap\"><table>\n<thead><tr><th>Package</th><th>Kind</th><th>Uses</th><th>Breakdown</th></tr></thead>\n<tbody>\n",
+        );
+        for (index, count) in rows {
+            let pkg = &report.inventory.packages[index];
+            let _ = writeln!(
+                out,
+                "<tr class=\"filter-row\"><td><code>{}</code> <span class=\"muted\">{}</span></td><td>{}</td><td><strong>{}</strong></td><td>{}</td></tr>",
+                escape_html(&pkg.name),
+                escape_html(&pkg.version),
+                if pkg.direct { "direct" } else { "transitive" },
+                count.total(),
+                escape_html(&crate::describe_unsafe(&count))
+            );
+        }
+        out.push_str("</tbody></table></div>\n");
+    }
+    out.push_str("</div>\n</section>\n");
 }
 
 fn render_graph_section(out: &mut String, report: &Report) {
@@ -1298,10 +1454,45 @@ mod tests {
     }
 
     #[test]
+    fn shows_recent_releases_audits_and_unsafe_code() {
+        use cargoscope_core::{Audit, AuditCriteria, UnsafeCount};
+        let mut report = sample_report();
+        report.package_info[1].published = Some("2026-11-19T02:00:00Z".to_owned());
+        report.package_info[1].audits = Some(vec![Audit {
+            by: "mozilla".to_owned(),
+            criteria: AuditCriteria::SafeToDeploy,
+        }]);
+        report.package_info[2].audits = Some(Vec::new());
+        report.unsafe_code = vec![
+            None,
+            Some(UnsafeCount {
+                blocks: 3,
+                ..UnsafeCount::default()
+            }),
+            Some(UnsafeCount::default()),
+        ];
+        let now = cargoscope_core::unix_seconds("2026-11-19T08:30:00Z");
+        let html = render_html(Path::new("."), &report, false, now);
+        assert!(html.contains("data-section=\"supply-chain\" type=\"button\">Supply Chain"));
+        assert!(html.contains("<code>serde_json</code> <span class=\"muted\">1.0.100</span></td><td><span class=\"badge badge-warn\">6 h ago</span>"), "{html}");
+        assert!(
+            html.contains("<strong>1</strong> of 2 crates.io packages reviewed by an organisation")
+        );
+        assert!(html.contains("<span class=\"badge badge-ok\">safe-to-deploy</span> <span class=\"muted\">(mozilla)</span>"));
+        assert!(html.contains("1 of 2 dependencies with sources on disk use <code>unsafe</code>"));
+        assert!(html.contains("<td>direct</td><td><strong>3</strong></td><td>3 blocks</td>"));
+
+        // Without a scan time, audits or sources, each panel says why it is empty.
+        let bare = render_html(Path::new("."), &sample_report(), false, None);
+        assert!(bare.contains("No published audits downloaded"));
+        assert!(bare.contains("No dependency sources on disk"));
+    }
+
+    #[test]
     fn escapes_html_characters_and_blocks_non_http_urls() {
         assert_eq!(escape_html("<a&\"'>"), "&lt;a&amp;&quot;&#39;&gt;");
 
-        let html = render_html(Path::new("/work/<app>"), &sample_report(), false);
+        let html = render_html(Path::new("/work/<app>"), &sample_report(), false, None);
         assert!(html.starts_with("<!DOCTYPE html>\n"));
         assert!(html.contains("&lt;app&gt;"));
         assert!(html.contains("Unsafe &lt;script&gt;alert(1)&lt;/script&gt; issue"));
@@ -1314,7 +1505,7 @@ mod tests {
     #[test]
     fn respects_show_uncertain_and_renders_all_sections() {
         let report = sample_report();
-        let default_html = render_html(Path::new("."), &report, false);
+        let default_html = render_html(Path::new("."), &report, false, None);
         assert!(default_html.contains("dead_dep"));
         assert!(!default_html.contains("maybe_dep"));
         assert!(default_html.contains("1 possibly-unused dependency hidden"));
@@ -1324,7 +1515,7 @@ mod tests {
         assert!(default_html.contains("MIT OR Apache-2.0"));
         assert!(default_html.contains("2</strong> / 2"));
 
-        let uncertain_html = render_html(Path::new("."), &report, true);
+        let uncertain_html = render_html(Path::new("."), &report, true, None);
         assert!(uncertain_html.contains("maybe_dep"));
         assert!(!uncertain_html.contains("possibly-unused dependency hidden"));
     }

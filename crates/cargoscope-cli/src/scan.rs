@@ -859,9 +859,15 @@ fn write_report(
             options.show_uncertain,
         ),
         OutputFormat::CycloneDx => cargoscope_report::cyclonedx::render_cyclonedx(root, report),
-        OutputFormat::Html => {
-            cargoscope_report::html::render_html(root, report, options.show_uncertain)
-        }
+        OutputFormat::Html => cargoscope_report::html::render_html(
+            root,
+            report,
+            options.show_uncertain,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|elapsed| elapsed.as_secs()),
+        ),
     };
     match &options.output {
         Some(path) => std::fs::write(path, rendered).map_err(|error| {
