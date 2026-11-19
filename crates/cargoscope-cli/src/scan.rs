@@ -208,6 +208,7 @@ pub fn scan(options: &ScanOptions) -> ExitCode {
 }
 
 fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
+    let started = std::time::Instant::now();
     let root = options.path.as_path();
     let inventory = cargoscope_cargo::scan_cargo_project(root)
         .map_err(|error| execution_error(root, &error))?;
@@ -376,7 +377,7 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
         advisory_db_date,
         warnings,
     };
-    write_report(options, &report)?;
+    write_report(options, &report, started.elapsed())?;
     exit_code(
         options,
         &report,
@@ -777,7 +778,11 @@ fn keep_checked_info(package_info: &mut [PackageInfo], checks: Checks) {
 }
 
 /// Renders the report in the chosen format, to `--output` or standard output.
-fn write_report(options: &ScanOptions, report: &Report) -> Result<(), ExitCode> {
+fn write_report(
+    options: &ScanOptions,
+    report: &Report,
+    elapsed: std::time::Duration,
+) -> Result<(), ExitCode> {
     let root = options.path.as_path();
     let rendered = match options.format {
         OutputFormat::Text => cargoscope_report::render_text(
@@ -788,6 +793,7 @@ fn write_report(options: &ScanOptions, report: &Report) -> Result<(), ExitCode> 
                 verbose: options.verbose,
                 color: options.color.enabled(options.output.is_some()),
                 next_steps: true,
+                duration_ms: Some(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)),
             },
         ),
         OutputFormat::Json => cargoscope_report::render_json(root, report),

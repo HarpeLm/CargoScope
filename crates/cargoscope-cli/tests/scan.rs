@@ -738,19 +738,32 @@ fn package_list_is_hidden_without_verbose() {
         .output()
         .expect("cargoscope binary runs");
     let text = stdout(&output);
-    assert!(text.starts_with("CargoScope "));
+    assert!(text.starts_with("╭─ ◎ CARGOSCOPE "), "{text}");
     assert!(
-        text.contains(" · 4 packages · data from 2026-01-01\n"),
+        text.contains("✖ 1 vuln") && text.contains("⚠ 1 notice") && text.contains("✔ 0 unused"),
         "{text}"
     );
-    assert!(text.contains("  ✖ 1 vulnerable crate   ⚠ 1 notice   ✔ no unused dependency"));
-    assert!(text.contains("\nVulnerabilities\n  ✖ serde_json 1.0.128  high: "));
-    assert!(text.contains("  fix: 1.0.200\n      via simple › serde_json\n"));
-    assert!(text.contains("\nNotices (not vulnerabilities)\n  unmaintained  itoa\n"));
-    assert!(text.contains("\nNext steps\n  › cargoscope fix --advisories"));
+    assert!(
+        text.contains("ADVISORIES (1 crate · 1 in build scope)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("[HIGH]  serde_json 1.0.128  → 1.0.200  ⌖ affects-you"),
+        "{text}"
+    );
+    assert!(text.contains("via simple › serde_json"), "{text}");
+    assert!(text.contains("NOTICES (not vulnerabilities)"), "{text}");
+    assert!(text.contains("  unmaintained  itoa\n"), "{text}");
+    assert!(
+        text.contains("Next steps\n  › cargoscope fix --advisories"),
+        "{text}"
+    );
     // Not a terminal: no ANSI codes.
     assert!(!text.contains('\u{1b}'));
-    assert!(text.contains("Resolved packages: 4 (use --verbose to list them)\n"));
+    assert!(
+        text.contains("Resolved packages: 4 (use --verbose to list them) · data 2026-01-01\n"),
+        "{text}"
+    );
     assert!(!text.contains("- simple 0.1.0 [root]"));
 }
 
@@ -1288,7 +1301,7 @@ fn fix_only_and_include_uncertain_remove_possibly_unused_and_dep_features() {
     assert_eq!(scan_out.status.code(), Some(0));
     let scan_text = stdout(&scan_out);
     assert!(
-        scan_text.contains("- chrono [likely-unused] in [dependencies] of Cargo.toml"),
+        scan_text.contains("× chrono  Cargo.toml  [dependencies]"),
         "{scan_text}"
     );
 
@@ -1391,10 +1404,13 @@ fn multiple_versions_rule_fails_the_scan_unless_the_crate_is_skipped() {
     assert_eq!(denied.status.code(), Some(1));
     let text = stdout(&denied);
     assert!(
-        text.contains("- [multiple-versions] bitflags 1.3.2: `bitflags` is resolved in 2 versions (1.3.2, 2.6.0)"),
+        text.contains("✖ multiple-versions  bitflags 1.3.2 `bitflags` is resolved in 2 versions (1.3.2, 2.6.0)"),
         "{text}"
     );
-    assert!(text.contains("    via multi-version -> old-wrapper -> bitflags\n"));
+    assert!(
+        text.contains("      via multi-version › old-wrapper › bitflags\n"),
+        "{text}"
+    );
     let sarif: serde_json::Value =
         serde_json::from_slice(&run(&["--format", "sarif"]).stdout).expect("valid SARIF");
     assert_eq!(
@@ -1410,7 +1426,7 @@ fn multiple_versions_rule_fails_the_scan_unless_the_crate_is_skipped() {
     .expect("write");
     let skipped = run(&[]);
     assert_eq!(skipped.status.code(), Some(0), "{}", stdout(&skipped));
-    assert!(stdout(&skipped).contains("Policy violations: 0"));
+    assert!(stdout(&skipped).contains("✔ policy"));
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -1489,7 +1505,10 @@ fn audit_bin(file: &str, extra: &[&str]) -> Output {
 #[test]
 fn audit_bin_reads_cargo_auditable_data_and_falls_back_to_registry_paths() {
     let short = stdout(&audit_bin("auditable.bin", &[]));
-    assert!(short.contains("  ✖ serde_json 1.0.128  high: "), "{short}");
+    assert!(
+        short.contains("[HIGH]  serde_json 1.0.128  → 1.0.200"),
+        "{short}"
+    );
     assert!(!short.contains("cargoscope fix"), "{short}");
     assert!(!short.contains("not checked"), "{short}");
     let exact = audit_bin("auditable.bin", &["--verbose"]);
@@ -1785,9 +1804,9 @@ fn policy_graph_features_limit_the_rules_to_the_selected_features() {
         .output()
         .expect("cargoscope binary runs");
     let text = stdout(&output);
-    assert!(!text.contains("- [ban] serde 1.0.210"), "{text}");
-    assert!(text.contains("- [license] serde_json 1.0.128:"), "{text}");
-    assert!(text.contains("- [source] forked 0.1.0:"), "{text}");
+    assert!(!text.contains("✖ ban  serde 1.0.210"), "{text}");
+    assert!(text.contains("✖ license  serde_json 1.0.128 "), "{text}");
+    assert!(text.contains("✖ source  forked 0.1.0 "), "{text}");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -1850,16 +1869,16 @@ allow-git = ["https://github.com/myorg/"]
     };
     let text = stdout(&run());
     // serde is only used by serde_json, its allowed wrapper: no ban.
-    assert!(!text.contains("- [ban] serde"), "{text}");
-    assert!(text.contains("- [source] forked 0.1.0:"), "{text}");
-    assert!(text.contains("- [license] serde_json 1.0.128:"), "{text}");
+    assert!(!text.contains("✖ ban  serde"), "{text}");
+    assert!(text.contains("✖ source  forked 0.1.0 "), "{text}");
+    assert!(text.contains("✖ license  serde_json 1.0.128 "), "{text}");
     assert!(
         text.contains("no cargoscope.toml: the rules of deny.toml (cargo-deny) are used"),
         "{text}"
     );
     // As in cargo-deny: an allowed license no package uses is a warning.
     assert!(
-        text.contains("- [license] [warning] policy-demo 0.1.0: license `BSD-3-Clause` is allowed but no checked package uses it (unused-allowed-license)"),
+        text.contains("⚠ license  policy-demo 0.1.0 license `BSD-3-Clause` is allowed but no checked package uses it (unused-allowed-license)"),
         "{text}"
     );
     assert!(!text.contains("confidence-threshold"), "{text}");
@@ -1871,7 +1890,7 @@ allow-git = ["https://github.com/myorg/"]
         deny.replace(", wrappers = [\"serde_json\"]", ""),
     )
     .expect("write");
-    assert!(stdout(&run()).contains("- [ban] serde 1.0.210:"));
+    assert!(stdout(&run()).contains("✖ ban  serde 1.0.210 "));
 
     // A cargoscope.toml takes over, with no note about deny.toml.
     std::fs::write(dir.join("cargoscope.toml"), "[bans]\n").expect("write");
@@ -1934,11 +1953,11 @@ fn bans_features_report_banned_unallowed_and_missing_features() {
     // With `std` enabled and `default` missing: banned `std` + exact missing `default`.
     let bad = stdout(&run("std"));
     assert!(
-        bad.contains("- [ban] serde 1.0.210: feature `std` is banned: from deny.toml"),
+        bad.contains("✖ ban  serde 1.0.210 feature `std` is banned: from deny.toml"),
         "{bad}"
     );
     assert!(
-        bad.contains("- [ban] serde 1.0.210: exact feature set required, missing feature `default`: from deny.toml"),
+        bad.contains("✖ ban  serde 1.0.210 exact feature set required, missing feature `default`: from deny.toml"),
         "{bad}"
     );
 
@@ -1946,14 +1965,14 @@ fn bans_features_report_banned_unallowed_and_missing_features() {
     let extra = stdout(&run("alloc,default"));
     assert!(
         extra.contains(
-            "- [ban] serde 1.0.210: feature `alloc` is not in the allow list: from deny.toml"
+            "✖ ban  serde 1.0.210 feature `alloc` is not in the allow list: from deny.toml"
         ),
         "{extra}"
     );
 
     // With exactly `default`: passes with 0 violations, even via cargoscope.toml.
     let ok = stdout(&run("default"));
-    assert!(ok.contains("Policy violations: 0"), "{ok}");
+    assert!(ok.contains("✔ policy"), "{ok}");
 
     std::fs::write(
         dir.join("cargoscope.toml"),
@@ -1962,10 +1981,10 @@ fn bans_features_report_banned_unallowed_and_missing_features() {
     .expect("write cargoscope.toml");
     let blocked = stdout(&run("default,std"));
     assert!(
-        blocked.contains("- [ban] serde 1.0.210: feature `std` is banned: no_std only"),
+        blocked.contains("✖ ban  serde 1.0.210 feature `std` is banned: no_std only"),
         "{blocked}"
     );
-    assert!(stdout(&run("default")).contains("Policy violations: 0"));
+    assert!(stdout(&run("default")).contains("✔ policy"));
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -2116,11 +2135,11 @@ fn bans_build_scripts_flag_disallowed_registry_and_workspace_crates() {
     );
     let text = stdout(&out);
     assert!(
-        text.contains("- [ban] policy-demo 0.1.0: build script of `policy-demo` is not in [bans.build] allow-build-scripts"),
+        text.contains("✖ ban  policy-demo 0.1.0 build script of `policy-demo` is not in [bans.build] allow-build-scripts"),
         "{text}"
     );
     assert!(
-        text.contains("- [ban] serde_json 1.0.128: build script of `serde_json` is not in [bans.build] allow-build-scripts"),
+        text.contains("✖ ban  serde_json 1.0.128 build script of `serde_json` is not in [bans.build] allow-build-scripts"),
         "{text}"
     );
     assert!(!text.contains("build script of `serde`"), "{text}");
@@ -2175,7 +2194,7 @@ fn clarify_license_files_hash_accepts_match_and_rejects_mismatch() {
         String::from_utf8_lossy(&ok.stderr)
     );
     let ok_text = stdout(&ok);
-    assert!(ok_text.contains("Policy violations: 0"), "{ok_text}");
+    assert!(ok_text.contains("✔ policy"), "{ok_text}");
 
     std::fs::write(dir.join("deny.toml"), deny_for_hash(matching_hash ^ 1))
         .expect("write bad hash");
@@ -2194,7 +2213,7 @@ fn clarify_license_files_hash_accepts_match_and_rejects_mismatch() {
         "{bad_text}"
     );
     assert!(
-        bad_text.contains("- [license] itoa 1.0.11: license is unknown"),
+        bad_text.contains("✖ license  itoa 1.0.11 license is unknown"),
         "{bad_text}"
     );
 
@@ -2241,22 +2260,18 @@ fn licenses_are_detected_from_license_files_when_the_field_is_missing() {
     };
     let ok = run("\"MIT\", \"Apache-2.0\"");
     assert_eq!(ok.status.code(), Some(0), "{}", stdout(&ok));
-    assert!(
-        stdout(&ok).contains("Policy violations: 0"),
-        "{}",
-        stdout(&ok)
-    );
+    assert!(stdout(&ok).contains("✔ policy"), "{}", stdout(&ok));
 
     let bad = run("\"Apache-2.0\"");
     let text = stdout(&bad);
     assert_eq!(bad.status.code(), Some(1), "{text}");
     assert!(
-        text.contains("- [license] itoa 1.0.11: license `MIT` (detected in LICENSE-MIT) is not allowed by the policy"),
+        text.contains("✖ license  itoa 1.0.11 license `MIT` (detected in LICENSE-MIT) is not allowed by the policy"),
         "{text}"
     );
     // The project's own license is checked too, as in cargo-deny.
     assert!(
-        text.contains("- [license] policy-demo 0.1.0: license `MIT` is not allowed by the policy"),
+        text.contains("✖ license  policy-demo 0.1.0 license `MIT` is not allowed by the policy"),
         "{text}"
     );
     let _ = std::fs::remove_dir_all(dir);
@@ -2301,7 +2316,7 @@ fn executables_in_build_time_crates_are_reported() {
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(1), "{text}");
     assert!(
-        text.contains("- [ban] itoa 1.0.11: `bin/tool` in `itoa` is an executable (elf), and `itoa` runs code at build time"),
+        text.contains("✖ ban  itoa 1.0.11 `bin/tool` in `itoa` is an executable (elf), and `itoa` runs code at build time"),
         "{text}"
     );
     assert!(
@@ -2314,7 +2329,7 @@ fn executables_in_build_time_crates_are_reported() {
     ));
     assert!(!text.contains("bin/tool"), "{text}");
     assert!(
-        text.contains("- [ban] [warning] itoa 1.0.11: `gen.sh` in `itoa` is a sh script"),
+        text.contains("⚠ ban  itoa 1.0.11 `gen.sh` in `itoa` is a sh script"),
         "{text}"
     );
 
@@ -2361,11 +2376,8 @@ fn warn_level_policies_emit_warnings_without_failing_scan() {
         String::from_utf8_lossy(&text_out.stderr)
     );
     let text = stdout(&text_out);
-    assert!(text.contains("Policy violations: 0 (1 warning)"), "{text}");
-    assert!(
-        text.contains("- [multiple-versions] [warning] bitflags"),
-        "{text}"
-    );
+    assert!(text.contains("POLICY (1 warning)"), "{text}");
+    assert!(text.contains("⚠ multiple-versions  bitflags"), "{text}");
 
     let json: serde_json::Value = serde_json::from_slice(&run("json").stdout).expect("json");
     assert_eq!(json["policy"][0]["level"], "warning");
@@ -2460,8 +2472,8 @@ ignore = [{ id = "RUSTSEC-2020-0071", reason = "from deny" }]
     assert_eq!(scan.status.code(), Some(0));
     let scan_text = stdout(&scan);
     assert!(!scan_text.contains("no cargoscope.toml"), "{scan_text}");
-    assert!(scan_text.contains("- [ban] itoa"), "{scan_text}");
-    assert!(scan_text.contains("- [source] forked"), "{scan_text}");
+    assert!(scan_text.contains("✖ ban  itoa"), "{scan_text}");
+    assert!(scan_text.contains("✖ source  forked"), "{scan_text}");
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -2602,9 +2614,9 @@ fn ranks_advisories_by_dev_platform_and_uncalled_functions() {
             .expect("cargoscope text scan without graph"),
     );
     let vuln_section = text_no_graph
-        .split("Vulnerabilities")
+        .split("ADVISORIES")
         .nth(1)
-        .expect("Vulnerabilities section");
+        .expect("ADVISORIES section");
     let pos_serde_json = vuln_section
         .find("serde_json")
         .expect("serde_json in terminal output");
@@ -2617,11 +2629,12 @@ fn ranks_advisories_by_dev_platform_and_uncalled_functions() {
         "unexpected crate order (expected affects-you -> possibly -> unlikely):\n{vuln_section}"
     );
     assert!(
-        vuln_section.contains("possibly: only affects plan9"),
+        vuln_section.contains("◐ possibly") && vuln_section.contains("only affects plan9"),
         "{vuln_section}"
     );
     assert!(
-        vuln_section.contains("unlikely: only used by dev-dependencies (tests or benchmarks)"),
+        vuln_section.contains("◌ unlikely")
+            && vuln_section.contains("only used by dev-dependencies (tests or benchmarks)"),
         "{vuln_section}"
     );
 

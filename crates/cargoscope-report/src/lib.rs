@@ -33,6 +33,8 @@ pub struct TextOptions {
     /// End with the commands that act on the findings (`cargoscope fix`…),
     /// which apply to a source project, not to a binary.
     pub next_steps: bool,
+    /// Wall-clock scan duration in milliseconds, shown in the HUD header when present.
+    pub duration_ms: Option<u64>,
 }
 
 pub(crate) fn scope(package: &Package) -> &'static str {
@@ -71,23 +73,20 @@ pub(crate) fn chain(inventory: &Inventory, index: usize) -> Option<String> {
 /// Possibly-unused dependencies are listed only with `show_uncertain`, and
 /// the full package list only with `verbose`; otherwise only counts are shown.
 pub fn render_text(project_root: &Path, report: &Report, options: TextOptions) -> String {
+    if !options.verbose {
+        return terminal::render_hud(project_root, report, options);
+    }
     let inventory = &report.inventory;
     let paint = terminal::Paint::new(options.color);
     let verbose = options.verbose;
     let mut out = String::new();
     // Writing to a String cannot fail.
-    if options.verbose {
-        let _ = writeln!(out, "CargoScope {VERSION}");
-        let _ = writeln!(out, "Target: {}", project_root.display());
-        let _ = writeln!(out, "Summary: {}", summary(report));
-    } else {
-        terminal::header(&mut out, project_root, report, paint);
-    }
+    let _ = writeln!(out, "CargoScope {VERSION}");
+    let _ = writeln!(out, "Target: {}", project_root.display());
+    let _ = writeln!(out, "Summary: {}", summary(report));
 
-    if report.checks.advisories && options.verbose {
+    if report.checks.advisories {
         render_advisories_text(&mut out, report);
-    } else if report.checks.advisories {
-        terminal::advisories(&mut out, report, paint);
     } else {
         not_checked(&mut out, "Advisories", verbose);
     }
@@ -106,16 +105,8 @@ pub fn render_text(project_root: &Path, report: &Report, options: TextOptions) -
     render_weights_text(&mut out, report, options.verbose);
     render_policy_text(&mut out, report, options.verbose);
 
-    if options.verbose {
-        let _ = writeln!(out, "\nResolved packages: {}", inventory.packages.len());
-        render_inventory_text(&mut out, report);
-    } else {
-        let _ = writeln!(
-            out,
-            "\nResolved packages: {} (use --verbose to list them)",
-            inventory.packages.len()
-        );
-    }
+    let _ = writeln!(out, "\nResolved packages: {}", inventory.packages.len());
+    render_inventory_text(&mut out, report);
 
     for warning in &report.warnings {
         let _ = writeln!(out, "\nwarning: {warning}");
@@ -1065,6 +1056,7 @@ mod tests {
         verbose: true,
         color: false,
         next_steps: true,
+        duration_ms: None,
     };
     use cargoscope_core::{
         AdvisoryFinding, AdvisoryKind, Checks, DependencyKind, Inventory, Package, PackageInfo,
@@ -1125,8 +1117,14 @@ mod tests {
         let report = sample(Vec::new());
         let text = render_text(Path::new("."), &report, TextOptions::default());
         assert!(
-            text.contains("Heaviest direct dependencies: packages that would leave the tree without each one\n- alpha 1.0.0: 2 of the 2 packages it pulls in\n"),
+            text.contains("HEAVIEST DIRECT (exclusive / subtree)")
+                && text.contains("alpha 1.0.0  ██████████  2 / 2 pkgs\n"),
             "{text}"
+        );
+        let verbose_text = render_text(Path::new("."), &report, VERBOSE);
+        assert!(
+            verbose_text.contains("Heaviest direct dependencies: packages that would leave the tree without each one\n- alpha 1.0.0: 2 of the 2 packages it pulls in\n"),
+            "{verbose_text}"
         );
         let json: serde_json::Value =
             serde_json::from_str(&render_json(Path::new("."), &report)).expect("valid JSON");
@@ -1162,12 +1160,13 @@ mod tests {
         );
         let text = render_text(Path::new("."), &report, TextOptions::default());
         // gamma (3 exclusive) is normal and comes first; alpha (2) is dev-only.
+        let pos_gamma = text.find("gamma 1.0.0").expect("gamma");
+        let pos_alpha = text.find("alpha 1.0.0 (dev)").expect("alpha (dev)");
+        assert!(pos_gamma < pos_alpha, "{text}");
+        assert!(text.contains("3 / 3 pkgs"), "{text}");
+        assert!(text.contains("2 / 2 pkgs"), "{text}");
         assert!(
-            text.contains("- gamma 1.0.0: 3 of the 3 packages it pulls in\n- alpha 1.0.0 (dev): 2 of the 2 packages it pulls in\n"),
-            "{text}"
-        );
-        assert!(
-            text.contains("    1.0.0 via app -> alpha -> beta (dev)\n"),
+            text.contains("beta  1.0.0, 2.0.0  ← app › alpha › beta (dev)\n"),
             "{text}"
         );
         let json: serde_json::Value =
@@ -1354,6 +1353,7 @@ mod tests {
                 verbose: true,
                 color: false,
                 next_steps: true,
+                duration_ms: None,
             },
         );
         assert!(text.contains("- openssl-sys [possibly-unused] in [dependencies] of Cargo.toml\n"));
@@ -1437,7 +1437,11 @@ mod tests {
     fn package_list_is_shown_only_when_verbose() {
         let report = sample(Vec::new());
         let short = render_text(Path::new("."), &report, TextOptions::default());
-        assert!(short.contains("Resolved packages: 4 (use --verbose to list them)\n"));
+        assert!(short.contains("╭─ ◎ CARGOSCOPE "), "{short}");
+        assert!(
+            short.contains("Resolved packages: 4 (use --verbose to list them)"),
+            "{short}"
+        );
         assert!(!short.contains("- app 1.0.0 [root]"));
         assert!(render_text(Path::new("."), &report, VERBOSE).contains("- app 1.0.0 [root]"));
     }

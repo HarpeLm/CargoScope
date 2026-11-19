@@ -1,17 +1,25 @@
-//! The default text report for a terminal: a header with one counter per
-//! check, vulnerable crates grouped (one line each, with the version that
-//! fixes all their advisories), notices grouped by kind, and the commands to
-//! run next. Colors only when asked (a terminal without `NO_COLOR`).
+//! The default terminal UI (**Telemetry HUD**) for `cargoscope scan`:
+//! an instrument-panel header with one KPI per check, horizontal ruled
+//! sections, severity/relevance badges (`⌖ affects-you` / `◌ unlikely`),
+//! clickable OSC 8 links, proportional weight and license bars, and concise
+//! next-step commands.
 //!
-//! `--verbose` keeps the full listing of every advisory instead.
+//! Colors and OSC 8 links are emitted only when enabled (interactive terminal
+//! without `NO_COLOR`, or `--color always`). `--verbose` keeps the full
+//! exhaustive text listing.
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::Path;
 
 use cargoscope_core::{
-    AdvisoryFinding, AdvisoryKind, AdvisoryRelevance, Report, Severity, UnusedConfidence, VERSION,
+    AdvisoryFinding, AdvisoryKind, AdvisoryRelevance, OutdatedKind, Report, Severity,
+    UnusedConfidence, VERSION, policy::ViolationLevel,
 };
+
+use crate::TextOptions;
+
+const HUD_MIN_WIDTH: usize = 75;
 
 /// ANSI styling, or none.
 #[derive(Debug, Clone, Copy)]
@@ -46,10 +54,22 @@ impl Paint {
         self.style("31", text)
     }
 
-    /// Styles `text` yellow when enabled.
+    /// Styles `text` bold red when enabled.
+    #[must_use]
+    pub fn red_bold(self, text: &str) -> String {
+        self.style("1;31", text)
+    }
+
+    /// Styles `text` yellow/amber when enabled.
     #[must_use]
     pub fn yellow(self, text: &str) -> String {
         self.style("33", text)
+    }
+
+    /// Styles `text` bold yellow when enabled.
+    #[must_use]
+    pub fn yellow_bold(self, text: &str) -> String {
+        self.style("1;33", text)
     }
 
     /// Styles `text` green when enabled.
@@ -58,10 +78,46 @@ impl Paint {
         self.style("32", text)
     }
 
+    /// Styles `text` bold green when enabled.
+    #[must_use]
+    pub fn green_bold(self, text: &str) -> String {
+        self.style("1;32", text)
+    }
+
     /// Styles `text` blue when enabled.
     #[must_use]
     pub fn blue(self, text: &str) -> String {
         self.style("34", text)
+    }
+
+    /// Brand Rust copper-orange (`#fb923c`, ANSI 256 color 209).
+    #[must_use]
+    pub fn rust(self, text: &str) -> String {
+        self.style("38;5;209", text)
+    }
+
+    /// Brand Rust copper-orange bold.
+    #[must_use]
+    pub fn rust_bold(self, text: &str) -> String {
+        self.style("1;38;5;209", text)
+    }
+
+    /// Brand Optical Scope cyan (`#38bdf8`, ANSI 256 color 39).
+    #[must_use]
+    pub fn scope(self, text: &str) -> String {
+        self.style("38;5;39", text)
+    }
+
+    /// Brand Optical Scope cyan bold.
+    #[must_use]
+    pub fn scope_bold(self, text: &str) -> String {
+        self.style("1;38;5;39", text)
+    }
+
+    /// Accent purple for `(dev)` / `(build)` tags.
+    #[must_use]
+    pub fn purple(self, text: &str) -> String {
+        self.style("38;5;141", text)
     }
 
     /// Dims `text` when enabled.
@@ -74,6 +130,58 @@ impl Paint {
     #[must_use]
     pub fn bold(self, text: &str) -> String {
         self.style("1", text)
+    }
+
+    /// High-contrast severity pill (falls back to `[TAG]` when color is off).
+    #[must_use]
+    fn severity_pill(self, severity: Option<Severity>) -> (String, usize) {
+        match severity {
+            Some(Severity::Critical) => {
+                if self.on {
+                    (self.style("1;97;41", " CRIT "), 6)
+                } else {
+                    ("[CRIT]".to_owned(), 6)
+                }
+            }
+            Some(Severity::High) => {
+                if self.on {
+                    (self.style("1;97;48;5;166", " HIGH "), 6)
+                } else {
+                    ("[HIGH]".to_owned(), 6)
+                }
+            }
+            Some(Severity::Medium) => {
+                if self.on {
+                    (self.style("1;30;43", " MED  "), 6)
+                } else {
+                    ("[MED ]".to_owned(), 6)
+                }
+            }
+            Some(Severity::Low) => {
+                if self.on {
+                    (self.style("1;37;100", " LOW  "), 6)
+                } else {
+                    ("[LOW ]".to_owned(), 6)
+                }
+            }
+            Some(Severity::None) | None => {
+                if self.on {
+                    (self.style("1;37;100", " UNKN "), 6)
+                } else {
+                    ("[UNKN]".to_owned(), 6)
+                }
+            }
+        }
+    }
+
+    /// Wraps `label` in an OSC 8 terminal hyperlink when styling is enabled.
+    #[must_use]
+    pub fn link(self, url: &str, label: &str) -> String {
+        if self.on {
+            format!("\u{1b}]8;;{url}\u{1b}\\{label}\u{1b}]8;;\u{1b}\\")
+        } else {
+            label.to_owned()
+        }
     }
 }
 
@@ -94,39 +202,116 @@ fn active(report: &Report) -> impl Iterator<Item = &AdvisoryFinding> {
         .filter(|finding| finding.ignored.is_none())
 }
 
-/// `CargoScope 0.7.1  path · 106 packages · data from 2026-11-15`, then one
-/// colored counter per check that ran.
-pub(crate) fn header(out: &mut String, project_root: &Path, report: &Report, paint: Paint) {
-    let date = report
+fn format_duration(ms: u64) -> String {
+    if ms >= 10_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else if ms >= 1_000 {
+        format!("{:.2}s", ms as f64 / 1000.0)
+    } else {
+        format!("{ms} ms")
+    }
+}
+
+fn truncate(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        text.to_owned()
+    } else if width <= 1 {
+        "…".to_owned()
+    } else {
+        format!("{}…", text.chars().take(width - 1).collect::<String>())
+    }
+}
+
+/// Renders the complete default Telemetry HUD dashboard (`!options.verbose`).
+pub(crate) fn render_hud(project_root: &Path, report: &Report, options: TextOptions) -> String {
+    let paint = Paint::new(options.color);
+    let mut out = String::new();
+    let width = hud_header(&mut out, project_root, report, options.duration_ms, paint);
+
+    let mut showed_any_section = false;
+    if report.checks.advisories {
+        showed_any_section |= hud_advisories(&mut out, report, width, paint);
+    }
+    if report.checks.policy {
+        showed_any_section |= hud_policy(&mut out, report, width, paint);
+    }
+    if report.checks.versions {
+        showed_any_section |= hud_yanked(&mut out, report, width, paint);
+    }
+    if report.checks.unused {
+        showed_any_section |= hud_unused(&mut out, report, options.show_uncertain, width, paint);
+    }
+    if report.checks.versions {
+        showed_any_section |= hud_outdated(&mut out, report, width, paint);
+        showed_any_section |= hud_maintenance(&mut out, report, width, paint);
+    }
+    showed_any_section |= hud_weights(&mut out, report, width, paint);
+    showed_any_section |= hud_duplicates(&mut out, report, width, paint);
+    if report.checks.licenses {
+        showed_any_section |= hud_licenses(&mut out, report, width, paint);
+    }
+
+    if !showed_any_section && report.checks.advisories {
+        let _ = writeln!(
+            out,
+            "\n  {} {}",
+            paint.green("✔"),
+            paint.green(
+                "All checks clear — no known vulnerabilities (this does not guarantee safety)"
+            )
+        );
+    }
+
+    for warning in &report.warnings {
+        let _ = writeln!(out, "\n  {} {warning}", paint.yellow("warning:"));
+    }
+
+    let date_note = report
         .advisory_db_date
         .as_deref()
         .or(report.registry_date.as_deref())
-        .map(|date| format!(" · data from {date}"))
+        .map(|date| format!(" · data {date}"))
         .unwrap_or_default();
     let _ = writeln!(
         out,
-        "{}  {}",
-        paint.bold(&format!("CargoScope {VERSION}")),
+        "\n  {}",
         paint.dim(&format!(
-            "{} · {}{date}",
-            project_root.display(),
-            plural(report.inventory.packages.len(), "package")
+            "Resolved packages: {} (use --verbose to list them){date_note}",
+            report.inventory.packages.len()
         ))
     );
 
-    let mut counters = Vec::new();
+    if options.next_steps {
+        next_steps(&mut out, report, false, paint);
+    }
+    out
+}
+
+/// Renders the boxed Telemetry HUD header and returns its outer character width.
+fn hud_header(
+    out: &mut String,
+    project_root: &Path,
+    report: &Report,
+    duration_ms: Option<u64>,
+    paint: Paint,
+) -> usize {
+    // Build KPI cells as (plain_width, styled_text).
+    let mut cells: Vec<(usize, String)> = Vec::new();
     if report.checks.advisories {
-        let vulnerable = vulnerable_crates(report).len();
-        counters.push(if vulnerable == 0 {
-            paint.green("✔ no known vulnerability")
+        let vuln = vulnerable_crates(report).len();
+        if vuln == 0 {
+            let plain = "✔ 0 vuln";
+            cells.push((plain.chars().count(), paint.green(plain)));
         } else {
-            paint.red(&format!("✖ {}", plural(vulnerable, "vulnerable crate")))
-        });
+            let plain = format!("✖ {vuln} vuln");
+            cells.push((plain.chars().count(), paint.red_bold(&plain)));
+        }
         let notices = active(report)
             .filter(|finding| matches!(finding.kind, AdvisoryKind::Informational(_)))
             .count();
         if notices > 0 {
-            counters.push(paint.yellow(&format!("⚠ {}", plural(notices, "notice"))));
+            let plain = format!("⚠ {}", plural(notices, "notice"));
+            cells.push((plain.chars().count(), paint.yellow(&plain)));
         }
     }
     if report.checks.unused {
@@ -137,11 +322,13 @@ pub(crate) fn header(out: &mut String, project_root: &Path, report: &Report, pai
                 finding.ignored.is_none() && finding.confidence == UnusedConfidence::Likely
             })
             .count();
-        counters.push(if likely == 0 {
-            paint.green("✔ no unused dependency")
+        if likely == 0 {
+            let plain = "✔ 0 unused";
+            cells.push((plain.chars().count(), paint.green(plain)));
         } else {
-            paint.yellow(&format!("✖ {likely} likely unused"))
-        });
+            let plain = format!("✖ {likely} unused");
+            cells.push((plain.chars().count(), paint.yellow_bold(&plain)));
+        }
     }
     if report.checks.versions {
         let outdated = report
@@ -151,27 +338,120 @@ pub(crate) fn header(out: &mut String, project_root: &Path, report: &Report, pai
             .filter(|(info, package)| info.outdated && package.direct)
             .count();
         if outdated > 0 {
-            counters.push(paint.blue(&format!("↑ {outdated} outdated")));
+            let plain = format!("↑ {outdated} outdated");
+            cells.push((plain.chars().count(), paint.scope_bold(&plain)));
         }
         let watch = crate::maintenance_rows(report).len();
         if watch > 0 {
-            counters.push(paint.yellow(&format!("◆ {watch} to watch")));
+            let plain = format!("◆ {watch} watch");
+            cells.push((plain.chars().count(), paint.yellow(&plain)));
         }
+    }
+    let dupes = report.inventory.duplicates().len();
+    if dupes > 0 {
+        let plain = format!("⊞ {}", plural(dupes, "dupe"));
+        cells.push((plain.chars().count(), paint.dim(&plain)));
+    }
+    {
+        let plain = format!("{} pkgs", report.inventory.packages.len());
+        cells.push((plain.chars().count(), paint.bold(&plain)));
     }
     if let Some(violations) = &report.policy {
         let errors = violations
             .iter()
-            .filter(|v| v.level == cargoscope_core::policy::ViolationLevel::Error)
+            .filter(|v| v.level == ViolationLevel::Error)
             .count();
-        counters.push(if errors == 0 {
-            paint.green("✔ policy respected")
+        if errors == 0 {
+            let plain = "✔ policy";
+            cells.push((plain.chars().count(), paint.green(plain)));
         } else {
-            paint.red(&format!("✖ {}", plural(errors, "policy violation")))
-        });
+            let plain = format!("✖ {errors} policy");
+            cells.push((plain.chars().count(), paint.red_bold(&plain)));
+        }
     }
-    if !counters.is_empty() {
-        let _ = writeln!(out, "\n  {}", counters.join("   "));
+
+    // Middle row: "│  <cell>  │  <cell>  │"
+    let sep_plain = "  │  ";
+    let sep_styled = format!("  {}  ", paint.dim("│"));
+    let kpi_plain_len: usize = cells.iter().map(|(w, _)| *w).sum::<usize>()
+        + cells.len().saturating_sub(1) * sep_plain.chars().count();
+
+    // Right-hand telemetry tag on top border.
+    let target_raw = project_root.display().to_string();
+    let target_short = truncate(&target_raw, 24);
+    let mode = if report.unused_precise {
+        "precise"
+    } else {
+        "offline"
+    };
+    let mut meta_parts = vec![target_short];
+    if let Some(ms) = duration_ms {
+        meta_parts.push(format_duration(ms));
     }
+    meta_parts.push(mode.to_owned());
+    let right_plain = meta_parts.join(" · ");
+
+    let left_plain = format!("◎ CARGOSCOPE {VERSION}");
+    // Outer box width: fits both top bar and KPI strip cleanly.
+    // Top bar: "╭─ " (3) + left + " " (1) + dashes (>=2) + " " (1) + right + " ─╮" (3)
+    let top_min = 3 + left_plain.chars().count() + 1 + 2 + 1 + right_plain.chars().count() + 3;
+    // Middle bar: "│  " (3) + kpi + "  │" (3)
+    let mid_min = 3 + kpi_plain_len + 3;
+    let width = HUD_MIN_WIDTH.max(top_min).max(mid_min);
+
+    let dash_count = width
+        .saturating_sub(3 + left_plain.chars().count() + 1 + 1 + right_plain.chars().count() + 3);
+    let left_styled = format!(
+        "{} {}{} {}",
+        paint.scope("◎"),
+        paint.rust_bold("CARGO"),
+        paint.bold("SCOPE"),
+        paint.dim(VERSION)
+    );
+    let _ = writeln!(
+        out,
+        "{} {left_styled} {} {} {}",
+        paint.scope("╭─"),
+        paint.scope(&"─".repeat(dash_count)),
+        paint.dim(&right_plain),
+        paint.scope("─╮")
+    );
+
+    let kpi_styled: String = cells
+        .iter()
+        .map(|(_, s)| s.as_str())
+        .collect::<Vec<_>>()
+        .join(&sep_styled);
+    let right_pad = width.saturating_sub(3 + kpi_plain_len + 1);
+    let _ = writeln!(
+        out,
+        "{}  {kpi_styled}{}{}",
+        paint.scope("│"),
+        " ".repeat(right_pad),
+        paint.scope("│")
+    );
+
+    let _ = writeln!(
+        out,
+        "{}",
+        paint.scope(&format!("╰{}╯", "─".repeat(width.saturating_sub(2))))
+    );
+    width
+}
+
+fn section_rule(out: &mut String, title: &str, subtitle: Option<&str>, width: usize, paint: Paint) {
+    let sub_plain = subtitle.map(|s| format!(" ({s})")).unwrap_or_default();
+    let prefix_len = 2 + title.chars().count() + sub_plain.chars().count() + 1;
+    let dashes = width.saturating_sub(prefix_len).max(3);
+    let sub_styled = subtitle
+        .map(|s| format!(" {}", paint.dim(&format!("({s})"))))
+        .unwrap_or_default();
+    let _ = writeln!(
+        out,
+        "\n  {}{sub_styled} {}",
+        paint.bold(title),
+        paint.dim(&"─".repeat(dashes))
+    );
 }
 
 /// Vulnerabilities not ignored, by package index.
@@ -256,26 +536,39 @@ fn short_chain(report: &Report, index: usize) -> Option<String> {
     })
 }
 
-fn truncate(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
-        text.to_owned()
-    } else {
-        format!("{}…", text.chars().take(width - 1).collect::<String>())
+fn format_relevance(relevance: AdvisoryRelevance, paint: Paint) -> (String, usize) {
+    match relevance {
+        AdvisoryRelevance::AffectsYou => {
+            let label = "⌖ affects-you";
+            (paint.red(label), label.chars().count())
+        }
+        AdvisoryRelevance::Possibly => {
+            let label = "◐ possibly";
+            (paint.yellow(label), label.chars().count())
+        }
+        AdvisoryRelevance::Unlikely => {
+            let label = "◌ unlikely";
+            (paint.dim(label), label.chars().count())
+        }
     }
 }
 
-/// Vulnerable crates, one entry each, worst first; then notices by kind.
-pub(crate) fn advisories(out: &mut String, report: &Report, paint: Paint) {
-    let crates = vulnerable_crates(report);
-    if crates.is_empty() {
-        let _ = writeln!(
-            out,
-            "\n{}  {}",
-            paint.bold("Vulnerabilities"),
-            paint.green("none known (this does not mean the dependencies are safe)")
-        );
+fn advisory_id_link(finding: &AdvisoryFinding, paint: Paint) -> String {
+    if finding.id.starts_with("RUSTSEC-") {
+        let url = format!("https://rustsec.org/advisories/{}", finding.id);
+        paint.scope(&paint.link(&url, &finding.id))
+    } else if let Some(url) = &finding.url {
+        paint.scope(&paint.link(url, &finding.id))
     } else {
-        let _ = writeln!(out, "\n{}", paint.bold("Vulnerabilities"));
+        paint.scope(&finding.id)
+    }
+}
+
+fn hud_advisories(out: &mut String, report: &Report, width: usize, paint: Paint) -> bool {
+    let mut printed = false;
+    let crates = vulnerable_crates(report);
+    if !crates.is_empty() {
+        printed = true;
         let mut entries: Vec<(usize, Vec<&AdvisoryFinding>)> = crates.into_iter().collect();
         let worst = |findings: &Vec<&AdvisoryFinding>| {
             findings.iter().filter_map(|finding| finding.severity).max()
@@ -293,6 +586,16 @@ pub(crate) fn advisories(out: &mut String, report: &Report, paint: Paint) {
                 .then(worst(&right.1).cmp(&worst(&left.1)))
                 .then(right.1.len().cmp(&left.1.len()))
         });
+        let affects_count = entries
+            .iter()
+            .filter(|(_, f)| best_relevance(f) == AdvisoryRelevance::AffectsYou)
+            .count();
+        let sub = format!(
+            "{} · {affects_count} in build scope",
+            plural(entries.len(), "crate")
+        );
+        section_rule(out, "ADVISORIES", Some(&sub), width, paint);
+
         let name_width = entries
             .iter()
             .map(|(index, _)| {
@@ -301,55 +604,79 @@ pub(crate) fn advisories(out: &mut String, report: &Report, paint: Paint) {
             })
             .max()
             .unwrap_or(0);
-        for (index, findings) in &entries {
-            let package = &report.inventory.packages[*index];
-            let issue = match findings.as_slice() {
-                [only] => format!(
-                    "{}: {}",
-                    only.severity.map_or("unknown severity", Severity::as_str),
-                    truncate(&only.title, 44)
+
+        // Precompute fix text so columns align neatly.
+        let rows: Vec<_> = entries
+            .iter()
+            .map(|(index, findings)| {
+                let package = &report.inventory.packages[*index];
+                let (fix, without_fix) = crate_fix(findings, &package.version);
+                let (fix_plain, fix_styled) = match (fix, without_fix) {
+                    (Some(version), 0) if findings.len() > 1 => {
+                        let p = format!("→ {version} (fixes all)");
+                        (p.clone(), paint.green(&p))
+                    }
+                    (Some(version), 0) => {
+                        let p = format!("→ {version}");
+                        (p.clone(), paint.green(&p))
+                    }
+                    (_, count) if count == findings.len() => {
+                        let p = "no fix".to_owned();
+                        (p.clone(), paint.yellow(&p))
+                    }
+                    (_, count) => {
+                        let p = format!("{count} unfixed");
+                        (p.clone(), paint.yellow(&p))
+                    }
+                };
+                (*index, findings, fix_plain, fix_styled)
+            })
+            .collect();
+        let fix_width = rows
+            .iter()
+            .map(|(_, _, p, _)| p.chars().count())
+            .max()
+            .unwrap_or(0);
+
+        for (index, findings, fix_plain, fix_styled) in rows {
+            let package = &report.inventory.packages[index];
+            let (pill, _) = paint.severity_pill(worst(findings));
+            let name_plain_len = package.name.len() + 1 + package.version.len();
+            let crate_relevance = best_relevance(findings);
+            let (rel_styled, rel_len) = format_relevance(crate_relevance, paint);
+            let id_summary = match findings.as_slice() {
+                [only] => advisory_id_link(only, paint),
+                many => format!(
+                    "{} {}",
+                    advisory_id_link(many[0], paint),
+                    paint.dim(&format!("+{}", many.len() - 1))
                 ),
-                many => {
-                    let severity = worst(&many.to_vec())
-                        .map(|severity| format!(", up to {}", severity.as_str()))
-                        .unwrap_or_default();
-                    format!("{} advisories{severity}", many.len())
-                }
             };
-            let (fix, without_fix) = crate_fix(findings, &package.version);
-            let fix = match (fix, without_fix) {
-                (Some(version), 0) if findings.len() > 1 => {
-                    paint.green(&format!("fix: {version} fixes all"))
-                }
-                (Some(version), 0) => paint.green(&format!("fix: {version}")),
-                (_, count) if count == findings.len() => paint.yellow("no fixed version"),
-                (_, count) => paint.yellow(&format!("{count} without a fix")),
-            };
-            let name = format!("{} {}", package.name, package.version);
             let _ = writeln!(
                 out,
-                "  {} {}{}  {}  {}",
-                paint.red("✖"),
+                "  {pill}  {} {}{}  {fix_styled}{}  {rel_styled}{}  {id_summary}",
                 paint.bold(&package.name),
-                format!(" {}", package.version)
-                    + &" ".repeat(name_width.saturating_sub(name.len())),
-                paint.red(&issue),
-                fix
+                paint.dim(&package.version),
+                " ".repeat(name_width.saturating_sub(name_plain_len)),
+                " ".repeat(fix_width.saturating_sub(fix_plain.chars().count())),
+                " ".repeat(13_usize.saturating_sub(rel_len)),
             );
-            if let Some(chain) = short_chain(report, *index) {
-                let _ = writeln!(out, "      {}", paint.dim(&format!("via {chain}")));
+            let mut detail_parts = Vec::new();
+            if let Some(chain) = short_chain(report, index) {
+                detail_parts.push(format!("via {chain}"));
             }
-            let crate_relevance = best_relevance(findings);
+            if findings.len() == 1 {
+                detail_parts.push(truncate(&findings[0].title, 48));
+            }
             if crate_relevance != AdvisoryRelevance::AffectsYou
                 && let Some(reason) = findings
                     .iter()
                     .find_map(|finding| finding.relevance_reason.as_deref())
             {
-                let _ = writeln!(
-                    out,
-                    "      {}",
-                    paint.dim(&format!("{}: {reason}", crate_relevance.as_str()))
-                );
+                detail_parts.push(reason.to_owned());
+            }
+            if !detail_parts.is_empty() {
+                let _ = writeln!(out, "          {}", paint.dim(&detail_parts.join(" · ")));
             }
         }
     }
@@ -365,12 +692,8 @@ pub(crate) fn advisories(out: &mut String, report: &Report, paint: Paint) {
         }
     }
     if !notices.is_empty() {
-        let _ = writeln!(
-            out,
-            "\n{} {}",
-            paint.bold("Notices"),
-            paint.dim("(not vulnerabilities)")
-        );
+        printed = true;
+        section_rule(out, "NOTICES", Some("not vulnerabilities"), width, paint);
         let kind_width = notices.keys().map(|kind| kind.len()).max().unwrap_or(0);
         for (kind, mut names) in notices {
             names.sort();
@@ -385,26 +708,616 @@ pub(crate) fn advisories(out: &mut String, report: &Report, paint: Paint) {
                 out,
                 "  {}{}  {}{more}",
                 paint.yellow(kind),
-                " ".repeat(kind_width - kind.len()),
+                " ".repeat(kind_width.saturating_sub(kind.len())),
                 shown.join(", ")
             );
         }
     }
+
     let ignored = report
         .advisories
         .iter()
         .filter(|finding| finding.ignored.is_some())
         .count();
     if ignored > 0 {
+        printed = true;
         let _ = writeln!(
             out,
             "  {}",
             paint.dim(&format!(
-                "{} ignored by the configuration (see --verbose)",
+                "{} ignored by configuration (see --verbose)",
                 plural(ignored, "advisory")
             ))
         );
     }
+    printed
+}
+
+fn hud_policy(out: &mut String, report: &Report, width: usize, paint: Paint) -> bool {
+    let Some(violations) = &report.policy else {
+        return false;
+    };
+    if violations.is_empty() {
+        return false;
+    }
+    let errors = violations
+        .iter()
+        .filter(|v| v.level == ViolationLevel::Error)
+        .count();
+    let warnings = violations.len() - errors;
+    let sub = match (errors, warnings) {
+        (e, 0) => plural(e, "error"),
+        (0, w) => plural(w, "warning"),
+        (e, w) => format!("{}, {}", plural(e, "error"), plural(w, "warning")),
+    };
+    section_rule(out, "POLICY", Some(&sub), width, paint);
+    for violation in violations.iter().take(10) {
+        let icon = match violation.level {
+            ViolationLevel::Error => paint.red("✖"),
+            ViolationLevel::Warning => paint.yellow("⚠"),
+        };
+        let target = report
+            .inventory
+            .packages
+            .get(violation.package)
+            .map(|pkg| format!("{} {} ", paint.bold(&pkg.name), paint.dim(&pkg.version)))
+            .unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "  {icon} {}  {target}{}",
+            paint.dim(violation.rule.as_str()),
+            violation.message
+        );
+        if let Some(chain) = short_chain(report, violation.package) {
+            let _ = writeln!(out, "      {}", paint.dim(&format!("via {chain}")));
+        }
+    }
+    if violations.len() > 10 {
+        let _ = writeln!(
+            out,
+            "  {}",
+            paint.dim(&format!(
+                "+ {} more — use --verbose for all",
+                violations.len() - 10
+            ))
+        );
+    }
+    true
+}
+
+fn hud_yanked(out: &mut String, report: &Report, width: usize, paint: Paint) -> bool {
+    let registry_packages = crate::registry_packages(report);
+    let yanked: Vec<usize> = registry_packages
+        .iter()
+        .filter(|(_, info)| info.yanked == Some(true))
+        .map(|(index, _)| *index)
+        .collect();
+    if yanked.is_empty() {
+        return false;
+    }
+    section_rule(
+        out,
+        "YANKED",
+        Some(&plural(yanked.len(), "crate")),
+        width,
+        paint,
+    );
+    for &index in yanked.iter().take(5) {
+        let package = &report.inventory.packages[index];
+        let chain_note = short_chain(report, index)
+            .map(|c| format!("  {}", paint.dim(&format!("← {c}"))))
+            .unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "  {} {} {}{chain_note}",
+            paint.red("✖"),
+            paint.bold(&package.name),
+            paint.dim(&package.version)
+        );
+    }
+    if yanked.len() > 5 {
+        let _ = writeln!(
+            out,
+            "  {}",
+            paint.dim(&format!(
+                "+ {} more — use --verbose for all",
+                yanked.len() - 5
+            ))
+        );
+    }
+    true
+}
+
+fn hud_unused(
+    out: &mut String,
+    report: &Report,
+    show_uncertain: bool,
+    width: usize,
+    paint: Paint,
+) -> bool {
+    let active_unused: Vec<&cargoscope_core::UnusedFinding> = report
+        .unused
+        .iter()
+        .filter(|finding| finding.ignored.is_none())
+        .collect();
+    let shown: Vec<&cargoscope_core::UnusedFinding> = active_unused
+        .iter()
+        .copied()
+        .filter(|finding| show_uncertain || finding.confidence == UnusedConfidence::Likely)
+        .collect();
+    let hidden = active_unused.len() - shown.len();
+    let ignored = report.unused.len() - active_unused.len();
+    if shown.is_empty() && ignored == 0 {
+        if hidden > 0 {
+            let _ = writeln!(
+                out,
+                "\n  {}",
+                paint.dim(&format!(
+                    "{} possibly-unused {} hidden (use --show-uncertain to list)",
+                    hidden,
+                    if hidden == 1 {
+                        "dependency"
+                    } else {
+                        "dependencies"
+                    }
+                ))
+            );
+            return true;
+        }
+        return false;
+    }
+    let mode = if report.unused_precise {
+        "compiler --precise"
+    } else {
+        "static analysis"
+    };
+    let sub = format!("{} · {mode}", plural(shown.len(), "candidate"));
+    section_rule(out, "UNUSED DEPENDENCIES", Some(&sub), width, paint);
+
+    let dep_width = shown
+        .iter()
+        .map(|finding| finding.dependency.len())
+        .max()
+        .unwrap_or(0);
+    let man_width = shown
+        .iter()
+        .map(|finding| finding.manifest.len())
+        .max()
+        .unwrap_or(0);
+
+    for finding in &shown {
+        let icon = if finding.confidence == UnusedConfidence::Likely {
+            paint.yellow("×")
+        } else {
+            paint.dim("?")
+        };
+        let conf = if finding.confidence == UnusedConfidence::Possibly {
+            format!("  {}", paint.dim("possibly-unused"))
+        } else {
+            String::new()
+        };
+        let _ = writeln!(
+            out,
+            "  {icon} {}{}  {}{}  {}{conf}",
+            paint.bold(&finding.dependency),
+            " ".repeat(dep_width.saturating_sub(finding.dependency.len())),
+            finding.manifest,
+            " ".repeat(man_width.saturating_sub(finding.manifest.len())),
+            paint.dim(&format!("[{}]", finding.kind.section()))
+        );
+    }
+    if hidden > 0 {
+        let _ = writeln!(
+            out,
+            "  {}",
+            paint.dim(&format!(
+                "+ {hidden} possibly-unused hidden (use --show-uncertain to list)"
+            ))
+        );
+    }
+    if ignored > 0 {
+        let _ = writeln!(
+            out,
+            "  {}",
+            paint.dim(&format!(
+                "{ignored} ignored via [package.metadata.cargoscope]"
+            ))
+        );
+    }
+    true
+}
+
+fn hud_outdated(out: &mut String, report: &Report, width: usize, paint: Paint) -> bool {
+    let registry_packages = crate::registry_packages(report);
+    let total_outdated = registry_packages
+        .iter()
+        .filter(|(_, info)| info.outdated)
+        .count();
+    let direct_outdated: Vec<(usize, &cargoscope_core::PackageInfo)> = registry_packages
+        .iter()
+        .filter(|(index, info)| info.outdated && report.inventory.packages[*index].direct)
+        .copied()
+        .collect();
+    if direct_outdated.is_empty() {
+        return false;
+    }
+    let sub = format!("{} direct · {total_outdated} total", direct_outdated.len());
+    section_rule(out, "OUTDATED DIRECT", Some(&sub), width, paint);
+
+    let shown = direct_outdated.len().min(8);
+    let slice = &direct_outdated[..shown];
+    let name_w = slice
+        .iter()
+        .map(|(index, _)| report.inventory.packages[*index].name.len())
+        .max()
+        .unwrap_or(0);
+    let ver_w = slice
+        .iter()
+        .map(|(index, _)| report.inventory.packages[*index].version.len())
+        .max()
+        .unwrap_or(0);
+
+    let rows: Vec<_> = slice
+        .iter()
+        .map(|&(index, info)| {
+            let pkg = &report.inventory.packages[index];
+            let latest = info.latest_version.as_deref().unwrap_or("?");
+            let (target_plain, target_styled, kind_plain, kind_styled) = match info
+                .outdated_kind(&pkg.version)
+            {
+                OutdatedKind::Compatible => {
+                    let compat = info.compatible_upgrade(&pkg.version).unwrap_or(latest);
+                    (
+                        compat.to_owned(),
+                        paint.green(compat),
+                        "compatible",
+                        paint.green("compatible"),
+                    )
+                }
+                OutdatedKind::Breaking => (
+                    latest.to_owned(),
+                    paint.rust(latest),
+                    "breaking",
+                    paint.rust("breaking"),
+                ),
+                OutdatedKind::Both => {
+                    let compat = info.compatible_upgrade(&pkg.version).unwrap_or(latest);
+                    let p = format!("{compat} / {latest}");
+                    let s = format!(
+                        "{} {} {}",
+                        paint.green(compat),
+                        paint.dim("/"),
+                        paint.rust(latest)
+                    );
+                    (p, s, "compat+break", paint.yellow("compat+break"))
+                }
+                OutdatedKind::None => (latest.to_owned(), paint.bold(latest), "", String::new()),
+            };
+            (
+                pkg,
+                info,
+                target_plain,
+                target_styled,
+                kind_plain,
+                kind_styled,
+            )
+        })
+        .collect();
+    let target_w = rows
+        .iter()
+        .map(|(_, _, p, _, _, _)| p.len())
+        .max()
+        .unwrap_or(0);
+    let kind_w = rows
+        .iter()
+        .map(|(_, _, _, _, k, _)| k.len())
+        .max()
+        .unwrap_or(0);
+
+    for (pkg, info, target_plain, target_styled, kind_plain, kind_styled) in rows {
+        let published = info
+            .latest_published
+            .as_deref()
+            .map(|date| format!("  {}", paint.dim(date)))
+            .unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "  {}{}  {}{} {} {target_styled}{}  {kind_styled}{}{published}",
+            paint.bold(&pkg.name),
+            " ".repeat(name_w.saturating_sub(pkg.name.len())),
+            paint.dim(&pkg.version),
+            " ".repeat(ver_w.saturating_sub(pkg.version.len())),
+            paint.dim("→"),
+            " ".repeat(target_w.saturating_sub(target_plain.len())),
+            " ".repeat(kind_w.saturating_sub(kind_plain.len())),
+        );
+    }
+    if direct_outdated.len() > shown {
+        let _ = writeln!(
+            out,
+            "  {}",
+            paint.dim(&format!(
+                "+ {} more — use --verbose for all",
+                direct_outdated.len() - shown
+            ))
+        );
+    }
+    true
+}
+
+fn hud_maintenance(out: &mut String, report: &Report, width: usize, paint: Paint) -> bool {
+    let rows = crate::maintenance_rows(report);
+    if rows.is_empty() {
+        return false;
+    }
+    let total_direct = crate::registry_packages(report)
+        .iter()
+        .filter(|(index, _)| {
+            let pkg = &report.inventory.packages[*index];
+            pkg.direct && !pkg.root
+        })
+        .count();
+    let sub = format!("{} of {total_direct} direct to watch", rows.len());
+    section_rule(out, "MAINTENANCE", Some(&sub), width, paint);
+    for (index, concerns) in rows.iter().take(6) {
+        let pkg = &report.inventory.packages[*index];
+        let info = &report.package_info[*index];
+        let reasons: Vec<String> = concerns
+            .iter()
+            .map(|concern| crate::describe_concern(*concern, info))
+            .collect();
+        let _ = writeln!(
+            out,
+            "  {} {} {}  {}",
+            paint.yellow("◆"),
+            paint.bold(&pkg.name),
+            paint.dim(&pkg.version),
+            reasons.join(" · ")
+        );
+    }
+    if rows.len() > 6 {
+        let _ = writeln!(
+            out,
+            "  {}",
+            paint.dim(&format!(
+                "+ {} more — use --verbose for all",
+                rows.len() - 6
+            ))
+        );
+    }
+    true
+}
+
+fn mass_bar(value: usize, max_value: usize, is_top: bool, paint: Paint) -> String {
+    const BAR_WIDTH: usize = 10;
+    let filled = if max_value == 0 {
+        0
+    } else {
+        ((value * BAR_WIDTH) + max_value / 2)
+            .checked_div(max_value)
+            .unwrap_or(0)
+            .clamp(1, BAR_WIDTH)
+    };
+    let empty = BAR_WIDTH - filled;
+    let fill_str = "█".repeat(filled);
+    let empty_str = "░".repeat(empty);
+    let colored_fill = if is_top {
+        paint.rust(&fill_str)
+    } else {
+        paint.scope(&fill_str)
+    };
+    format!("{colored_fill}{}", paint.dim(&empty_str))
+}
+
+fn hud_weights(out: &mut String, report: &Report, width: usize, paint: Paint) -> bool {
+    let heavy = crate::sorted_heavy_weights(report);
+    if heavy.is_empty() {
+        return false;
+    }
+    section_rule(
+        out,
+        "HEAVIEST DIRECT",
+        Some("exclusive / subtree"),
+        width,
+        paint,
+    );
+    let shown = heavy.len().min(5);
+    let slice = &heavy[..shown];
+    let max_exclusive = slice.iter().map(|&(_, exc, _)| exc).max().unwrap_or(1);
+    let label_w = slice
+        .iter()
+        .map(|&(index, _, _)| {
+            let pkg = &report.inventory.packages[index];
+            pkg.name.len() + 1 + pkg.version.len() + crate::kind_note(report, &pkg.name).len()
+        })
+        .max()
+        .unwrap_or(0);
+    let exc_w = slice
+        .iter()
+        .map(|&(_, exc, _)| exc.to_string().len())
+        .max()
+        .unwrap_or(1);
+
+    for (pos, &(index, exclusive, tree)) in slice.iter().enumerate() {
+        let pkg = &report.inventory.packages[index];
+        let note = crate::kind_note(report, &pkg.name);
+        let plain_len = pkg.name.len() + 1 + pkg.version.len() + note.len();
+        let note_styled = if note.is_empty() {
+            String::new()
+        } else {
+            paint.purple(note)
+        };
+        let bar = mass_bar(
+            exclusive,
+            max_exclusive,
+            pos == 0 || exclusive * 2 >= max_exclusive,
+            paint,
+        );
+        let exc_text = format!("{exclusive:>exc_w$}");
+        let _ = writeln!(
+            out,
+            "  {} {}{note_styled}{}  {bar}  {} {}",
+            paint.bold(&pkg.name),
+            paint.dim(&pkg.version),
+            " ".repeat(label_w.saturating_sub(plain_len)),
+            paint.bold(&exc_text),
+            paint.dim(&format!("/ {tree} pkgs"))
+        );
+    }
+    if heavy.len() > shown {
+        let _ = writeln!(
+            out,
+            "  {}",
+            paint.dim(&format!(
+                "+ {} more — use --verbose for all",
+                heavy.len() - shown
+            ))
+        );
+    }
+    true
+}
+
+fn hud_duplicates(out: &mut String, report: &Report, width: usize, paint: Paint) -> bool {
+    let inventory = &report.inventory;
+    let duplicates = inventory.duplicates();
+    if duplicates.is_empty() {
+        return false;
+    }
+    let sub = format!(
+        "{} compiled more than once",
+        plural(duplicates.len(), "crate")
+    );
+    section_rule(out, "DUPLICATES", Some(&sub), width, paint);
+    let shown = duplicates.len().min(5);
+    let slice = &duplicates[..shown];
+    let name_w = slice.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+    let ver_w = slice
+        .iter()
+        .map(|(_, indices)| {
+            indices
+                .iter()
+                .map(|&index| inventory.packages[index].version.len())
+                .sum::<usize>()
+                + indices.len().saturating_sub(1) * 2
+        })
+        .max()
+        .unwrap_or(0);
+
+    for (name, indices) in slice {
+        let mut versions_styled = Vec::with_capacity(indices.len());
+        let mut ver_plain_len = 0usize;
+        for (pos, &index) in indices.iter().enumerate() {
+            let v = inventory.packages[index].version.as_str();
+            if pos > 0 {
+                ver_plain_len += 2;
+            }
+            ver_plain_len += v.len();
+            if pos + 1 < indices.len() {
+                versions_styled.push(paint.yellow(v));
+            } else {
+                versions_styled.push(v.to_owned());
+            }
+        }
+        let oldest = indices[0];
+        let via = short_chain(report, oldest)
+            .map(|c| {
+                let note = inventory
+                    .path_to(oldest)
+                    .and_then(|path| path.get(1).copied())
+                    .map_or("", |first| {
+                        crate::kind_note(report, &inventory.packages[first].name)
+                    });
+                format!(
+                    "{}  {}",
+                    " ".repeat(ver_w.saturating_sub(ver_plain_len)),
+                    paint.dim(&format!("← {c}{note}"))
+                )
+            })
+            .unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "  {}{}  {}{via}",
+            paint.bold(name),
+            " ".repeat(name_w.saturating_sub(name.len())),
+            versions_styled.join(", ")
+        );
+    }
+    if duplicates.len() > shown {
+        let _ = writeln!(
+            out,
+            "  {}",
+            paint.dim(&format!(
+                "+ {} more — use --verbose for all",
+                duplicates.len() - shown
+            ))
+        );
+    }
+    true
+}
+
+fn hud_licenses(out: &mut String, report: &Report, width: usize, paint: Paint) -> bool {
+    let registry_packages = crate::registry_packages(report);
+    if registry_packages.is_empty() {
+        return false;
+    }
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut unknown = 0usize;
+    for (_, info) in &registry_packages {
+        match info.license.as_deref() {
+            Some(expr) => *counts.entry(expr).or_insert(0) += 1,
+            None => unknown += 1,
+        }
+    }
+    let total = registry_packages.len();
+    if counts.is_empty() && unknown == total {
+        return false;
+    }
+    let mut sorted: Vec<(&str, usize)> = counts.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+
+    let sub = format!(
+        "{total} registry pkgs · {}",
+        plural(sorted.len(), "expression")
+    );
+    section_rule(out, "LICENSES", Some(&sub), width, paint);
+
+    // 24-cell segmented distribution bar: top 1 (green), top 2 (scope), top 3 (amber), rest (dim).
+    const BAR_WIDTH: usize = 24;
+    let c1 = sorted.first().map_or(0, |x| x.1);
+    let c2 = sorted.get(1).map_or(0, |x| x.1);
+    let c3 = sorted.get(2).map_or(0, |x| x.1);
+    let mut w1 = (c1 * BAR_WIDTH) / total;
+    let mut w2 = (c2 * BAR_WIDTH) / total;
+    let mut w3 = (c3 * BAR_WIDTH) / total;
+    if c1 > 0 && w1 == 0 {
+        w1 = 1;
+    }
+    if c2 > 0 && w2 == 0 && w1 < BAR_WIDTH {
+        w2 = 1;
+    }
+    if c3 > 0 && w3 == 0 && w1 + w2 < BAR_WIDTH {
+        w3 = 1;
+    }
+    let used = (w1 + w2 + w3).min(BAR_WIDTH);
+    let w_rest = BAR_WIDTH - used;
+    let bar = format!(
+        "{}{}{}{}",
+        paint.green(&"█".repeat(w1.min(BAR_WIDTH))),
+        paint.scope(&"█".repeat(w2.min(BAR_WIDTH.saturating_sub(w1)))),
+        paint.yellow(&"█".repeat(w3.min(BAR_WIDTH.saturating_sub(w1 + w2)))),
+        paint.dim(&"░".repeat(w_rest)),
+    );
+
+    let mut summary_parts: Vec<String> = sorted
+        .iter()
+        .take(3)
+        .map(|(expr, count)| format!("{expr} ({count})"))
+        .collect();
+    if unknown > 0 {
+        summary_parts.push(format!("{unknown} unknown"));
+    }
+    let _ = writeln!(out, "  {bar}  {}", paint.dim(&summary_parts.join(" · ")));
+    true
 }
 
 /// The commands that act on what the report found.
@@ -477,20 +1390,21 @@ pub(crate) fn next_steps(out: &mut String, report: &Report, verbose: bool, paint
         .map(|(command, _)| command.len())
         .max()
         .unwrap_or(0);
-    let _ = writeln!(out, "\n{}", paint.bold("Next steps"));
+    let _ = writeln!(out, "\n  {}", paint.bold("Next steps"));
     for (command, what) in steps {
         let _ = writeln!(
             out,
-            "  {} {command}{}  {}",
-            paint.blue("›"),
-            " ".repeat(width - command.len()),
+            "  {} {}{}  {}",
+            paint.green("›"),
+            paint.bold(&command),
+            " ".repeat(width.saturating_sub(command.len())),
             paint.dim(&what)
         );
     }
 }
 
 /// Bold section titles (a line at column 0 after an empty line, up to its
-/// first colon) and yellow warnings, in the rest of the text report.
+/// first colon) and yellow warnings, in the verbose text report.
 pub(crate) fn style_sections(text: &str, paint: Paint) -> String {
     if !paint.on {
         return text.to_owned();
@@ -524,7 +1438,7 @@ pub(crate) fn style_sections(text: &str, paint: Paint) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Paint, crate_fix, plural, style_sections, truncate};
+    use super::{Paint, crate_fix, format_duration, mass_bar, plural, style_sections, truncate};
     use cargoscope_core::{AdvisoryFinding, AdvisoryKind, AdvisoryRelevance};
 
     fn finding(patched: &[&str]) -> AdvisoryFinding {
@@ -556,7 +1470,6 @@ mod tests {
         assert_eq!(without, 0);
         let none = finding(&[]);
         assert_eq!(crate_fix(&[&a, &none], "0.10.33").1, 1);
-        // A fix on an old line does not fix the newer line's advisory.
         let old_line = finding(&["^1.1.4"]);
         let new_line = finding(&[">= 2.0.0"]);
         assert_eq!(crate_fix(&[&old_line, &new_line], "1.1.0").0, None);
@@ -580,5 +1493,17 @@ mod tests {
         assert!(styled.contains("\u{1b}[1mLicenses of 3 packages\u{1b}[0m:"));
         assert!(styled.contains("\u{1b}[33mwarning:\u{1b}[0m careful"));
         assert_eq!(truncate("abcdef", 4), "abc…");
+        assert_eq!(
+            Paint::new(false).link("https://example.test", "RUSTSEC-1"),
+            "RUSTSEC-1"
+        );
+        assert!(
+            Paint::new(true)
+                .link("https://example.test", "RUSTSEC-1")
+                .contains("\u{1b}]8;;https://example.test\u{1b}\\")
+        );
+        assert_eq!(mass_bar(5, 10, false, Paint::new(false)), "█████░░░░░");
+        assert_eq!(format_duration(24), "24 ms");
+        assert_eq!(format_duration(1250), "1.25s");
     }
 }
