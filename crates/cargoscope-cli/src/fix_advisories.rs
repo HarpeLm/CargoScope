@@ -17,8 +17,9 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
+use cargoscope_advisory::crates_io::RegistryCache;
 use cargoscope_cargo::fix::set_requirement_for_version;
-use cargoscope_core::{AdvisoryKind, Inventory, Package};
+use cargoscope_core::{AdvisoryKind, Inventory, Package, PackageInfo};
 
 use crate::execution_error;
 
@@ -31,6 +32,10 @@ enum Step {
         spec: String,
         version: String,
         manifests: Vec<String>,
+        /// When non-empty, `cargo update -p` of these crates (the ones that
+        /// require the package, within their own range) moves the package
+        /// to `version`; `spec` is not updated itself.
+        parents: Vec<String>,
     },
     /// No candidate accepted: Cargo's reason for the last one tried.
     Blocked(String),
@@ -76,12 +81,25 @@ fn run_cargo_update(
     precise: Option<&str>,
     dry_run: bool,
 ) -> Result<String, String> {
+    run_cargo_update_all(root, &[target], precise, dry_run)
+}
+
+/// [`run_cargo_update`] with one `-p` per target.
+fn run_cargo_update_all(
+    root: &Path,
+    targets: &[&str],
+    precise: Option<&str>,
+    dry_run: bool,
+) -> Result<String, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut command = Command::new(cargo);
     command
         .current_dir(root)
-        .args(["update", "--color", "never", "-p", target])
+        .args(["update", "--color", "never"])
         .stdin(Stdio::null());
+    for target in targets {
+        command.args(["-p", target]);
+    }
     if let Some(version) = precise {
         command.args(["--precise", version]);
     }
@@ -153,6 +171,164 @@ pub(crate) fn reason(stderr: &str) -> String {
     } else {
         lines.join(" / ")
     }
+}
+
+/// The version of `name` that replaced `from` in a `cargo update` output:
+/// `Updating name vFROM -> vTO`, or `Removing name vFROM` with `Adding name vTO`.
+fn replacement(stderr: &str, name: &str, from: &str) -> Option<String> {
+    let clean = strip_ansi(stderr);
+    let mut removed = false;
+    let mut added = None;
+    for line in clean.lines().map(str::trim) {
+        let mut words = line.split_whitespace();
+        let (Some(action), Some(crate_name), Some(version)) =
+            (words.next(), words.next(), words.next())
+        else {
+            continue;
+        };
+        if crate_name != name {
+            continue;
+        }
+        let version = version.trim_start_matches('v');
+        match action {
+            "Updating" if version == from => {
+                let to = words.nth(1)?.trim_start_matches('v');
+                return Some(to.to_owned());
+            }
+            "Removing" if version == from => removed = true,
+            "Adding" => added = Some(version.to_owned()),
+            _ => {}
+        }
+    }
+    added.filter(|_| removed)
+}
+
+/// When the fix is a breaking version that the crates requiring the package
+/// do not accept, a newer release of those crates within the range the
+/// project already requires may: `cargo update -p xcb` moves xcb 1.7.0 to
+/// 1.7.1, which takes quick-xml 0.41. Tried with `--dry-run`; the package
+/// must land on a version that fixes every advisory and brings none.
+fn probe_parents(
+    root: &Path,
+    inventory: &Inventory,
+    index: usize,
+    patched_sets: &[Vec<String>],
+    vulnerable: &dyn Fn(&semver::Version) -> bool,
+) -> Option<Step> {
+    let package = &inventory.packages[index];
+    let pooled: Vec<String> = patched_sets.iter().flatten().cloned().collect();
+    let fix = candidates(&pooled, &package.version)
+        .into_iter()
+        .find(|version| fixes_all(version, patched_sets))?;
+    let blockers = cargoscope_report::fix_blockers(inventory, index, &fix);
+    if blockers.is_empty() {
+        return None;
+    }
+    let parents: Vec<String> = blockers
+        .iter()
+        .map(|&at| {
+            let parent = &inventory.packages[at];
+            format!("{}@{}", parent.name, parent.version)
+        })
+        .collect();
+    let targets: Vec<&str> = parents.iter().map(String::as_str).collect();
+    let stderr = run_cargo_update_all(root, &targets, None, true).ok()?;
+    let to = replacement(&stderr, &package.name, &package.version)?;
+    let version = semver::Version::parse(&to).ok()?;
+    (fixes_all(&version, patched_sets) && !vulnerable(&version)).then(|| Step::Update {
+        spec: format!("{}@{}", package.name, package.version),
+        version: to,
+        manifests: Vec::new(),
+        parents,
+    })
+}
+
+/// The requirement Cargo could not meet, from its error: `^0.30.0` in
+/// ``failed to select a version for the requirement `quick-xml = "^0.30.0"` ``.
+fn refused_requirement(reason: &str) -> Option<&str> {
+    let start = reason.find("for the requirement `")? + "for the requirement `".len();
+    let rest = &reason[start..];
+    let requirement = &rest[..rest.find('`')?];
+    let (_, value) = requirement.split_once('=')?;
+    Some(value.trim().trim_matches('"'))
+}
+
+/// A plain explanation when the fix is a breaking version of a crate other
+/// crates pull in: Cargo's own message is sometimes misleading (`no matching
+/// package named crypto-bigint found` when `elliptic-curve` asks for 0.5).
+/// `None` when nothing but the workspace depends on the package, so Cargo's
+/// reason stays.
+fn explain_blocked(
+    inventory: &Inventory,
+    index: usize,
+    patched_sets: &[Vec<String>],
+    reason: &str,
+    registry: &[PackageInfo],
+) -> Option<String> {
+    let package = &inventory.packages[index];
+    let pooled: Vec<String> = patched_sets.iter().flatten().cloned().collect();
+    let fix = candidates(&pooled, &package.version)
+        .into_iter()
+        .find(|version| fixes_all(version, patched_sets))?;
+    let blockers = cargoscope_report::fix_blockers(inventory, index, &fix);
+    if blockers.is_empty() {
+        return None;
+    }
+    let label = |at: usize| {
+        let blocker = &inventory.packages[at];
+        format!("{} {}", blocker.name, blocker.version)
+    };
+    let who = match (blockers.as_slice(), refused_requirement(reason)) {
+        ([only], Some(requirement)) => {
+            format!("{} requires {} {requirement}", label(*only), package.name)
+        }
+        ([only], None) => format!("{} requires an older {}", label(*only), package.name),
+        (many, _) => format!(
+            "{} require an older {}",
+            many.iter()
+                .map(|&at| label(at))
+                .collect::<Vec<_>>()
+                .join(", "),
+            package.name
+        ),
+    };
+    let newer: Vec<String> = blockers
+        .iter()
+        .filter_map(|&at| {
+            let blocker = &inventory.packages[at];
+            let latest = registry.get(at)?.latest_version.as_deref()?;
+            let is_newer = semver::Version::parse(latest)
+                .ok()
+                .zip(semver::Version::parse(&blocker.version).ok())
+                .is_some_and(|(latest, current)| latest > current);
+            let breaking = semver::Version::parse(latest)
+                .ok()
+                .zip(semver::Version::parse(&blocker.version).ok())
+                .is_some_and(|(latest, current)| {
+                    !cargoscope_core::is_semver_compatible(&current, &latest)
+                });
+            is_newer.then(|| {
+                if breaking {
+                    format!("{} {latest} (a breaking update)", blocker.name)
+                } else {
+                    format!("{} {latest}", blocker.name)
+                }
+            })
+        })
+        .collect();
+    let names: Vec<&str> = blockers
+        .iter()
+        .map(|&at| inventory.packages[at].name.as_str())
+        .collect();
+    let next = if newer.is_empty() {
+        format!(
+            "it can move once a new {} release allows it",
+            names.join(" or ")
+        )
+    } else {
+        format!("a newer release may allow it: {}", newer.join(", "))
+    };
+    Some(format!("{who}, and the fix is {fix}; {next}"))
 }
 
 /// First line of the Markdown report: lets the GitHub Action find the pull
@@ -288,11 +464,16 @@ fn render_markdown(rows: &[Row]) -> String {
         out.push_str("This updates `Cargo.lock` to the smallest fixed version Cargo accepts:\n\n| Package | From | To | Advisories |\n|---|---|---|---|\n");
         for row in &updates {
             if let Step::Update {
-                version, manifests, ..
+                version,
+                manifests,
+                parents,
+                ..
             } = &row.step
             {
                 let ids: Vec<String> = row.ids.iter().map(|id| advisory_link(id)).collect();
-                let to = if manifests.is_empty() {
+                let to = if !parents.is_empty() {
+                    format!("**{version}** (via `{}`)", parents.join("`, `"))
+                } else if manifests.is_empty() {
                     format!("**{version}**")
                 } else {
                     format!("**{version}** (in `{}`)", manifests.join("`, `"))
@@ -446,6 +627,7 @@ fn plan_package(
                     spec,
                     version: version.to_string(),
                     manifests: Vec::new(),
+                    parents: Vec::new(),
                 });
             }
             Err(error) => last_error = reason(&error),
@@ -463,6 +645,7 @@ fn plan_package(
                     spec,
                     version: version.to_string(),
                     manifests: labels,
+                    parents: Vec::new(),
                 });
             }
             Ok(None) => {}
@@ -627,10 +810,30 @@ fn apply_updates(
             spec,
             version,
             manifests: target_labels,
+            parents,
         } = &row.step
         else {
             continue;
         };
+        if !parents.is_empty() {
+            if let Some(now) = moved_past(root, &row.name, &row.from, version) {
+                eprintln!(
+                    "{} {}: already at {now} after an earlier update",
+                    row.name, row.from
+                );
+                continue;
+            }
+            let targets: Vec<&str> = parents.iter().map(String::as_str).collect();
+            run_cargo_update_all(root, &targets, None, false).map_err(|error| {
+                eprintln!(
+                    "cargo update -p {} failed: {}",
+                    parents.join(" -p "),
+                    reason(&error)
+                );
+                ExitCode::from(2)
+            })?;
+            continue;
+        }
         if target_labels.is_empty() {
             // An earlier update may have moved this package already
             // (rustls pulls a newer rustls-webpki): skip it when the version
@@ -671,9 +874,24 @@ fn print_step(name: &str, from: &str, ids: &[&str], step: &Step, paint: cargosco
         Step::Update {
             version,
             manifests: target_labels,
+            parents,
             ..
         } => {
-            if target_labels.is_empty() {
+            if !parents.is_empty() {
+                let names: Vec<&str> = parents
+                    .iter()
+                    .map(|spec| spec.split_once('@').map_or(spec.as_str(), |(name, _)| name))
+                    .collect();
+                println!(
+                    "  {} {}",
+                    paint.green(&format!("- update to {version}")),
+                    paint.dim(&format!(
+                        "(by updating {} within the range already required: cargo update -p {})",
+                        names.join(", "),
+                        parents.join(" -p ")
+                    ))
+                );
+            } else if target_labels.is_empty() {
                 println!("  {}", paint.green(&format!("- update to {version}")));
             } else {
                 println!(
@@ -702,6 +920,17 @@ fn print_summary(apply: bool, rows: &[Row], paint: cargoscope_report::Paint) {
         .flatten()
         .collect::<BTreeSet<_>>()
         .len();
+    if updates == 0 {
+        println!(
+            "\n{} none of the {blocked} vulnerable package(s) can move from Cargo.lock or the workspace manifests: each one waits on the crate that requires it (above). Nothing was changed.",
+            paint.bold(if apply {
+                "Nothing to update:"
+            } else {
+                "Dry run:"
+            })
+        );
+        return;
+    }
     if !apply {
         if manifest_count == 0 {
             println!(
@@ -751,10 +980,13 @@ fn render_json(rows: &[Row]) -> String {
     for row in rows {
         match &row.step {
             Step::Update {
-                version, manifests, ..
+                version,
+                manifests,
+                parents,
+                ..
             } => updates.push(serde_json::json!({
                 "package": row.name, "from": row.from, "to": version,
-                "advisories": row.ids, "manifests": manifests,
+                "advisories": row.ids, "manifests": manifests, "via": parents,
             })),
             Step::Blocked(reason) => blocked.push(serde_json::json!({
                 "package": row.name, "from": row.from,
@@ -798,6 +1030,10 @@ pub fn run(
     let database = cargoscope_advisory::cache_dir()
         .ok()
         .and_then(|dir| cargoscope_advisory::AdvisoryDatabase::open(&dir).ok());
+
+    let registry = cargoscope_advisory::cache_dir()
+        .map(|dir| RegistryCache::open(&dir).info(&inventory))
+        .unwrap_or_default();
 
     // One step per vulnerable package, ignored advisories left out.
     let mut seen = BTreeSet::new();
@@ -848,7 +1084,29 @@ pub fn run(
                 })
             })
         };
-        let step = plan_package(root, package, &patched_sets, &vulnerable, &mut manifests)?;
+        let mut step = plan_package(root, package, &patched_sets, &vulnerable, &mut manifests)?;
+        if matches!(step, Step::Blocked(_))
+            && let Some(through) = probe_parents(
+                root,
+                &inventory,
+                finding.package,
+                &patched_sets,
+                &vulnerable,
+            )
+        {
+            step = through;
+        }
+        if let Step::Blocked(reason) = &step
+            && let Some(explained) = explain_blocked(
+                &inventory,
+                finding.package,
+                &patched_sets,
+                reason,
+                &registry,
+            )
+        {
+            step = Step::Blocked(explained);
+        }
         if !markdown {
             print_step(&package.name, &package.version, &ids, &step, paint);
         }
@@ -952,6 +1210,27 @@ mod tests {
     }
 
     #[test]
+    fn reads_what_replaced_a_package_and_the_refused_requirement() {
+        use super::{refused_requirement, replacement};
+        let moved = "    Updating crates.io index\n     Locking 3 packages\n    Removing quick-xml v0.30.0\n      Adding quick-xml v0.41.0\n    Updating xcb v1.7.0 -> v1.7.1\n";
+        assert_eq!(
+            replacement(moved, "quick-xml", "0.30.0").as_deref(),
+            Some("0.41.0")
+        );
+        assert_eq!(replacement(moved, "xcb", "1.7.0").as_deref(), Some("1.7.1"));
+        // Added next to the old version, which stays: not a replacement.
+        let kept = "      Adding quick-xml v0.41.0\n";
+        assert_eq!(replacement(kept, "quick-xml", "0.30.0"), None);
+        assert_eq!(
+            refused_requirement(
+                "error: failed to select a version for the requirement `quick-xml = \"^0.30.0\"` / required by package `xcb v1.7.0`"
+            ),
+            Some("^0.30.0")
+        );
+        assert_eq!(refused_requirement("error: no matching package"), None);
+    }
+
+    #[test]
     fn renders_the_plan_as_json() {
         use super::{Row, Step, render_json};
         let rows = vec![
@@ -963,6 +1242,7 @@ mod tests {
                     spec: "chrono@0.4.19".to_owned(),
                     version: "0.4.20".to_owned(),
                     manifests: Vec::new(),
+                    parents: Vec::new(),
                 },
             },
             Row {
@@ -994,6 +1274,7 @@ mod tests {
                     spec: "chrono@0.4.19".to_owned(),
                     version: "0.4.20".to_owned(),
                     manifests: Vec::new(),
+                    parents: Vec::new(),
                 },
             },
             Row {
@@ -1019,6 +1300,7 @@ mod tests {
                 spec: "chrono@0.4.19".to_owned(),
                 version: "0.4.20".to_owned(),
                 manifests: vec!["Cargo.toml".to_owned()],
+                parents: Vec::new(),
             },
         }];
         let manifest_body = render_markdown(&with_manifest);
