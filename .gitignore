@@ -16,3 +16,4 @@ Thumbs.db
 # CargoScope output
 cargoscope-report.json
 results.sarif
+tests/fixtures/advisory-cache/unsafe/
