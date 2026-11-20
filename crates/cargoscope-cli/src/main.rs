@@ -47,10 +47,12 @@ const AUDIT_BIN_USAGE: &str =
       --verbose lists every advisory in full and every crate found.";
 
 const WHY_USAGE: &str =
-    "  cargoscope why CRATE[@VERSION] [PATH] [--format text|json] [--color WHEN]
-      Show every dependency chain from the project's root packages to CRATE,
-      its direct dependents, and how many packages would leave the tree
-      without it. Offline and read-only.";
+    "  cargoscope why CRATE[@VERSION] [PATH] [--all-paths] [--format text|json] [--color WHEN]
+      Explain why CRATE is in Cargo.lock: its known advisories and the version
+      that fixes them (or the crate that has to accept it first), whether it
+      was yanked, its direct dependents, how many packages would leave the
+      tree without it, and the shortest chain through each direct dependency
+      that leads to it. --all-paths lists every chain. Offline and read-only.";
 
 const FIX_USAGE: &str =
     "  cargoscope fix [PATH] [--dry-run | --apply] [--only NAMES] [--include-uncertain] [--precise] [--color WHEN]

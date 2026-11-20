@@ -32,6 +32,18 @@ pub struct Inventory {
     pub packages: Vec<Package>,
 }
 
+/// One way into a package from the workspace; see [`Inventory::routes_to`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Route {
+    /// Root packages that depend on the route's direct dependency.
+    pub members: Vec<usize>,
+    /// The shortest chain: the first of `members`, the direct dependency,
+    /// …, the package.
+    pub path: Vec<usize>,
+    /// How many chains go from the direct dependency to the package.
+    pub count: u64,
+}
+
 impl Inventory {
     /// Returns the shortest dependency chain from a root package to `target`,
     /// as package indices starting with the root and ending with `target`.
@@ -97,6 +109,18 @@ impl Inventory {
     /// `target`, shortest first, ties broken by package order.
     #[must_use]
     pub fn paths_to(&self, target: usize, limit: usize) -> Vec<Vec<usize>> {
+        self.chains_to(target, limit, true)
+    }
+
+    /// Like [`Inventory::paths_to`], but each chain holds a single root
+    /// package, its first step: a chain that goes through another workspace
+    /// member is that member's chain, already listed.
+    #[must_use]
+    pub fn member_paths_to(&self, target: usize, limit: usize) -> Vec<Vec<usize>> {
+        self.chains_to(target, limit, false)
+    }
+
+    fn chains_to(&self, target: usize, limit: usize, through_roots: bool) -> Vec<Vec<usize>> {
         let count = self.packages.len();
         if target >= count || limit == 0 {
             return Vec::new();
@@ -144,7 +168,11 @@ impl Inventory {
                 continue;
             }
             for &next in &self.packages[last].dependencies {
-                if next < count && can_reach[next] && !path.contains(&next) && visits[next] < limit
+                if next < count
+                    && can_reach[next]
+                    && (through_roots || !self.packages[next].root)
+                    && !path.contains(&next)
+                    && visits[next] < limit
                 {
                     if next != target {
                         visits[next] += 1;
@@ -156,6 +184,152 @@ impl Inventory {
             }
         }
         results
+    }
+
+    /// Root packages that depend on `target`, directly or not, sorted by
+    /// package order.
+    #[must_use]
+    pub fn members_reaching(&self, target: usize) -> Vec<usize> {
+        let count = self.packages.len();
+        if target >= count {
+            return Vec::new();
+        }
+        let reverse = self.reverse_edges();
+        let mut seen = vec![false; count];
+        seen[target] = true;
+        let mut stack = vec![target];
+        while let Some(node) = stack.pop() {
+            for &parent in &reverse[node] {
+                if !seen[parent] {
+                    seen[parent] = true;
+                    stack.push(parent);
+                }
+            }
+        }
+        (0..count)
+            .filter(|&index| index != target && seen[index] && self.packages[index].root)
+            .collect()
+    }
+
+    /// The ways into `target` from the workspace, one per direct dependency
+    /// that leads to it: the root packages depending on it, the shortest
+    /// chain through it and how many chains go through it. Chains go through
+    /// a single root package, their first step. Shortest routes come first,
+    /// then the busiest ones. Empty for a root package.
+    #[must_use]
+    pub fn routes_to(&self, target: usize) -> Vec<Route> {
+        let count = self.packages.len();
+        if target >= count || self.packages[target].root {
+            return Vec::new();
+        }
+        let reverse = self.reverse_edges();
+        // Steps from each non-root package to `target`, avoiding root packages.
+        let mut distance = vec![usize::MAX; count];
+        distance[target] = 0;
+        let mut queue = VecDeque::from([target]);
+        while let Some(node) = queue.pop_front() {
+            for &parent in &reverse[node] {
+                if !self.packages[parent].root && distance[parent] == usize::MAX {
+                    distance[parent] = distance[node] + 1;
+                    queue.push_back(parent);
+                }
+            }
+        }
+        let leads =
+            |next: usize| next < count && !self.packages[next].root && distance[next] != usize::MAX;
+
+        let mut by_direct: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for (index, package) in self.packages.iter().enumerate() {
+            if package.root {
+                for &next in &package.dependencies {
+                    if leads(next) {
+                        let members = by_direct.entry(next).or_default();
+                        if !members.contains(&index) {
+                            members.push(index);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut memo = vec![None; count];
+        let mut on_stack = vec![false; count];
+        let mut routes: Vec<Route> = by_direct
+            .into_iter()
+            .map(|(direct, members)| {
+                let mut path = vec![members[0], direct];
+                let mut node = direct;
+                while node != target {
+                    let Some(next) = self.packages[node]
+                        .dependencies
+                        .iter()
+                        .copied()
+                        .filter(|&next| leads(next) && distance[next] + 1 == distance[node])
+                        .min()
+                    else {
+                        break;
+                    };
+                    path.push(next);
+                    node = next;
+                }
+                let chains = self.count_chains(direct, target, &leads, &mut memo, &mut on_stack);
+                Route {
+                    members,
+                    path,
+                    count: chains,
+                }
+            })
+            .collect();
+        routes.sort_by(|a, b| {
+            a.path
+                .len()
+                .cmp(&b.path.len())
+                .then(b.count.cmp(&a.count))
+                .then(a.path[1].cmp(&b.path[1]))
+        });
+        routes
+    }
+
+    /// Chains from `node` to `target` through packages `leads` accepts; a
+    /// cycle is cut where it closes.
+    fn count_chains(
+        &self,
+        node: usize,
+        target: usize,
+        leads: &impl Fn(usize) -> bool,
+        memo: &mut [Option<u64>],
+        on_stack: &mut [bool],
+    ) -> u64 {
+        if node == target {
+            return 1;
+        }
+        if let Some(known) = memo[node] {
+            return known;
+        }
+        on_stack[node] = true;
+        let mut total: u64 = 0;
+        for &next in &self.packages[node].dependencies {
+            if leads(next) && !on_stack[next] {
+                total =
+                    total.saturating_add(self.count_chains(next, target, leads, memo, on_stack));
+            }
+        }
+        on_stack[node] = false;
+        memo[node] = Some(total);
+        total
+    }
+
+    fn reverse_edges(&self) -> Vec<Vec<usize>> {
+        let count = self.packages.len();
+        let mut reverse = vec![Vec::new(); count];
+        for (index, package) in self.packages.iter().enumerate() {
+            for &dep in &package.dependencies {
+                if dep < count {
+                    reverse[dep].push(index);
+                }
+            }
+        }
+        reverse
     }
 
     /// Marks the packages reachable from the root packages. With `cut`,
@@ -973,6 +1147,43 @@ mod tests {
         };
         assert_eq!(inventory.path_to(3), Some(vec![0, 4, 3]));
         assert_eq!(inventory.path_to(0), Some(vec![0]));
+    }
+
+    #[test]
+    fn groups_paths_by_direct_dependency_and_counts_them() {
+        // tool (member) -> app (member) -> a -> {b, c} -> target
+        //                               app -> d -> target ; tool -> d
+        let inventory = Inventory {
+            packages: vec![
+                package("app", true, vec![1, 4]),
+                package("a", false, vec![2, 3]),
+                package("b", false, vec![5]),
+                package("c", false, vec![5]),
+                package("d", false, vec![5]),
+                package("target", false, vec![]),
+                package("tool", true, vec![0, 4]),
+            ],
+        };
+        let routes = inventory.routes_to(5);
+        assert_eq!(routes.len(), 2);
+        // Through d: shortest, shared by both members, one path.
+        assert_eq!(routes[0].path, vec![0, 4, 5]);
+        assert_eq!(routes[0].members, vec![0, 6]);
+        assert_eq!(routes[0].count, 1);
+        // Through a: two paths (via b and via c), the shortest via b.
+        assert_eq!(routes[1].path, vec![0, 1, 2, 5]);
+        assert_eq!(routes[1].count, 2);
+        // A chain through another member is that member's chain.
+        let paths = inventory.member_paths_to(5, 10);
+        assert_eq!(paths.len(), 4);
+        assert!(
+            paths
+                .iter()
+                .all(|path| path[1..].iter().all(|&step| step != 0))
+        );
+        assert_eq!(inventory.paths_to(5, 10).len(), 7);
+        assert_eq!(inventory.members_reaching(5), vec![0, 6]);
+        assert!(inventory.routes_to(0).is_empty());
     }
 
     #[test]

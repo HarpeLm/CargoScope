@@ -2051,6 +2051,51 @@ fn why_shows_reverse_paths_dependents_and_pruning_weight() {
         vec!["multi-version", "old-wrapper", "bitflags"]
     );
 
+    let with_cache = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .arg("why")
+            .args(args)
+            .args(["--color", "never"])
+            .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+            .output()
+            .expect("cargoscope binary runs");
+        assert_eq!(output.status.code(), Some(0));
+        stdout(&output)
+    };
+    let project = fixture("security-update");
+    let vulnerable = with_cache(&["serde_json", project.to_str().expect("utf-8")]);
+    assert!(
+        vulnerable.contains("advisories (1): HIGH CARGOSCOPE-TEST-0001"),
+        "{vulnerable}"
+    );
+    assert!(
+        vulnerable.contains(
+            "fix: 1.0.200, within the range already required: cargo update -p serde_json@1.0.154"
+        ),
+        "{vulnerable}"
+    );
+    let notice = with_cache(&["itoa", project.to_str().expect("utf-8")]);
+    assert!(
+        notice.contains("UNMAINTAINED CARGOSCOPE-TEST-0003"),
+        "{notice}"
+    );
+    assert!(!notice.contains("fix:"), "{notice}");
+    assert!(text.contains("advisories: not checked") || text.contains("advisories: none known"));
+
+    let json_cached: serde_json::Value = serde_json::from_str(&with_cache(&[
+        "serde_json",
+        project.to_str().expect("utf-8"),
+        "--format",
+        "json",
+    ]))
+    .expect("valid JSON");
+    let first = &json_cached["matches"][0];
+    assert_eq!(first["advisories"][0]["id"], "CARGOSCOPE-TEST-0001");
+    assert_eq!(first["fix"]["version"], "1.0.200");
+    assert_eq!(first["fix"]["action"], "cargo-update");
+    assert_eq!(first["path_count"], 1);
+    assert_eq!(first["routes"][0]["via"]["name"], "serde_json");
+
     let missing = run(&["nonexistent", fixture("simple").to_str().expect("utf-8")]);
     assert_eq!(missing.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&missing.stderr).contains("is not in Cargo.lock"));

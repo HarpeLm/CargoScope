@@ -7,7 +7,7 @@ pub mod html;
 pub mod sarif;
 mod terminal;
 
-pub use terminal::Paint;
+pub use terminal::{Paint, crate_fix};
 
 use std::fmt::Write;
 use std::path::Path;
