@@ -252,11 +252,7 @@ fn fix_for(inventory: &Inventory, index: usize, findings: &[&AdvisoryFinding]) -
     if compatible {
         return Some(Fix::Update(version));
     }
-    let blockers: Vec<usize> = inventory
-        .dependents_of(index)
-        .into_iter()
-        .filter(|&dependent| !inventory.packages[dependent].root)
-        .collect();
+    let blockers = cargoscope_report::fix_blockers(inventory, index, &version);
     Some(if blockers.is_empty() {
         Fix::Requirement(version)
     } else {

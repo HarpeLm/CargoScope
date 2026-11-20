@@ -369,27 +369,38 @@ fn render_actions(out: &mut String, report: &Report, now: Option<u64>) {
             // A fix outside the SemVer range of the resolved version cannot
             // come from Cargo.lock alone when another crate pulls this one
             // in: that crate has to accept the new version first.
-            let blocked_by = fix.as_ref().and_then(|version| {
-                let current = semver::Version::parse(&pkg.version).ok()?;
-                if pkg.direct || cargoscope_core::is_semver_compatible(&current, version) {
-                    return None;
-                }
-                let path = report.inventory.path_to(*index)?;
-                let parent = path.len().checked_sub(2).map(|at| path[at])?;
-                Some(&report.inventory.packages[parent])
+            let blockers = fix.as_ref().map_or_else(Vec::new, |version| {
+                crate::terminal::fix_blockers(&report.inventory, *index, version)
+            });
+            let blocked_by = (!blockers.is_empty()).then(|| {
+                let names: Vec<String> = blockers
+                    .iter()
+                    .map(|&blocker| {
+                        let parent = &report.inventory.packages[blocker];
+                        format!(
+                            "{} {}",
+                            crate_name_html(parent),
+                            escape_html(&parent.version)
+                        )
+                    })
+                    .collect();
+                let plain: Vec<String> = blockers
+                    .iter()
+                    .map(|&blocker| escape_html(&report.inventory.packages[blocker].name))
+                    .collect();
+                (names.join(", "), plain.join(", "), blockers.len() == 1)
             });
             if fix.is_some() && blocked_by.is_none() {
                 fixable += 1;
             }
             let line = match (fix, blocked_by) {
-                (Some(version), Some(parent)) => format!(
-                    "{} {}: fixed in {}, which {} {} does not accept yet ({advisories}){unlikely}. Update {} once a release allows it, or ask its maintainers",
+                (Some(version), Some((parents, names, single))) => format!(
+                    "{} {}: fixed in {}, which {parents} {} not accept yet ({advisories}){unlikely}. Update {names} once a release allows it, or ask {} maintainers",
                     crate_name_html(pkg),
                     escape_html(&pkg.version),
                     diff_link(pkg, &version.to_string()),
-                    crate_name_html(parent),
-                    escape_html(&parent.version),
-                    escape_html(&parent.name)
+                    if single { "does" } else { "do" },
+                    if single { "its" } else { "their" }
                 ),
                 (Some(version), None) => format!(
                     "Update {} {} &rarr; {}: fixes {advisories}{unlikely}",

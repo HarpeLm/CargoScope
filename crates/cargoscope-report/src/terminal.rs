@@ -13,7 +13,7 @@ use std::fmt::Write;
 use std::path::Path;
 
 use cargoscope_core::{
-    AdvisoryFinding, AdvisoryKind, AdvisoryRelevance, OutdatedKind, Report, Severity,
+    AdvisoryFinding, AdvisoryKind, AdvisoryRelevance, Inventory, OutdatedKind, Report, Severity,
     UnusedConfidence, VERSION, policy::ViolationLevel,
 };
 
@@ -714,6 +714,28 @@ pub fn crate_fix(findings: &[&AdvisoryFinding], version: &str) -> (Option<semver
     (fixes_all, without_fix)
 }
 
+/// The crates that have to accept `fix` before the package at `index` can
+/// move to it: when `fix` is outside the SemVer range of the resolved
+/// version, every non-workspace crate depending on it asks for that range,
+/// and Cargo.lock alone cannot change it. Empty when `cargo update` or the
+/// workspace's own manifests can apply the fix.
+#[must_use]
+pub fn fix_blockers(inventory: &Inventory, index: usize, fix: &semver::Version) -> Vec<usize> {
+    let Some(package) = inventory.packages.get(index) else {
+        return Vec::new();
+    };
+    let compatible = semver::Version::parse(&package.version)
+        .is_ok_and(|current| cargoscope_core::is_semver_compatible(&current, fix));
+    if compatible {
+        return Vec::new();
+    }
+    inventory
+        .dependents_of(index)
+        .into_iter()
+        .filter(|&dependent| !inventory.packages[dependent].root)
+        .collect()
+}
+
 /// `a › b › … › y › z`: the first package and the last two steps.
 fn short_chain(report: &Report, index: usize) -> Option<String> {
     let path = report.inventory.path_to(index)?;
@@ -807,7 +829,15 @@ fn hud_advisories(out: &mut String, report: &Report, width: usize, paint: Paint)
             .map(|(index, findings)| {
                 let package = &report.inventory.packages[*index];
                 let (fix, without_fix) = crate_fix(findings, &package.version);
+                let blockers = fix
+                    .as_ref()
+                    .map(|version| fix_blockers(&report.inventory, *index, version))
+                    .unwrap_or_default();
                 let (fix_plain, fix_styled) = match (fix, without_fix) {
+                    (Some(version), 0) if !blockers.is_empty() => {
+                        let p = format!("→ {version} (blocked)");
+                        (p.clone(), paint.yellow(&p))
+                    }
                     (Some(version), 0) if findings.len() > 1 => {
                         let p = format!("→ {version} (fixes all)");
                         (p.clone(), paint.green(&p))
@@ -825,17 +855,17 @@ fn hud_advisories(out: &mut String, report: &Report, width: usize, paint: Paint)
                         (p.clone(), paint.yellow(&p))
                     }
                 };
-                (*index, findings, fix_plain, fix_styled)
+                (*index, findings, fix_plain, fix_styled, blockers)
             })
             .collect();
         let fix_width = rows
             .iter()
-            .map(|(_, _, p, _)| p.chars().count())
+            .map(|(_, _, p, _, _)| p.chars().count())
             .max()
             .unwrap_or(0);
         let id_width = rows
             .iter()
-            .map(|(_, findings, _, _)| {
+            .map(|(_, findings, _, _, _)| {
                 findings[0].id.chars().count()
                     + if findings.len() > 1 {
                         format!(" +{}", findings.len() - 1).len()
@@ -848,7 +878,7 @@ fn hud_advisories(out: &mut String, report: &Report, width: usize, paint: Paint)
         // The fix column moves to the detail line when the row would not fit.
         let fix_inline = 2 + 6 + 2 + name_width + 2 + fix_width + 2 + 13 + 2 + id_width <= width;
 
-        for (index, findings, fix_plain, fix_styled) in rows {
+        for (index, findings, fix_plain, fix_styled, blockers) in rows {
             let package = &report.inventory.packages[index];
             let name_plain_len = package.name.len() + 1 + package.version.len();
             let name_pad = " ".repeat(name_width.saturating_sub(name_plain_len));
@@ -924,6 +954,17 @@ fn hud_advisories(out: &mut String, report: &Report, width: usize, paint: Paint)
             }
             if let Some(chain) = short_chain(report, index) {
                 detail_parts.push(format!("via {chain}"));
+            }
+            if !blockers.is_empty() {
+                let names: Vec<&str> = blockers
+                    .iter()
+                    .map(|&blocker| report.inventory.packages[blocker].name.as_str())
+                    .collect();
+                detail_parts.push(if names.len() == 1 {
+                    format!("waits on a new {} release", names[0])
+                } else {
+                    format!("waits on new releases of {}", names.join(", "))
+                });
             }
             if findings.len() == 1 {
                 detail_parts.push(findings[0].title.clone());
@@ -1785,14 +1826,34 @@ pub(crate) fn next_steps(out: &mut String, report: &Report, verbose: bool, paint
             "download the advisory database and crates.io data".to_owned(),
         ));
     }
-    let fixable = vulnerable_crates(report)
-        .iter()
-        .filter(|(index, findings)| {
-            crate_fix(findings, &report.inventory.packages[**index].version)
-                .0
-                .is_some()
-        })
-        .count();
+    let mut fixable = 0;
+    // Most relevant and most severe first, so the suggested `why` is the
+    // crate that matters most.
+    let mut ranked: Vec<(AdvisoryRelevance, std::cmp::Reverse<Option<Severity>>, &str)> =
+        Vec::new();
+    for (index, findings) in &vulnerable_crates(report) {
+        let package = &report.inventory.packages[*index];
+        if let (Some(version), _) = crate_fix(findings, &package.version) {
+            if fix_blockers(&report.inventory, *index, &version).is_empty() {
+                fixable += 1;
+            } else {
+                let relevance = findings
+                    .iter()
+                    .map(|finding| finding.relevance)
+                    .min()
+                    .unwrap_or_default();
+                let worst = findings.iter().filter_map(|finding| finding.severity).max();
+                ranked.push((relevance, std::cmp::Reverse(worst), &package.name));
+            }
+        }
+    }
+    ranked.sort();
+    let mut blocked: Vec<&str> = Vec::new();
+    for (_, _, name) in ranked {
+        if !blocked.contains(&name) {
+            blocked.push(name);
+        }
+    }
     if fixable > 0 {
         steps.push((
             "cargoscope fix --advisories".to_owned(),
@@ -1800,6 +1861,19 @@ pub(crate) fn next_steps(out: &mut String, report: &Report, verbose: bool, paint
                 "update {}, dry run first",
                 plural(fixable, "vulnerable crate")
             ),
+        ));
+    }
+    if let Some(first) = blocked.first() {
+        steps.push((
+            format!("cargoscope why {first}"),
+            if blocked.len() == 1 {
+                "its fix waits on the crate that pulls it in".to_owned()
+            } else {
+                format!(
+                    "fixes of {} wait on the crates that pull them in",
+                    plural(blocked.len(), "vulnerable crate")
+                )
+            },
         ));
     }
     let likely = report
@@ -1893,8 +1967,8 @@ pub(crate) fn style_sections(text: &str, paint: Paint) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Paint, clip, crate_fix, format_duration, mass_bar, plural, style_sections, truncate,
-        visible_len, wrap,
+        Paint, clip, crate_fix, fix_blockers, format_duration, mass_bar, plural, style_sections,
+        truncate, visible_len, wrap,
     };
     use cargoscope_core::{AdvisoryFinding, AdvisoryKind, AdvisoryRelevance};
 
@@ -1930,6 +2004,30 @@ mod tests {
         let old_line = finding(&["^1.1.4"]);
         let new_line = finding(&[">= 2.0.0"]);
         assert_eq!(crate_fix(&[&old_line, &new_line], "1.1.0").0, None);
+    }
+
+    #[test]
+    fn a_breaking_fix_of_a_transitive_crate_waits_on_its_dependents() {
+        use cargoscope_core::{Inventory, Package};
+        let package = |name: &str, version: &str, root: bool, dependencies: Vec<usize>| Package {
+            name: name.to_owned(),
+            version: version.to_owned(),
+            source: None,
+            root,
+            direct: root,
+            dependencies,
+        };
+        // app -> {parser, wrapper}; wrapper -> parser
+        let inventory = Inventory {
+            packages: vec![
+                package("app", "0.1.0", true, vec![1, 2]),
+                package("parser", "0.30.0", false, vec![]),
+                package("wrapper", "1.7.0", false, vec![1]),
+            ],
+        };
+        let version = |text: &str| semver::Version::parse(text).expect("valid version");
+        assert_eq!(fix_blockers(&inventory, 1, &version("0.41.0")), vec![2]);
+        assert!(fix_blockers(&inventory, 1, &version("0.30.4")).is_empty());
     }
 
     #[test]
