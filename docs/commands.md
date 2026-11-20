@@ -220,6 +220,8 @@ Tries the smallest version that fixes **all** active advisories of each crate wi
 1. First runs `cargo update -p <name>@<version> --precise <fixed> --dry-run` (lockfile-only resolution; never compiles code).
 2. If a manifest requirement blocks the fix, retries with `set_requirement_for_version` updating matching declarations across `[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`, `[target.'...']`, member manifests, implicit local path crates, and `[workspace.dependencies]` (preserving pins such as `=0.4.19 -> =0.4.20`, `workspace = true` inheritance in members, comments, and formatting, while leaving unrelated major version lines elsewhere in the workspace and `path`/`git` entries untouched).
 3. Refuses edits when another dependency in the graph still keeps the vulnerable version in `Cargo.lock`, and prints Cargo's explanation. When earlier updates already pulled a crate past its target, skips or settles it back to the smallest fixed version.
+4. When the fix is a breaking version that the crates pulling the package in do not accept (`xcb 1.7.0 requires quick-xml ^0.30.0`), updates those crates within the range already required (`cargo update -p xcb@1.7.0 --dry-run`) and keeps that plan if the package lands on a fixed version: on halloy, xcb 1.7.1 and wayland-scanner 0.31.11 take quick-xml 0.41.0.
+5. Otherwise says which crates hold the fix back and whether a newer release of them is out (`a newer release may allow it: rusqlite 0.43.0 (a breaking update)`), instead of Cargo's raw resolution error. When nothing can be updated, the summary says so instead of suggesting `--apply`.
 
 ### Updating direct dependencies (`--updates`)
 
