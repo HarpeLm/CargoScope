@@ -133,12 +133,32 @@ Combines shared advisories (with relevance), policy violations, licenses, outdat
 
 ## `cargoscope why`
 
-Explains why a crate exists in `Cargo.lock`, listing direct dependents, reverse dependency paths from every workspace root, and pruning weights:
+Explains why a crate exists in `Cargo.lock`:
 
 ```sh
-cargoscope why serde_json
-cargoscope why serde_json --format json
+cargoscope why quick-xml
+cargoscope why quick-xml@0.39.2 --all-paths
+cargoscope why quick-xml --format json
 ```
+
+```text
+quick-xml 0.39.2 [transitive]
+  weight: 1 exclusive of 2 packages in its subtree
+  advisories (2): HIGH RUSTSEC-2026-0194, HIGH RUSTSEC-2026-0195
+  fix: 0.41.0, which wayland-scanner 0.31.10 does not accept yet: a new wayland-scanner release has to allow it first
+  dependents (1): wayland-scanner 0.31.10
+  used by members: data, halloy, ipc
+  paths from root (54, through 2 direct dependencies, shortest of each):
+    data 0.1.0 -> display-info 0.5.10 -> smithay-client-toolkit 0.20.0 -> wayland-scanner 0.31.10 -> quick-xml 0.39.2  +16 more
+    data 0.1.0 -> iced 0.15.0-dev -> iced_winit 0.15.0-dev -> winit 0.30.8 -> smithay-client-toolkit 0.19.2 -> wayland-scanner 0.31.10 -> quick-xml 0.39.2  +36 more  also from halloy
+  --all-paths lists every path
+```
+
+- **advisories** and **fix** come from the data of the last `cargoscope update` (offline). The fix is the smallest version that fixes every vulnerability: `cargo update` when it is within the SemVer range already required, a new requirement in `Cargo.toml` for a direct dependency, or, for a transitive crate, the crates that have to accept it first.
+- **yanked** shows when the version was withdrawn from crates.io.
+- **paths from root** counts every chain once, from the workspace member closest to the crate, and shows the shortest chain through each direct dependency with how many others go through it. `--all-paths` lists the chains themselves (up to 500).
+- **weight** is how many packages would leave `Cargo.lock` without the crate.
+- JSON gives all of it: `advisories`, `fix`, `yanked`, `members`, `path_count`, `routes` and the first `paths`.
 
 ---
 
