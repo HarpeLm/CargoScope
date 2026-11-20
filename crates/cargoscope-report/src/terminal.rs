@@ -736,6 +736,25 @@ pub fn fix_blockers(inventory: &Inventory, index: usize, fix: &semver::Version) 
         .collect()
 }
 
+/// Newer releases of `blockers` within the range already required
+/// (`xcb 1.7.1` for xcb 1.7.0), from the crates.io data: one may accept the
+/// fix, which `cargoscope fix --advisories` tries with `cargo update -p`.
+#[must_use]
+pub fn blocker_updates(
+    inventory: &Inventory,
+    package_info: &[cargoscope_core::PackageInfo],
+    blockers: &[usize],
+) -> Vec<String> {
+    blockers
+        .iter()
+        .filter_map(|&at| {
+            let blocker = inventory.packages.get(at)?;
+            let newer = package_info.get(at)?.compatible_upgrade(&blocker.version)?;
+            Some(format!("{} {newer}", blocker.name))
+        })
+        .collect()
+}
+
 /// `a › b › … › y › z`: the first package and the last two steps.
 fn short_chain(report: &Report, index: usize) -> Option<String> {
     let path = report.inventory.path_to(index)?;
@@ -833,7 +852,12 @@ fn hud_advisories(out: &mut String, report: &Report, width: usize, paint: Paint)
                     .as_ref()
                     .map(|version| fix_blockers(&report.inventory, *index, version))
                     .unwrap_or_default();
+                let updates = blocker_updates(&report.inventory, &report.package_info, &blockers);
                 let (fix_plain, fix_styled) = match (fix, without_fix) {
+                    (Some(version), 0) if !blockers.is_empty() && !updates.is_empty() => {
+                        let p = format!("→ {version} (via parent)");
+                        (p.clone(), paint.yellow(&p))
+                    }
                     (Some(version), 0) if !blockers.is_empty() => {
                         let p = format!("→ {version} (blocked)");
                         (p.clone(), paint.yellow(&p))
@@ -855,17 +879,17 @@ fn hud_advisories(out: &mut String, report: &Report, width: usize, paint: Paint)
                         (p.clone(), paint.yellow(&p))
                     }
                 };
-                (*index, findings, fix_plain, fix_styled, blockers)
+                (*index, findings, fix_plain, fix_styled, blockers, updates)
             })
             .collect();
         let fix_width = rows
             .iter()
-            .map(|(_, _, p, _, _)| p.chars().count())
+            .map(|(_, _, p, _, _, _)| p.chars().count())
             .max()
             .unwrap_or(0);
         let id_width = rows
             .iter()
-            .map(|(_, findings, _, _, _)| {
+            .map(|(_, findings, _, _, _, _)| {
                 findings[0].id.chars().count()
                     + if findings.len() > 1 {
                         format!(" +{}", findings.len() - 1).len()
@@ -878,7 +902,7 @@ fn hud_advisories(out: &mut String, report: &Report, width: usize, paint: Paint)
         // The fix column moves to the detail line when the row would not fit.
         let fix_inline = 2 + 6 + 2 + name_width + 2 + fix_width + 2 + 13 + 2 + id_width <= width;
 
-        for (index, findings, fix_plain, fix_styled, blockers) in rows {
+        for (index, findings, fix_plain, fix_styled, blockers, updates) in rows {
             let package = &report.inventory.packages[index];
             let name_plain_len = package.name.len() + 1 + package.version.len();
             let name_pad = " ".repeat(name_width.saturating_sub(name_plain_len));
@@ -960,7 +984,9 @@ fn hud_advisories(out: &mut String, report: &Report, width: usize, paint: Paint)
                     .iter()
                     .map(|&blocker| report.inventory.packages[blocker].name.as_str())
                     .collect();
-                detail_parts.push(if names.len() == 1 {
+                detail_parts.push(if !updates.is_empty() {
+                    format!("{} may accept it: try fix --advisories", updates.join(", "))
+                } else if names.len() == 1 {
                     format!("waits on a new {} release", names[0])
                 } else {
                     format!("waits on new releases of {}", names.join(", "))
@@ -1834,7 +1860,10 @@ pub(crate) fn next_steps(out: &mut String, report: &Report, verbose: bool, paint
     for (index, findings) in &vulnerable_crates(report) {
         let package = &report.inventory.packages[*index];
         if let (Some(version), _) = crate_fix(findings, &package.version) {
-            if fix_blockers(&report.inventory, *index, &version).is_empty() {
+            let blockers = fix_blockers(&report.inventory, *index, &version);
+            if blockers.is_empty()
+                || !blocker_updates(&report.inventory, &report.package_info, &blockers).is_empty()
+            {
                 fixable += 1;
             } else {
                 let relevance = findings

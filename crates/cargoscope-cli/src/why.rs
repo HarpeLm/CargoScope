@@ -7,7 +7,9 @@ use std::process::ExitCode;
 
 use cargoscope_advisory::AdvisoryDatabase;
 use cargoscope_advisory::crates_io::RegistryCache;
-use cargoscope_core::{AdvisoryFinding, AdvisoryKind, DependencyKind, Inventory, Package};
+use cargoscope_core::{
+    AdvisoryFinding, AdvisoryKind, DependencyKind, Inventory, Package, PackageInfo,
+};
 use cargoscope_report::Paint;
 use serde_json::json;
 
@@ -104,14 +106,8 @@ pub fn why_command(arguments: impl Iterator<Item = String>) -> ExitCode {
     }
 
     let advisories = load_advisories(root, &inventory);
-    let yanked: Vec<bool> = cargoscope_advisory::cache_dir()
-        .map(|dir| {
-            RegistryCache::open(&dir)
-                .info(&inventory)
-                .into_iter()
-                .map(|info| info.yanked == Some(true))
-                .collect()
-        })
+    let registry: Vec<PackageInfo> = cargoscope_advisory::cache_dir()
+        .map(|dir| RegistryCache::open(&dir).info(&inventory))
         .unwrap_or_default();
     let direct_kinds = cargoscope_cargo::direct_dependency_kinds(root).unwrap_or_default();
     let rendered = if options.json {
@@ -120,7 +116,7 @@ pub fn why_command(arguments: impl Iterator<Item = String>) -> ExitCode {
             &matches,
             &options.crate_spec,
             advisories.as_deref(),
-            &yanked,
+            &registry,
             options.all_paths,
         )
     } else {
@@ -129,7 +125,7 @@ pub fn why_command(arguments: impl Iterator<Item = String>) -> ExitCode {
             &matches,
             &direct_kinds,
             advisories.as_deref(),
-            &yanked,
+            &registry,
             options.all_paths,
             Paint::new(options.color.enabled(false)),
         )
@@ -278,7 +274,7 @@ fn render_text(
     matches: &[usize],
     direct_kinds: &BTreeMap<String, BTreeSet<DependencyKind>>,
     advisories: Option<&[AdvisoryFinding]>,
-    yanked: &[bool],
+    registry: &[PackageInfo],
     all_paths: bool,
     paint: Paint,
 ) -> String {
@@ -318,7 +314,10 @@ fn render_text(
             );
         }
 
-        if yanked.get(index).copied().unwrap_or(false) {
+        if registry
+            .get(index)
+            .is_some_and(|info| info.yanked == Some(true))
+        {
             let _ = writeln!(
                 out,
                 "  {} {}",
@@ -329,7 +328,7 @@ fn render_text(
                 ))
             );
         }
-        render_advisories(&mut out, inventory, index, advisories, paint);
+        render_advisories(&mut out, inventory, index, advisories, registry, paint);
 
         let dependents = inventory.dependents_of(index);
         if dependents.is_empty() {
@@ -369,6 +368,7 @@ fn render_advisories(
     inventory: &Inventory,
     index: usize,
     advisories: Option<&[AdvisoryFinding]>,
+    registry: &[PackageInfo],
     paint: Paint,
 ) {
     let Some(advisories) = advisories else {
@@ -424,6 +424,25 @@ fn render_advisories(
             paint.green(&version.to_string()),
             paint.dim(", a breaking update: raise the requirement in Cargo.toml")
         ),
+        Some(Fix::Blocked(version, blockers))
+            if !cargoscope_report::blocker_updates(inventory, registry, &blockers).is_empty() =>
+        {
+            let updates = cargoscope_report::blocker_updates(inventory, registry, &blockers);
+            let labels: Vec<String> = blockers
+                .iter()
+                .map(|&blocker| label_of(inventory, blocker))
+                .collect();
+            format!(
+                "{}{}",
+                paint.yellow(&version.to_string()),
+                paint.dim(&format!(
+                    ", which {} {} not accept; {} may: cargoscope fix --advisories tries it",
+                    labels.join(", "),
+                    if blockers.len() == 1 { "does" } else { "do" },
+                    updates.join(", ")
+                ))
+            )
+        }
         Some(Fix::Blocked(version, blockers)) => {
             let labels: Vec<String> = blockers
                 .iter()
@@ -557,7 +576,7 @@ fn render_json(
     matches: &[usize],
     query: &str,
     advisories: Option<&[AdvisoryFinding]>,
-    yanked: &[bool],
+    registry: &[PackageInfo],
     all_paths: bool,
 ) -> String {
     let items: Vec<serde_json::Value> = matches
@@ -656,7 +675,7 @@ fn render_json(
                 "path_count": path_count,
                 "routes": routes,
                 "members": members,
-                "yanked": yanked.get(index).copied().unwrap_or(false),
+                "yanked": registry.get(index).is_some_and(|info| info.yanked == Some(true)),
                 "advisories": advisories_json,
                 "fix": fix_json,
             })

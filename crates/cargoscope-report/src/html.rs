@@ -390,10 +390,23 @@ fn render_actions(out: &mut String, report: &Report, now: Option<u64>) {
                     .collect();
                 (names.join(", "), plain.join(", "), blockers.len() == 1)
             });
-            if fix.is_some() && blocked_by.is_none() {
+            let updates = crate::terminal::blocker_updates(
+                &report.inventory,
+                &report.package_info,
+                &blockers,
+            );
+            if fix.is_some() && (blocked_by.is_none() || !updates.is_empty()) {
                 fixable += 1;
             }
             let line = match (fix, blocked_by) {
+                (Some(version), Some((parents, _, single))) if !updates.is_empty() => format!(
+                    "{} {}: fixed in {}, which {parents} {} not accept; {} may: <code>cargoscope fix --advisories</code> tries it ({advisories}){unlikely}",
+                    crate_name_html(pkg),
+                    escape_html(&pkg.version),
+                    diff_link(pkg, &version.to_string()),
+                    if single { "does" } else { "do" },
+                    escape_html(&updates.join(", "))
+                ),
                 (Some(version), Some((parents, names, single))) => format!(
                     "{} {}: fixed in {}, which {parents} {} not accept yet ({advisories}){unlikely}. Update {names} once a release allows it, or ask {} maintainers",
                     crate_name_html(pkg),
@@ -2280,6 +2293,18 @@ mod tests {
         finding.package = 2;
         finding.patched = vec![">= 2.0.0".to_owned()];
         report.advisories = vec![finding];
+        // serde_json 1.0.100 has a newer compatible release, which may accept it.
+        let html = render_html(Path::new("."), &report, false, None);
+        assert!(html.contains("<h3>Fix 1 vulnerable crate</h3>"), "{html}");
+        assert!(
+            html.contains("does not accept; serde_json 1.0.130 may"),
+            "{html}"
+        );
+        // Without one, nothing can be applied yet.
+        for info in &mut report.package_info {
+            info.latest_compatible = None;
+            info.outdated = false;
+        }
         let html = render_html(Path::new("."), &report, false, None);
         assert!(
             html.contains("<h3>1 vulnerable crate without a fix you can apply yet</h3>"),
