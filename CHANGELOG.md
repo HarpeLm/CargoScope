@@ -2,6 +2,15 @@
 
 All notable changes to CargoScope are documented in this file.
 
+## 0.12.0 (2026-11-22)
+
+- **Native `.github/dependabot.yml` support**: when `cargoscope.toml` is absent or omits `[updates]`, CargoScope reads `.github/dependabot.yml` (`package-ecosystem: "cargo"`, `groups`, `ignore`, `open-pull-requests-limit`, `versioning-strategy`, `cooldown`, `labels`, `reviewers`, `commit-message.prefix`, `schedule`, `allow`) with zero migration boilerplate.
+- **7-day default anti-supply-chain cooldown + per-dependency overrides**: `cargoscope fix --updates` skips crates.io releases younger than 7 days by default (picking the newest eligible non-yanked version outside the cooldown window, without ever blocking `fix --advisories`) and supports per-crate overrides via `--cooldown DAYS`, `--cooldown-for CRATE=DAYS`, or `[updates.cooldown.overrides]` in `cargoscope.toml`.
+- **Full `versioning-strategy` support (`--versioning-strategy`)**: supports `auto`, `lockfile-only`, `increase-if-necessary`, `increase`, and `widen` (expanding restrictive bounds such as `~1.0.80` cleanest possible) across CLI, `cargoscope.toml`, and `.github/dependabot.yml`.
+- **Git & alternative registry updates + Action auto-rebase**: `cargoscope fix --updates` tracks `git+...` commits and alternative/private `registry+...` dependencies via `cargo update -p`, while `action.yml` automatically rebases `CONFLICTING`/`DIRTY` CargoScope PRs and inherits `dependabot.yml` labels/reviewers/commit prefixes.
+- **Audit of overly broad dependency features (#27)**: flags broad feature selections such as `tokio = ["full"]` or unused `serde = ["derive"]` in `FEATURE HINTS` (terminal, JSON `feature_hints` with schema in `docs/schema/report-v1.json`, HTML reports) and tightens static `unused` recall (`cargoscope fix --include-uncertain`).
+- **3.16× faster `--checks unused` and ~1.8× faster full monorepo scans**: fused workspace source reading & `proc_macro2` lexing into a single parallel pass (`std::thread::scope`), cached external library-name lookups, parallelized external package inspection and `project_ident_tokens`, and ran `unused`, `unsafe`, and `advisories` + `policy` concurrently (`871 ms` for `--checks unused` and `3.83 s` full scan on `jdx/mise` with 1,184 crates).
+
 ## 0.11.0 (2026-11-22)
 
 - Skip `yanked` versions and versions carrying another active advisory in `cargoscope fix --advisories` and in `cargoscope scan` terminal/HTML fix recommendations, consulting the local crates.io cache and advisory database with mathematical lower-bound fallback when the cache is absent or stale.
