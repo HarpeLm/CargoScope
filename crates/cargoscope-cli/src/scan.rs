@@ -384,11 +384,15 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
             &mut advisories,
         );
     }
-    let unsafe_code = cargoscope_cargo::unsafe_code::count_unsafe(
-        root,
-        &inventory,
-        cargoscope_advisory::cache_dir().ok().as_deref(),
-    );
+    let unsafe_code = if checks.unsafe_code {
+        cargoscope_cargo::unsafe_code::count_unsafe(
+            root,
+            &inventory,
+            cargoscope_advisory::cache_dir().ok().as_deref(),
+        )
+    } else {
+        Vec::new()
+    };
     let fix_versions = compute_fix_versions(&inventory, &advisories, options.rustsec_only);
     let report = Report {
         direct_kinds,
