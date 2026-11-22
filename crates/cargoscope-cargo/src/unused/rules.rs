@@ -114,6 +114,10 @@ pub(super) struct PackageFacts<'a> {
     /// Optional dependencies referenced only with `dep:<key>` in `[features]`.
     pub(super) dep_only_features: BTreeSet<&'a str>,
     pub(super) workspace_macros: &'a WorkspaceMacros,
+    /// Target crate identifiers emitted in `quote!` by external proc-macros
+    /// reachable through referenced direct dependencies.
+    pub(super) external_macro_targets:
+        &'a std::collections::BTreeMap<String, Vec<(String, String)>>,
 }
 
 /// What is known about one dependency no file references.
@@ -146,6 +150,7 @@ pub(super) const RULES: &[(&str, Rule)] = &[
     ("documentation", rule_documentation),
     ("workspace-proc-macro", rule_workspace_proc_macro),
     ("workspace-macro-rules", rule_workspace_macro_rules),
+    ("external-proc-macro", rule_external_proc_macro),
     ("compile-tests", rule_compile_tests),
     ("wasm-bindgen-futures", rule_wasm_bindgen_futures),
     ("strum-macros", rule_strum_macros),
@@ -337,6 +342,23 @@ pub(super) fn rule_workspace_macro_rules(
     ))
 }
 
+pub(super) fn rule_external_proc_macro(
+    package: &PackageFacts<'_>,
+    candidate: &DependencyFacts<'_>,
+) -> Option<String> {
+    if candidate.dependency.kind == DependencyKind::Build {
+        return None;
+    }
+    let providers = package.external_macro_targets.get(candidate.ident)?;
+    let (provider_ident, pm_ident) = providers
+        .iter()
+        .find(|(provider_ident, _)| provider_ident != candidate.ident)?;
+    Some(format!(
+        "proc-macro crate `{pm_ident}` (used via `{provider_ident}`) generates paths to `{}` in `quote!`",
+        candidate.ident
+    ))
+}
+
 /// Compile tests in tests/ are read like any test; without tests/, the
 /// files trybuild compiles live elsewhere and are not read.
 pub(super) fn rule_compile_tests(
@@ -488,6 +510,7 @@ mod tests {
             forwarded_features: BTreeSet::new(),
             dep_only_features: BTreeSet::new(),
             workspace_macros: &macros,
+            external_macro_targets: &std::collections::BTreeMap::new(),
         };
         let ident = dependency.key.replace('-', "_");
         let candidate = DependencyFacts {
@@ -527,6 +550,7 @@ mod tests {
             forwarded_features: BTreeSet::new(),
             dep_only_features: BTreeSet::new(),
             workspace_macros: &macros,
+            external_macro_targets: &std::collections::BTreeMap::new(),
         };
         let ident = dependency.key.replace('-', "_");
         let candidate = DependencyFacts {
@@ -757,6 +781,7 @@ mod tests {
             forwarded_features: BTreeSet::new(),
             dep_only_features: BTreeSet::from(["chrono"]),
             workspace_macros: &macros,
+            external_macro_targets: &std::collections::BTreeMap::new(),
         };
         let candidate = DependencyFacts {
             dependency: &dep,
