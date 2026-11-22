@@ -267,6 +267,7 @@ mod tests {
             package_info,
             registry_date: Some("2026-11-15".to_owned()),
             unused: Vec::new(),
+            feature_hints: Vec::new(),
             advisory_db_date: Some("2026-11-15".to_owned()),
             unused_precise: false,
             policy: None,
