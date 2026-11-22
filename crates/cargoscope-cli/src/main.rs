@@ -114,8 +114,9 @@ Options for scan:
   --baseline FILE      A previous JSON report: advisories already in it do not
                        fail the scan, so only new ones do.
   --checks LIST        Comma-separated checks to run (default: all):
-                       inventory, advisories, unused, licenses, versions, policy.
-                       Without advisories, no advisory database is needed.";
+                       inventory, advisories, unused, licenses, versions,
+                       policy, unsafe. Without advisories, no advisory database
+                       is needed.";
 
 const FOOTER: &str = "Environment:
   CARGOSCOPE_CACHE_DIR  Directory for downloaded data.
