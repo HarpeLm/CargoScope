@@ -1379,6 +1379,68 @@ fn fix_removes_workspace_dependencies_no_member_uses_anymore_and_honours_only() 
 }
 
 #[test]
+fn fix_verify_rolls_back_when_cargo_check_fails_and_keeps_valid_edits() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-fix-verify-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).expect("src");
+    std::fs::create_dir_all(dir.join("unused_ok/src")).expect("unused_ok");
+    std::fs::create_dir_all(dir.join("gen_used/src")).expect("gen_used");
+
+    std::fs::write(
+        dir.join("unused_ok/Cargo.toml"),
+        "[package]\nname = \"unused_ok\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("unused_ok manifest");
+    std::fs::write(dir.join("unused_ok/src/lib.rs"), "pub fn ping() {}\n").expect("unused_ok lib");
+
+    std::fs::write(
+        dir.join("gen_used/Cargo.toml"),
+        "[package]\nname = \"gen_used\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("gen_used manifest");
+    std::fs::write(
+        dir.join("gen_used/src/lib.rs"),
+        "pub fn val() -> u32 { 7 }\n",
+    )
+    .expect("gen_used lib");
+
+    let root_manifest = "[package]\nname = \"verify-app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nunused_ok = { path = \"unused_ok\" }\ngen_used = { path = \"gen_used\" }\n";
+    std::fs::write(dir.join("Cargo.toml"), root_manifest).expect("root manifest");
+    // Build script generates code referencing `gen_used` without writing its identifier statically.
+    std::fs::write(
+        dir.join("build.rs"),
+        "fn main() {\n    let out = std::env::var(\"OUT_DIR\").unwrap();\n    let dep = [\"gen\", \"used\"].join(\"_\");\n    std::fs::write(std::path::Path::new(&out).join(\"gen.rs\"), format!(\"pub fn read_val() -> u32 {{ {dep}::val() }}\")).unwrap();\n}\n",
+    )
+    .expect("build.rs");
+    std::fs::write(
+        dir.join("src/lib.rs"),
+        "include!(concat!(env!(\"OUT_DIR\"), \"/gen.rs\"));\n",
+    )
+    .expect("lib.rs");
+    std::fs::write(
+        dir.join("Cargo.lock"),
+        "version = 4\n\n[[package]]\nname = \"gen_used\"\nversion = \"0.1.0\"\n\n[[package]]\nname = \"unused_ok\"\nversion = \"0.1.0\"\n\n[[package]]\nname = \"verify-app\"\nversion = \"0.1.0\"\ndependencies = [\"gen_used\", \"unused_ok\"]\n",
+    )
+    .expect("lock");
+
+    // 1. Removing a genuinely unused local dependency passes `cargo check --workspace --all-targets`.
+    let pass = fix(&dir, &["--only", "unused_ok", "--apply", "--verify"]);
+    assert_eq!(pass.status.code(), Some(0), "{}", stdout(&pass));
+    let after_pass = std::fs::read_to_string(dir.join("Cargo.toml")).expect("manifest after pass");
+    assert!(!after_pass.contains("unused_ok"), "{after_pass}");
+    assert!(after_pass.contains("gen_used"), "{after_pass}");
+
+    // 2. Removing a statically-unseen dep required by generated code fails verification and rolls back.
+    let fail = fix(&dir, &["--only", "gen_used", "--apply", "--verify"]);
+    assert_ne!(fail.status.code(), Some(0), "{}", stdout(&fail));
+    let after_rollback =
+        std::fs::read_to_string(dir.join("Cargo.toml")).expect("manifest after rollback");
+    assert_eq!(after_rollback, after_pass);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn multiple_versions_rule_fails_the_scan_unless_the_crate_is_skipped() {
     let dir = std::env::temp_dir().join(format!("cargoscope-dups-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
