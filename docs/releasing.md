@@ -176,6 +176,7 @@ Released on 2026-11-22: OSV advisories (GitHub advisories and malicious crates a
 Released on 2026-11-22: non-yanked advisory fix selection across `fix --advisories` and scan/HTML reports, on-disk external proc-macro inspection for `unused` reduction, `cargoscope fix --apply --verify` rollback on `cargo check` failure, strict `--checks unsafe` gating, and direct detection/removal of orphan `[workspace.dependencies]` entries.
 
 - ✅ `cargo fmt`, `clippy -D warnings`, `cargo test --workspace` (304 tests), `dist plan`. Tag `v0.11.0` pushed (2026-11-22).
+- ✅ Set the version back to `1.0.0-dev`.
 
 ## One-time setup (maintainer)
 
