@@ -16,7 +16,7 @@ use cargoscope_core::{
 };
 use cargoscope_report::sarif::SarifLocations;
 
-use crate::{FailOn, execution_error, find_unused_dependencies, parse_fail_on, read_report};
+use crate::{FailOn, execution_error, find_unused_and_feature_hints, parse_fail_on, read_report};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputFormat {
@@ -251,13 +251,12 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
     } else {
         false
     };
-    let unused = if checks.unused {
-        let (unused, unused_warnings) =
-            find_unused_dependencies(root, &inventory, options.precise)?;
-        warnings.extend(unused_warnings);
-        unused
+    let (unused, feature_hints) = if checks.unused {
+        let scan = find_unused_and_feature_hints(root, &inventory, options.precise)?;
+        warnings.extend(scan.warnings);
+        (scan.unused, scan.feature_hints)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
     if checks.policy || checks.advisories {
         warnings.extend(cargoscope_cargo::config::deny_notes(root));
@@ -404,6 +403,7 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
         inventory,
         advisories,
         unused,
+        feature_hints,
         policy: violations,
         unused_precise: checks.unused && options.precise,
         advisory_db_date,
