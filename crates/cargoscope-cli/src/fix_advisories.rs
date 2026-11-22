@@ -19,7 +19,7 @@ use std::process::{Command, ExitCode, Stdio};
 
 use cargoscope_advisory::AdvisoryDatabase;
 use cargoscope_advisory::crates_io::RegistryCache;
-use cargoscope_cargo::fix::set_requirement_for_version;
+use cargoscope_cargo::fix::{set_requirement_for_version, widen_requirement_for_version};
 use cargoscope_core::{AdvisoryKind, Inventory, Package, PackageInfo};
 
 use crate::execution_error;
@@ -51,7 +51,7 @@ fn candidates(patched: &[String], current: &str) -> Vec<semver::Version> {
 
 /// Runs `cargo update --color never -p target [--precise version] [--dry-run]`,
 /// returning Cargo's stderr on success or failure.
-fn run_cargo_update(
+pub(crate) fn run_cargo_update(
     root: &Path,
     target: &str,
     precise: Option<&str>,
@@ -106,7 +106,7 @@ pub(crate) fn cargo_update(
 
 /// Removes terminal color codes (`ESC [ ... m`), in case Cargo colors its
 /// output anyway (`CARGO_TERM_COLOR=always` in CI).
-fn strip_ansi(text: &str) -> String {
+pub(crate) fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
@@ -519,18 +519,37 @@ pub(crate) fn probe_manifest_update(
     version: &semver::Version,
     manifests: &[Manifest],
 ) -> Result<Option<Vec<String>>, String> {
+    probe_manifest_update_with_widen(root, package, version, manifests, false)
+}
+
+pub(crate) fn probe_manifest_update_with_widen(
+    root: &Path,
+    package: &Package,
+    version: &semver::Version,
+    manifests: &[Manifest],
+    widen: bool,
+) -> Result<Option<Vec<String>>, String> {
     let version_str = version.to_string();
     let exact_req = format!("={version_str}");
     let spec = format!("{}@{}", package.name, package.version);
     let mut edited = Vec::new();
     let mut labels = Vec::new();
     for manifest in manifests {
-        let (_, changed) = set_requirement_for_version(
-            &manifest.contents,
-            &package.name,
-            Some(&package.version),
-            &version_str,
-        )?;
+        let (_, changed) = if widen {
+            widen_requirement_for_version(
+                &manifest.contents,
+                &package.name,
+                Some(&package.version),
+                version,
+            )?
+        } else {
+            set_requirement_for_version(
+                &manifest.contents,
+                &package.name,
+                Some(&package.version),
+                &version_str,
+            )?
+        };
         if !changed {
             continue;
         }
@@ -682,8 +701,21 @@ pub(crate) fn apply_manifest_update(
     target_labels: &[String],
     manifests: &mut [Manifest],
 ) -> Result<(), ExitCode> {
+    apply_manifest_update_with_widen(root, name, from, version, target_labels, manifests, false)
+}
+
+pub(crate) fn apply_manifest_update_with_widen(
+    root: &Path,
+    name: &str,
+    from: &str,
+    version: &str,
+    target_labels: &[String],
+    manifests: &mut [Manifest],
+    widen: bool,
+) -> Result<(), ExitCode> {
     let exact_req = format!("={version}");
     let spec = format!("{name}@{from}");
+    let parsed_version = semver::Version::parse(version).ok();
     let mut originals = Vec::new();
     let mut final_edits = Vec::new();
     for (index, manifest) in manifests.iter().enumerate() {
@@ -700,16 +732,19 @@ pub(crate) fn apply_manifest_update(
                     ExitCode::from(2)
                 },
             )?;
-        let (final_contents, _) =
-            set_requirement_for_version(&manifest.contents, name, Some(from), version).map_err(
-                |error| {
-                    eprintln!(
-                        "CargoScope could not edit {}: {error}",
-                        manifest.path.display()
-                    );
-                    ExitCode::from(2)
-                },
-            )?;
+        let final_result = match (widen, &parsed_version) {
+            (true, Some(parsed)) => {
+                widen_requirement_for_version(&manifest.contents, name, Some(from), parsed)
+            }
+            _ => set_requirement_for_version(&manifest.contents, name, Some(from), version),
+        };
+        let (final_contents, _) = final_result.map_err(|error| {
+            eprintln!(
+                "CargoScope could not edit {}: {error}",
+                manifest.path.display()
+            );
+            ExitCode::from(2)
+        })?;
         originals.push((index, exact));
         final_edits.push((index, final_contents));
     }
