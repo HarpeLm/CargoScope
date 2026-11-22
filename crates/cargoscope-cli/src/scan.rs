@@ -389,9 +389,11 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
         &inventory,
         cargoscope_advisory::cache_dir().ok().as_deref(),
     );
+    let fix_versions = compute_fix_versions(&inventory, &advisories, options.rustsec_only);
     let report = Report {
         direct_kinds,
         unsafe_code,
+        fix_versions,
         checks,
         package_info,
         registry_date,
@@ -468,6 +470,65 @@ pub(crate) fn check_advisories(
         &cargoscope_advisory::utc_today(),
     ));
     Ok((findings, database.fetched_on))
+}
+
+/// Resolves the smallest published non-yanked version that fixes every
+/// vulnerability of each vulnerable crate without introducing another
+/// unignored vulnerability, using the local caches.
+fn compute_fix_versions(
+    inventory: &Inventory,
+    advisories: &[AdvisoryFinding],
+    rustsec_only: bool,
+) -> std::collections::BTreeMap<usize, String> {
+    let mut fix_versions = std::collections::BTreeMap::new();
+    let has_vulns = advisories.iter().any(|finding| {
+        finding.ignored.is_none()
+            && matches!(finding.kind, cargoscope_core::AdvisoryKind::Vulnerability)
+    });
+    if !has_vulns {
+        return fix_versions;
+    }
+    let Ok(dir) = cargoscope_advisory::cache_dir() else {
+        return fix_versions;
+    };
+    let database = AdvisoryDatabase::open(&dir)
+        .ok()
+        .map(|db| if rustsec_only { db.rustsec_only() } else { db });
+    let registry = cargoscope_advisory::crates_io::RegistryCache::open(&dir);
+    let ignored: BTreeSet<&str> = advisories
+        .iter()
+        .filter(|finding| finding.ignored.is_some())
+        .map(|finding| finding.id.as_str())
+        .collect();
+
+    let mut by_pkg: std::collections::BTreeMap<usize, Vec<Vec<String>>> =
+        std::collections::BTreeMap::new();
+    for finding in advisories {
+        if finding.ignored.is_none()
+            && matches!(finding.kind, cargoscope_core::AdvisoryKind::Vulnerability)
+        {
+            by_pkg
+                .entry(finding.package)
+                .or_default()
+                .push(finding.patched.clone());
+        }
+    }
+    for (index, patched_sets) in by_pkg {
+        if patched_sets.iter().any(Vec::is_empty) {
+            continue;
+        }
+        let candidates = cargoscope_advisory::safe_fix_candidates(
+            database.as_ref(),
+            &inventory.packages[index],
+            &patched_sets,
+            &ignored,
+            Some(&registry),
+        );
+        if let Some(best) = candidates.into_iter().next() {
+            fix_versions.insert(index, best.to_string());
+        }
+    }
+    fix_versions
 }
 
 fn load_policy(root: &Path) -> Result<Option<Policy>, ExitCode> {
