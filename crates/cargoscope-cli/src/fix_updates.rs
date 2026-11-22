@@ -21,6 +21,11 @@ use std::process::ExitCode;
 
 use cargoscope_advisory::crate_files::CrateFiles;
 use cargoscope_advisory::crates_io::{RegistryCache, ReleaseTime};
+use cargoscope_cargo::ecosystem_updates::{
+    ActionUse, CandidateRelease, DockerFrom, EcosystemPlan, apply_action_updates,
+    apply_docker_updates, find_action_uses, find_docker_froms, plan_action_update,
+    plan_docker_update,
+};
 use cargoscope_cargo::updates::{DependencyType, UpdateType, UpdatesConfig, VersioningStrategy};
 use cargoscope_core::{DependencyKind, Inventory, MaintenanceConcern, Package, PackageInfo};
 
@@ -303,6 +308,40 @@ impl Kind {
     }
 }
 
+/// Ecosystem owning a planned dependency update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum UpdateEcosystem {
+    #[default]
+    Cargo,
+    GitHubActions,
+    Docker,
+}
+
+impl UpdateEcosystem {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cargo => "cargo",
+            Self::GitHubActions => "github-actions",
+            Self::Docker => "docker",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+enum EcosystemTarget {
+    #[default]
+    Cargo,
+    Action {
+        action: ActionUse,
+        target_ref: String,
+        display_tag: Option<String>,
+    },
+    Docker {
+        from: DockerFrom,
+        new_tag: String,
+    },
+}
+
 /// One direct dependency and what happens to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Row {
@@ -315,6 +354,10 @@ struct Row {
     repository: Option<String>,
     /// What the pull request body says about it beyond the versions.
     details: Details,
+    /// Ecosystem owning this entry (`cargo`, `github-actions`, or `docker`).
+    ecosystem: UpdateEcosystem,
+    /// Ecosystem-specific apply target (non-Cargo edits for `.github/workflows` / `Dockerfile`).
+    target: EcosystemTarget,
 }
 
 /// Facts about one update, for the pull request body.
@@ -500,6 +543,8 @@ pub struct UpdateOptions<'a> {
     pub cooldown_overrides: &'a [(String, u64)],
     /// Manifest requirement update strategy override.
     pub versioning_strategy: Option<VersioningStrategy>,
+    /// Optional ecosystems filter (`auto`, `all`, or subset of `cargo,github-actions,docker`).
+    pub ecosystems: Option<&'a [String]>,
     /// Scan clock in Unix seconds (`None` uses system wall-clock).
     pub now: Option<u64>,
 }
@@ -816,6 +861,8 @@ fn apply(
     widen: bool,
     manifests: &mut Option<Vec<Manifest>>,
 ) -> Result<(), ExitCode> {
+    let mut action_edits: Vec<(&ActionUse, &str, Option<&str>)> = Vec::new();
+    let mut docker_edits: Vec<(&DockerFrom, &str)> = Vec::new();
     for row in rows {
         let Plan::Update {
             spec,
@@ -827,28 +874,54 @@ fn apply(
         else {
             continue;
         };
-        if *is_git {
-            run_cargo_update(root, spec, None, false).map_err(|error| {
-                eprintln!("cargo update -p {spec} failed: {}", reason(&error));
-                ExitCode::from(2)
-            })?;
-        } else if labels.is_empty() {
-            cargo_update(root, spec, to, false).map_err(|error| {
-                eprintln!(
-                    "cargo update -p {spec} --precise {to} failed: {}",
-                    reason(&error)
-                );
-                ExitCode::from(2)
-            })?;
-        } else {
-            let loaded = match manifests {
-                Some(loaded) => loaded,
-                None => manifests.insert(read_manifests(root)?),
-            };
-            apply_manifest_update_with_widen(
-                root, &row.name, &row.from, to, labels, loaded, widen,
-            )?;
+        match &row.target {
+            EcosystemTarget::Cargo => {
+                if *is_git {
+                    run_cargo_update(root, spec, None, false).map_err(|error| {
+                        eprintln!("cargo update -p {spec} failed: {}", reason(&error));
+                        ExitCode::from(2)
+                    })?;
+                } else if labels.is_empty() {
+                    cargo_update(root, spec, to, false).map_err(|error| {
+                        eprintln!(
+                            "cargo update -p {spec} --precise {to} failed: {}",
+                            reason(&error)
+                        );
+                        ExitCode::from(2)
+                    })?;
+                } else {
+                    let loaded = match manifests {
+                        Some(loaded) => loaded,
+                        None => manifests.insert(read_manifests(root)?),
+                    };
+                    apply_manifest_update_with_widen(
+                        root, &row.name, &row.from, to, labels, loaded, widen,
+                    )?;
+                }
+            }
+            EcosystemTarget::Action {
+                action,
+                target_ref,
+                display_tag,
+            } => {
+                action_edits.push((action, target_ref.as_str(), display_tag.as_deref()));
+            }
+            EcosystemTarget::Docker { from, new_tag } => {
+                docker_edits.push((from, new_tag.as_str()));
+            }
         }
+    }
+    if !action_edits.is_empty() {
+        apply_action_updates(root, &action_edits).map_err(|error| {
+            eprintln!("CargoScope could not update workflow files: {error}");
+            ExitCode::from(2)
+        })?;
+    }
+    if !docker_edits.is_empty() {
+        apply_docker_updates(root, &docker_edits).map_err(|error| {
+            eprintln!("CargoScope could not update Dockerfile base images: {error}");
+            ExitCode::from(2)
+        })?;
     }
     Ok(())
 }
@@ -875,6 +948,15 @@ fn title(rows: &[Row]) -> String {
 fn update_type_of(row: &Row) -> Option<UpdateType> {
     match &row.plan {
         Plan::Update { to, is_git, .. } => {
+            if let (Some((v_from, _)), Some((v_to, _))) = (
+                cargoscope_cargo::ecosystem_updates::parse_tag_version(&row.from),
+                cargoscope_cargo::ecosystem_updates::parse_tag_version(
+                    to.split_whitespace().next().unwrap_or(to),
+                ),
+            ) && row.ecosystem != UpdateEcosystem::Cargo
+            {
+                return UpdateType::between(&v_from.to_string(), &v_to.to_string());
+            }
             UpdateType::between(&row.from, to).or((*is_git).then_some(UpdateType::Patch))
         }
         Plan::Blocked { .. } | Plan::Ignored { .. } | Plan::Cooldown { .. } => None,
@@ -1228,6 +1310,29 @@ fn render_markdown(rows: &[Row], body: &Body) -> String {
 /// Links to read before merging: the source diff between the two versions
 /// on diff.rs, and the release notes when the repository is on GitHub.
 fn links(row: &Row, to: &str) -> String {
+    match row.ecosystem {
+        UpdateEcosystem::GitHubActions => {
+            let clean_to = to.split_whitespace().next().unwrap_or(to);
+            return format!(
+                "[compare](https://github.com/{name}/compare/{from}...{clean_to}), [releases](https://github.com/{name}/releases)",
+                name = row.name,
+                from = row.from
+            );
+        }
+        UpdateEcosystem::Docker => {
+            let (reg, repo) = cargoscope_advisory::ecosystems::normalize_docker_image(&row.name);
+            return if reg == "docker.io" {
+                let path = repo.strip_prefix("library/").map_or_else(
+                    || format!("https://hub.docker.com/r/{repo}/tags"),
+                    |official| format!("https://hub.docker.com/_/{official}/tags"),
+                );
+                format!("[tags]({path})")
+            } else {
+                format!("[registry](https://{reg}/{repo})")
+            };
+        }
+        UpdateEcosystem::Cargo => {}
+    }
     if matches!(row.plan, Plan::Update { is_git: true, .. }) {
         return row
             .repository
@@ -1350,7 +1455,7 @@ fn render_json(rows: &[Row], config: &UpdatesConfig) -> String {
                 cooldown_skipped,
                 ..
             } => updates.push(serde_json::json!({
-                "package": row.name, "from": row.from, "to": to,
+                "package": row.name, "ecosystem": row.ecosystem.as_str(), "from": row.from, "to": to,
                 "kind": kind.as_str(), "manifests": manifests,
                 "is_git": is_git,
                 "cooldown_skipped": cooldown_skipped,
@@ -1362,16 +1467,17 @@ fn render_json(rows: &[Row], config: &UpdatesConfig) -> String {
                 required_days,
             } => cooldown.push(serde_json::json!({
                 "package": row.name,
+                "ecosystem": row.ecosystem.as_str(),
                 "from": row.from,
                 "to": to,
                 "age_days": age_days,
                 "required_days": required_days,
             })),
             Plan::Blocked { to, reason } => blocked.push(serde_json::json!({
-                "package": row.name, "from": row.from, "to": to, "reason": reason,
+                "package": row.name, "ecosystem": row.ecosystem.as_str(), "from": row.from, "to": to, "reason": reason,
             })),
             Plan::Ignored { to, reason } => ignored.push(serde_json::json!({
-                "package": row.name, "from": row.from, "to": to, "reason": reason,
+                "package": row.name, "ecosystem": row.ecosystem.as_str(), "from": row.from, "to": to, "reason": reason,
             })),
         }
     }
@@ -1534,7 +1640,7 @@ fn body_facts(
         let Plan::Update { to, is_git, .. } = &row.plan else {
             continue;
         };
-        if *is_git {
+        if *is_git || row.ecosystem != UpdateEcosystem::Cargo {
             continue;
         }
         let Some(cache) = cache.as_deref() else {
@@ -1660,12 +1766,73 @@ pub fn run(
         cooldown_days: None,
         cooldown_overrides: &[],
         versioning_strategy: None,
+        ecosystems: None,
         now: None,
     };
     run_with_options(root, &options, paint)
 }
 
-/// Runs `cargoscope fix --updates` with cooldown and versioning-strategy options.
+fn selected_ecosystems(
+    root: &Path,
+    requested: Option<&[String]>,
+    dependabot: &cargoscope_cargo::dependabot::DependabotConfigs,
+) -> (bool, bool, bool) {
+    let _ = root;
+    let Some(list) = requested else {
+        return (
+            true,
+            dependabot.github_actions.is_some(),
+            dependabot.docker.is_some(),
+        );
+    };
+    if list.iter().any(|s| s == "all") {
+        return (true, true, true);
+    }
+    if list.iter().any(|s| s == "auto") {
+        return (
+            true,
+            dependabot.github_actions.is_some(),
+            dependabot.docker.is_some(),
+        );
+    }
+    (
+        list.iter().any(|s| s == "cargo"),
+        list.iter().any(|s| s == "github-actions"),
+        list.iter().any(|s| s == "docker"),
+    )
+}
+
+fn apply_cooldown_cli_overrides(
+    cfg: &mut UpdatesConfig,
+    cooldown_days: Option<u64>,
+    cooldown_overrides: &[(String, u64)],
+) {
+    if let Some(days) = cooldown_days {
+        cfg.cooldown.default_days = days;
+    }
+    if !cooldown_overrides.is_empty() {
+        let mut combined = cooldown_overrides.to_vec();
+        combined.extend(std::mem::take(&mut cfg.cooldown.overrides));
+        cfg.cooldown.overrides = combined;
+    }
+}
+
+fn to_candidates(
+    items: Vec<cargoscope_advisory::ecosystems::RemoteRelease>,
+) -> Vec<CandidateRelease> {
+    items
+        .into_iter()
+        .map(|r| CandidateRelease {
+            tag: r.tag,
+            published_unix: r.published_unix,
+            sha: r.sha,
+            digest: r.digest,
+        })
+        .collect()
+}
+
+/// Runs `cargoscope fix --updates` with cooldown, versioning-strategy, and
+/// multi-ecosystem (`cargo`, `github-actions`, `docker`) options.
 ///
 /// # Errors
 ///
@@ -1676,36 +1843,29 @@ pub fn run_with_options(
     options: &UpdateOptions<'_>,
     paint: cargoscope_report::Paint,
 ) -> Result<ExitCode, ExitCode> {
-    let inventory: Inventory = cargoscope_cargo::scan_cargo_project(root)
-        .map_err(|error| execution_error(root, &error))?;
-    let mut warnings = Vec::new();
-    let (info, date) = crate::scan::registry_data(root, &inventory, &mut warnings);
-    for warning in &warnings {
-        eprintln!("warning: {warning}");
-    }
-    let has_crates_io_direct = inventory.packages.iter().any(|package| {
-        package.direct
-            && !package.root
-            && cargoscope_advisory::crates_io::is_crates_io(package.source.as_deref())
-    });
-    if has_crates_io_direct && date.is_none() {
-        eprintln!(
-            "CargoScope needs crates.io data to find newer versions: run `cargoscope update` first."
-        );
-        return Err(ExitCode::from(2));
-    }
+    let dependabot_all = cargoscope_cargo::dependabot::load_all(root);
+    let (run_cargo, run_actions, run_docker) =
+        selected_ecosystems(root, options.ecosystems, &dependabot_all);
 
-    let mut config =
-        cargoscope_cargo::updates::load(root).map_err(|error| execution_error(root, &error))?;
-    if let Some(days) = options.cooldown_days {
-        config.cooldown.default_days = days;
-    }
-    if !options.cooldown_overrides.is_empty() {
-        // CLI overrides take priority over file-configured overrides.
-        let mut combined = options.cooldown_overrides.to_vec();
-        combined.extend(std::mem::take(&mut config.cooldown.overrides));
-        config.cooldown.overrides = combined;
-    }
+    let inventory = if run_cargo {
+        Some(
+            cargoscope_cargo::scan_cargo_project(root)
+                .map_err(|error| execution_error(root, &error))?,
+        )
+    } else {
+        None
+    };
+
+    let mut config = if run_cargo {
+        cargoscope_cargo::updates::load(root).map_err(|error| execution_error(root, &error))?
+    } else {
+        UpdatesConfig::default()
+    };
+    apply_cooldown_cli_overrides(
+        &mut config,
+        options.cooldown_days,
+        options.cooldown_overrides,
+    );
     if let Some(strategy) = options.versioning_strategy {
         config.versioning_strategy = strategy;
     }
@@ -1715,77 +1875,300 @@ pub fn run_with_options(
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs())
     });
-    let registry_cache = cargoscope_advisory::cache_dir()
-        .ok()
-        .map(|dir| RegistryCache::open(&dir));
+    let cache_dir = cargoscope_advisory::cache_dir().ok();
+    let registry_cache = cache_dir.as_deref().map(RegistryCache::open);
+    let offline = std::env::var_os("CARGOSCOPE_OFFLINE").is_some_and(|v| v == "1" || v == "true");
 
-    let kinds = cargoscope_cargo::direct_dependency_kinds(root).unwrap_or_default();
-    let dev_only = |name: &str| {
-        kinds
-            .get(name)
-            .is_some_and(|kinds| kinds.iter().all(|kind| *kind == DependencyKind::Dev))
-    };
-    let mut seen = BTreeSet::new();
     let mut rows = Vec::new();
     let mut manifests: Option<Vec<Manifest>> = None;
-    for (package, info) in inventory.packages.iter().zip(&info) {
-        if !package.direct
-            || package.root
-            || options
-                .only
-                .is_some_and(|names| !names.contains(&package.name))
-            || (!config.include_dev && dev_only(&package.name))
-            || !seen.insert((package.name.clone(), package.version.clone()))
-        {
-            continue;
+
+    if let Some(ref inventory) = inventory {
+        let mut warnings = Vec::new();
+        let (info, date) = crate::scan::registry_data(root, inventory, &mut warnings);
+        for warning in &warnings {
+            eprintln!("warning: {warning}");
         }
-        let is_crates_io = cargoscope_advisory::crates_io::is_crates_io(package.source.as_deref());
-        let plan = if is_crates_io {
-            if !info.outdated {
+        let has_crates_io_direct = inventory.packages.iter().any(|package| {
+            package.direct
+                && !package.root
+                && cargoscope_advisory::crates_io::is_crates_io(package.source.as_deref())
+        });
+        if has_crates_io_direct && date.is_none() {
+            eprintln!(
+                "CargoScope needs crates.io data to find newer versions: run `cargoscope update` first."
+            );
+            return Err(ExitCode::from(2));
+        }
+        let kinds = cargoscope_cargo::direct_dependency_kinds(root).unwrap_or_default();
+        let dev_only = |name: &str| {
+            kinds
+                .get(name)
+                .is_some_and(|kinds| kinds.iter().all(|kind| *kind == DependencyKind::Dev))
+        };
+        let mut seen = BTreeSet::new();
+        for (package, info) in inventory.packages.iter().zip(&info) {
+            if !package.direct
+                || package.root
+                || options
+                    .only
+                    .is_some_and(|names| !names.contains(&package.name))
+                || (!config.include_dev && dev_only(&package.name))
+                || !seen.insert((package.name.clone(), package.version.clone()))
+            {
                 continue;
             }
-            let releases = registry_cache
-                .as_ref()
-                .and_then(|cache| cache.version_timestamps(&package.name));
-            let ctx = PlanContext {
-                root,
-                strategy,
-                breaking: options.breaking,
-                config: &config,
-                releases: releases.as_deref(),
-                now_unix,
-            };
-            let Some(plan) = plan_package(&ctx, package, info, &mut manifests)? else {
+            let is_crates_io =
+                cargoscope_advisory::crates_io::is_crates_io(package.source.as_deref());
+            let plan = if is_crates_io {
+                if !info.outdated {
+                    continue;
+                }
+                let releases = registry_cache
+                    .as_ref()
+                    .and_then(|cache| cache.version_timestamps(&package.name));
+                let ctx = PlanContext {
+                    root,
+                    strategy,
+                    breaking: options.breaking,
+                    config: &config,
+                    releases: releases.as_deref(),
+                    now_unix,
+                };
+                let Some(plan) = plan_package(&ctx, package, info, &mut manifests)? else {
+                    continue;
+                };
+                plan
+            } else if let Some(plan) = probe_non_crates_io_package(root, package, &config) {
+                plan
+            } else {
                 continue;
             };
-            plan
-        } else if let Some(plan) = probe_non_crates_io_package(root, package, &config) {
-            plan
-        } else {
-            continue;
-        };
 
-        let row = Row {
-            name: package.name.clone(),
-            from: package.version.clone(),
-            details: Details {
-                published_version: published_version(&plan, info),
-                published: published(&plan, info),
-                concerns: info
-                    .maintenance_concerns()
-                    .into_iter()
-                    .map(|concern| describe_concern(concern, info))
-                    .collect(),
-                ..Details::default()
-            },
-            plan,
-            dev: dev_only(&package.name),
-            repository: info.repository.clone(),
-        };
-        if options.format == Format::Text {
-            print_row(&row, paint);
+            let row = Row {
+                name: package.name.clone(),
+                from: package.version.clone(),
+                details: Details {
+                    published_version: published_version(&plan, info),
+                    published: published(&plan, info),
+                    concerns: info
+                        .maintenance_concerns()
+                        .into_iter()
+                        .map(|concern| describe_concern(concern, info))
+                        .collect(),
+                    ..Details::default()
+                },
+                plan,
+                dev: dev_only(&package.name),
+                repository: info.repository.clone(),
+                ecosystem: UpdateEcosystem::Cargo,
+                target: EcosystemTarget::Cargo,
+            };
+            if options.format == Format::Text {
+                print_row(&row, paint);
+            }
+            rows.push(row);
         }
-        rows.push(row);
+    }
+
+    if run_actions && let Some(dir) = cache_dir.as_deref() {
+        let mut gha_cfg = dependabot_all.github_actions.unwrap_or_default();
+        apply_cooldown_cli_overrides(
+            &mut gha_cfg,
+            options.cooldown_days,
+            options.cooldown_overrides,
+        );
+        let mut remote_cache: std::collections::BTreeMap<String, Vec<CandidateRelease>> =
+            std::collections::BTreeMap::new();
+        for action in find_action_uses(root) {
+            if options
+                .only
+                .is_some_and(|names| !names.contains(&action.owner_repo))
+            {
+                continue;
+            }
+            let candidates = remote_cache
+                .entry(action.owner_repo.clone())
+                .or_insert_with(|| {
+                    let raw = if offline {
+                        cargoscope_advisory::ecosystems::cached_github_releases(
+                            dir,
+                            &action.owner_repo,
+                        )
+                    } else {
+                        cargoscope_advisory::ecosystems::fetch_github_releases(
+                            dir,
+                            &action.owner_repo,
+                            false,
+                        )
+                    };
+                    raw.map(to_candidates).unwrap_or_default()
+                });
+            let Some(outcome) =
+                plan_action_update(&action, candidates, &gha_cfg, options.breaking, now_unix)
+            else {
+                continue;
+            };
+            let from_str = action
+                .comment_version
+                .clone()
+                .unwrap_or_else(|| action.raw_ref.clone());
+            let (plan, target) = match outcome {
+                EcosystemPlan::Update {
+                    target_ref,
+                    display_to,
+                    update_type,
+                    cooldown_skipped,
+                    ..
+                } => {
+                    let kind = if update_type == UpdateType::Major {
+                        Kind::Breaking
+                    } else {
+                        Kind::Compatible
+                    };
+                    let display_tag = display_to.split_whitespace().next().map(str::to_owned);
+                    let file_label = vec![action.file.clone()];
+                    (
+                        Plan::Update {
+                            spec: action.owner_repo.clone(),
+                            to: display_to,
+                            kind,
+                            manifests: file_label,
+                            breaking_blocked: None,
+                            is_git: false,
+                            cooldown_skipped,
+                        },
+                        EcosystemTarget::Action {
+                            action: action.clone(),
+                            target_ref,
+                            display_tag,
+                        },
+                    )
+                }
+                EcosystemPlan::Cooldown {
+                    to,
+                    age_days,
+                    required_days,
+                } => (
+                    Plan::Cooldown {
+                        to,
+                        age_days,
+                        required_days,
+                    },
+                    EcosystemTarget::Cargo,
+                ),
+                EcosystemPlan::Ignored { to, reason } => {
+                    (Plan::Ignored { to, reason }, EcosystemTarget::Cargo)
+                }
+            };
+            let row = Row {
+                name: action.owner_repo.clone(),
+                from: from_str,
+                plan,
+                dev: false,
+                repository: Some(format!("https://github.com/{}", action.owner_repo)),
+                details: Details::default(),
+                ecosystem: UpdateEcosystem::GitHubActions,
+                target,
+            };
+            if options.format == Format::Text {
+                print_row(&row, paint);
+            }
+            rows.push(row);
+        }
+    }
+
+    if run_docker && let Some(dir) = cache_dir.as_deref() {
+        let mut docker_cfg = dependabot_all.docker.unwrap_or_default();
+        apply_cooldown_cli_overrides(
+            &mut docker_cfg,
+            options.cooldown_days,
+            options.cooldown_overrides,
+        );
+        let mut remote_cache: std::collections::BTreeMap<String, Vec<CandidateRelease>> =
+            std::collections::BTreeMap::new();
+        for from in find_docker_froms(root) {
+            if options
+                .only
+                .is_some_and(|names| !names.contains(&from.image))
+            {
+                continue;
+            }
+            let Some(ref raw_tag) = from.raw_tag else {
+                continue;
+            };
+            let candidates = remote_cache.entry(from.image.clone()).or_insert_with(|| {
+                let raw = if offline {
+                    cargoscope_advisory::ecosystems::cached_docker_tags(dir, &from.image)
+                } else {
+                    cargoscope_advisory::ecosystems::fetch_docker_tags(dir, &from.image, false)
+                };
+                raw.map(to_candidates).unwrap_or_default()
+            });
+            let Some(outcome) =
+                plan_docker_update(&from, candidates, &docker_cfg, options.breaking, now_unix)
+            else {
+                continue;
+            };
+            let (plan, target) = match outcome {
+                EcosystemPlan::Update {
+                    target_ref,
+                    display_to,
+                    update_type,
+                    cooldown_skipped,
+                    ..
+                } => {
+                    let kind = if update_type == UpdateType::Major {
+                        Kind::Breaking
+                    } else {
+                        Kind::Compatible
+                    };
+                    (
+                        Plan::Update {
+                            spec: from.image.clone(),
+                            to: display_to,
+                            kind,
+                            manifests: vec![from.file.clone()],
+                            breaking_blocked: None,
+                            is_git: false,
+                            cooldown_skipped,
+                        },
+                        EcosystemTarget::Docker {
+                            from: from.clone(),
+                            new_tag: target_ref,
+                        },
+                    )
+                }
+                EcosystemPlan::Cooldown {
+                    to,
+                    age_days,
+                    required_days,
+                } => (
+                    Plan::Cooldown {
+                        to,
+                        age_days,
+                        required_days,
+                    },
+                    EcosystemTarget::Cargo,
+                ),
+                EcosystemPlan::Ignored { to, reason } => {
+                    (Plan::Ignored { to, reason }, EcosystemTarget::Cargo)
+                }
+            };
+            let row = Row {
+                name: from.image.clone(),
+                from: raw_tag.clone(),
+                plan,
+                dev: false,
+                repository: None,
+                details: Details::default(),
+                ecosystem: UpdateEcosystem::Docker,
+                target,
+            };
+            if options.format == Format::Text {
+                print_row(&row, paint);
+            }
+            rows.push(row);
+        }
     }
     if options.apply {
         apply(
@@ -1797,8 +2180,12 @@ pub fn run_with_options(
     }
     match options.format {
         Format::Markdown => {
-            let body = body_facts(root, &inventory, &mut rows, &config, options.apply)?;
-            print!("{}", render_markdown(&rows, &body));
+            if let Some(ref inv) = inventory {
+                let body = body_facts(root, inv, &mut rows, &config, options.apply)?;
+                print!("{}", render_markdown(&rows, &body));
+            } else {
+                print!("{}", render_markdown(&rows, &Body::default()));
+            }
         }
         Format::Json => print!("{}", render_json(&rows, &config)),
         Format::Text => {
@@ -1876,6 +2263,8 @@ mod tests {
                 published: Some("2026-11-01".to_owned()),
                 ..Details::default()
             },
+            ecosystem: super::UpdateEcosystem::Cargo,
+            target: super::EcosystemTarget::Cargo,
         }
     }
 
