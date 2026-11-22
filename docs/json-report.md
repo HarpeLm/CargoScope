@@ -18,6 +18,7 @@
 | `duplicates` | Crates resolved in more than one version, with their versions, oldest first (since 0.3.0) |
 | `direct_weights` | Each direct dependency with the number of packages only it pulls in (`exclusive`) and the size of its own tree (`tree`), heaviest first (since 0.4.0) |
 | `unused` | Every dependency with no usage found, `likely-unused` or `possibly-unused`, with evidence; ignored ones carry `ignored_reason` |
+| `feature_hints` | Informational hints for overly broad or unused dependency features (e.g. `tokio` `full` or `serde` `derive`) when static analysis finds no matching usage |
 | `warnings` | Non-fatal problems that may make results incomplete |
 
 A `path` is the shortest chain of `{name, version}` from a root package (the project or a workspace member) to the package. "No advisory found" does not mean the dependencies are safe.
