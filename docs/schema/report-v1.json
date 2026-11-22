@@ -25,7 +25,7 @@
     "checks": {
       "description": "Checks that ran (see --checks). Data of checks that did not run is empty or null.",
       "type": "array",
-      "items": { "enum": ["inventory", "advisories", "unused", "licenses", "versions", "policy"] }
+      "items": { "enum": ["inventory", "advisories", "unused", "licenses", "versions", "policy", "unsafe"] }
     },
     "advisory_database": { "$ref": "#/$defs/data_source" },
     "registry": { "$ref": "#/$defs/data_source" },
@@ -237,7 +237,7 @@
       "properties": {
         "dependency": { "type": "string", "description": "Manifest key, also the name used in code." },
         "package": { "type": "string", "description": "Real crate name when renamed with `package = ...`." },
-        "section": { "enum": ["dependencies", "dev-dependencies", "build-dependencies"] },
+        "section": { "enum": ["dependencies", "dev-dependencies", "build-dependencies", "workspace.dependencies"] },
         "declared_by": { "type": "string" },
         "manifest": { "type": "string" },
         "confidence": { "enum": ["likely-unused", "possibly-unused"] },
