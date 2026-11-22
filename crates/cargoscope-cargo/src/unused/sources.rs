@@ -27,6 +27,9 @@ pub(super) struct Sources {
     /// The package is inside a git checkout (a `.git` entry in it or an
     /// ancestor), so its test files are not missing.
     pub(super) git_checkout: bool,
+    /// The package belongs to a Cargo `[workspace]` (tarballs without `.git`
+    /// still keep workspace test files unless `Cargo.toml.orig` is present).
+    pub(super) in_workspace: bool,
     /// Files skipped because of size, depth or count limits.
     pub(super) skipped: usize,
 }
@@ -34,7 +37,12 @@ pub(super) struct Sources {
 /// The directory that `include!`, `#[path]` and target paths may reach: the
 /// workspace root (the nearest ancestor whose `Cargo.toml` has a
 /// `[workspace]` table), or the package itself outside a workspace.
+#[cfg(test)]
 pub(super) fn source_bound(package_dir: &Path) -> PathBuf {
+    source_bound_and_workspace(package_dir).0
+}
+
+fn source_bound_and_workspace(package_dir: &Path) -> (PathBuf, bool) {
     let start = package_dir
         .canonicalize()
         .unwrap_or_else(|_| package_dir.to_path_buf());
@@ -48,11 +56,11 @@ pub(super) fn source_bound(package_dir: &Path) -> PathBuf {
                 .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
                 .is_some_and(|value| value.get("workspace").is_some());
         if is_workspace {
-            return dir.to_path_buf();
+            return (dir.to_path_buf(), true);
         }
         current = dir.parent();
     }
-    start
+    (start, false)
 }
 
 /// Whether `package_dir` or one of its ancestors holds a `.git` directory or
@@ -74,10 +82,11 @@ pub(super) fn is_within(bound: &Path, path: &Path) -> bool {
 }
 
 pub(super) fn collect_sources(package_dir: &Path, manifest: &toml::Value) -> Sources {
-    let bound = source_bound(package_dir);
+    let (bound, in_workspace) = source_bound_and_workspace(package_dir);
     let mut sources = Sources {
         published_copy: is_regular_file(&package_dir.join("Cargo.toml.orig")),
         git_checkout: in_git_checkout(package_dir),
+        in_workspace,
         ..Sources::default()
     };
     for dir in SOURCE_DIRS {
