@@ -700,6 +700,7 @@ fn skipped_checks_are_reported_as_not_checked() {
         "Unused dependencies: not checked",
         "Licenses: not checked",
         "Versions: not checked",
+        "Unsafe code: not checked",
     ] {
         assert!(text.contains(section), "missing: {section}");
     }
@@ -715,6 +716,83 @@ fn skipped_checks_are_reported_as_not_checked() {
     )
     .expect("valid JSON");
     assert_eq!(json["checks"], serde_json::json!(["inventory"]));
+}
+
+#[test]
+fn checks_flag_skips_unsafe_unless_requested_or_all() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-checks-unsafe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).expect("src");
+    let cargo_home = dir.join("cargo-home");
+    let dep_root = cargo_home.join("registry/src/index.crates.io-test/vendor_unsafe-0.1.0");
+    std::fs::create_dir_all(dep_root.join("src")).expect("dep src");
+
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nvendor_unsafe = \"0.1.0\"\n",
+    )
+    .expect("manifest");
+    std::fs::write(
+        dir.join("src/lib.rs"),
+        "pub fn call() -> u32 { vendor_unsafe::ping() }\n",
+    )
+    .expect("lib");
+    std::fs::write(
+        dep_root.join("Cargo.toml"),
+        "[package]\nname = \"vendor_unsafe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("dep manifest");
+    std::fs::write(
+        dep_root.join("src/lib.rs"),
+        "pub fn ping() -> u32 { unsafe { 1 } }\n",
+    )
+    .expect("dep lib");
+    std::fs::write(
+        dir.join("Cargo.lock"),
+        "version = 4\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"vendor_unsafe\"]\n\n[[package]]\nname = \"vendor_unsafe\"\nversion = \"0.1.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n",
+    )
+    .expect("lock");
+
+    let run_scan = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .env("CARGOSCOPE_CACHE_DIR", dir.join("empty-cache"))
+            .env("CARGO_HOME", &cargo_home)
+            .arg("scan")
+            .arg(&dir)
+            .args(args)
+            .output()
+            .expect("scan runs")
+    };
+
+    let without_unsafe = run_scan(&["--checks", "inventory,unused", "--fail-on", "none"]);
+    assert_eq!(without_unsafe.status.code(), Some(0));
+    let hud_without = stdout(&without_unsafe);
+    assert!(!hud_without.contains("UNSAFE CODE"), "{hud_without}");
+
+    let json_without: serde_json::Value = serde_json::from_slice(
+        &run_scan(&["--checks", "inventory,unused", "--format", "json"]).stdout,
+    )
+    .expect("json");
+    assert_eq!(
+        json_without["checks"],
+        serde_json::json!(["inventory", "unused"])
+    );
+    assert!(
+        json_without["packages"]
+            .as_array()
+            .expect("pkgs")
+            .iter()
+            .all(|pkg| pkg["unsafe"].is_null()),
+        "{json_without}"
+    );
+
+    let with_unsafe = run_scan(&["--checks", "inventory,unsafe", "--fail-on", "none"]);
+    assert_eq!(with_unsafe.status.code(), Some(0));
+    let hud_with = stdout(&with_unsafe);
+    assert!(hud_with.contains("UNSAFE CODE"), "{hud_with}");
+    assert!(hud_with.contains("vendor_unsafe"), "{hud_with}");
+
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -1436,6 +1514,70 @@ fn fix_verify_rolls_back_when_cargo_check_fails_and_keeps_valid_edits() {
     let after_rollback =
         std::fs::read_to_string(dir.join("Cargo.toml")).expect("manifest after rollback");
     assert_eq!(after_rollback, after_pass);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn scan_and_fix_remove_preexisting_orphan_workspace_dependencies() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-ws-orphans-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("a/src")).expect("create");
+    let root_manifest = "[workspace]\nmembers = [\"a\"]\n\n[workspace.dependencies]\nkept = \"1.0\" # used by member\norphan = \"0.4\" # never inherited\nunused_in_member = \"0.8\"\n";
+    std::fs::write(dir.join("Cargo.toml"), root_manifest).expect("write root");
+    std::fs::write(
+        dir.join("a/Cargo.toml"),
+        "[package]\nname = \"a\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nkept.workspace = true\nunused_in_member.workspace = true\n",
+    )
+    .expect("write member");
+    std::fs::write(dir.join("a/src/lib.rs"), "pub fn ok() { kept::go(); }\n").expect("lib");
+    let registry = "source = \"registry+https://github.com/rust-lang/crates.io-index\"";
+    std::fs::write(
+        dir.join("Cargo.lock"),
+        format!(
+            "version = 4\n\n[[package]]\nname = \"a\"\nversion = \"0.1.0\"\ndependencies = [\"kept\", \"unused_in_member\"]\n\n[[package]]\nname = \"kept\"\nversion = \"1.0.0\"\n{registry}\n\n[[package]]\nname = \"unused_in_member\"\nversion = \"0.8.5\"\n{registry}\n"
+        ),
+    )
+    .expect("lock");
+
+    // `cargoscope scan` surfaces pre-existing orphan `orphan` right away under [workspace.dependencies].
+    let json: serde_json::Value = serde_json::from_slice(
+        &Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+            .env("CARGO_HOME", fixture("empty-cargo-home"))
+            .args(["scan", "--checks", "inventory,unused", "--format", "json"])
+            .arg(&dir)
+            .output()
+            .expect("scan runs")
+            .stdout,
+    )
+    .expect("json");
+    let unused = json["unused"].as_array().expect("unused array");
+    assert!(
+        unused.iter().any(|u| u["dependency"] == "orphan"
+            && u["section"] == "workspace.dependencies"
+            && u["declared_by"] == "workspace"
+            && u["confidence"] == "likely-unused"),
+        "{unused:?}"
+    );
+    assert!(
+        !unused.iter().any(|u| u["dependency"] == "kept"),
+        "{unused:?}"
+    );
+
+    // `cargoscope fix --only orphan --apply` removes the orphan without touching used entries or comments.
+    let only = fix(&dir, &["--only", "orphan", "--apply"]);
+    assert_eq!(only.status.code(), Some(0), "{}", stdout(&only));
+    let root_after_only = std::fs::read_to_string(dir.join("Cargo.toml")).expect("root after only");
+    assert!(!root_after_only.contains("orphan"), "{root_after_only}");
+    assert!(
+        root_after_only.contains("kept = \"1.0\" # used by member"),
+        "{root_after_only}"
+    );
+    assert!(
+        root_after_only.contains("unused_in_member = \"0.8\""),
+        "{root_after_only}"
+    );
 
     let _ = std::fs::remove_dir_all(dir);
 }
