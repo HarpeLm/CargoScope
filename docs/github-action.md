@@ -9,7 +9,7 @@ It downloads the prebuilt binary (no Rust compilation required), caches RustSec 
 Drop this into any existing CI job with zero extra permissions:
 
 ```yaml
-      - uses: HarpeLm/CargoScope@v0.10.0
+      - uses: HarpeLm/CargoScope@v0.11.0
         with:
           fail-on: high
           upload-sarif: false
@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: HarpeLm/CargoScope@v0.10.0
+      - uses: HarpeLm/CargoScope@v0.11.0
         with:
           fail-on: high    # or none, to report without failing
 ```
@@ -62,7 +62,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: HarpeLm/CargoScope@v0.10.0
+      - uses: HarpeLm/CargoScope@v0.11.0
         with:
           fail-on: none
           open-pr: true
@@ -96,7 +96,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: HarpeLm/CargoScope@v0.10.0
+      - uses: HarpeLm/CargoScope@v0.11.0
         with:
           fail-on: none
           upload-sarif: false
