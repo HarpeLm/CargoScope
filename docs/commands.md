@@ -85,6 +85,10 @@ Each advisory is ranked against what the project actually builds (using `cargo t
 - **`possibly`**: partial mismatch or unverified build graph (for example before `cargo fetch`).
 - **`unlikely`**: only reachable via `[dev-dependencies]`, gated out by `[graph]` targets/features, mismatched `[affected]` OS/arch, or all `[affected.functions]` absent from project source identifiers.
 
+### Feature hints
+
+Under `--checks unused` (included by default), CargoScope flags conservative, high-impact dependency feature bloat such as `tokio = { features = ["full"] }`, `syn = { features = ["full"] }`, `serde = { features = ["derive"] }`, `clap = { features = ["derive"] }`, `reqwest`, `sqlx`, or `uuid` features when no matching API, module, or derive trait appears in parsed sources (skipping public re-exports, glob imports, forwarded `[features]`, and incomplete scans). Hints are strictly informational and never fail CI or edit `Cargo.toml`.
+
 In CycloneDX exports, ignored and `unlikely` advisories carry VEX `analysis.state = "not_affected"`. Pass `--ignore-unlikely` (or set `[advisories] ignore-unlikely = true` in `cargoscope.toml`) to exclude `unlikely` findings from `--fail-on` failure thresholds.
 
 ---
@@ -229,11 +233,16 @@ Tries the smallest version that fixes **all** active advisories of each crate wi
 
 ```sh
 cargoscope update .
-cargoscope fix --updates .                     # dry run: compatible upgrades
+cargoscope fix --updates .                     # dry run: compatible upgrades (7-day cooldown by default)
+cargoscope fix --updates . --cooldown-for serde=1 --apply
 cargoscope fix --updates --breaking . --apply  # also upgrade across major/0.x lines in manifests
 ```
 
-Moves direct crates.io dependencies to their newest SemVer-compatible version in `Cargo.lock`, or across major versions with `--breaking` when Cargo resolves cleanly (pinned requirements stay pinned; nothing is compiled).
+Moves direct crates.io dependencies to their newest SemVer-compatible version in `Cargo.lock` (or updates `git+...` commits and alternative-registry dependencies via `cargo update -p`), or across major versions with `--breaking` / `--versioning-strategy` when Cargo resolves cleanly (nothing is compiled).
+
+- **7-day cooldown by default**: skips crates.io releases younger than `--cooldown DAYS` (default `7`, or configured via `[updates.cooldown]` in `cargoscope.toml` or `.github/dependabot.yml`). When a crate is held back, an older eligible non-yanked release is used if available, or you can override specific dependencies with `--cooldown-for CRATE=DAYS` (for example `--cooldown-for tokio=1`) or `[updates.cooldown.overrides]`. Does not apply to `fix --advisories`.
+- **`--versioning-strategy STRATEGY`**: `auto` (default: lockfile when possible, raise bounds if pinned or `--breaking`), `lockfile-only` (refuse updates requiring manifest edits), `increase-if-necessary`, `increase` (always raise manifest bounds and allow breaking), or `widen` (widen restrictive ranges like `~1.2.0` / `=1.2.3` into `>=1.2.0, <X` or bump bounds cleanly).
+- **Zero-line `.github/dependabot.yml` fallback**: if `cargoscope.toml` has no `[updates]` table, CargoScope automatically reads `.github/dependabot.yml` (`package-ecosystem: "cargo"`).
 
 ---
 
