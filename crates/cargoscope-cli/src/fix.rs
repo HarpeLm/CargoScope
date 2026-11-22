@@ -48,6 +48,8 @@ struct FixOptions {
     cooldown_for: Vec<(String, u64)>,
     /// Manifest requirement update strategy (`--versioning-strategy`).
     versioning_strategy: Option<VersioningStrategy>,
+    /// Ecosystems to update (`auto`, `all`, or subset of `cargo,github-actions,docker`).
+    ecosystems: Option<Vec<String>>,
 }
 
 fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptions, String> {
@@ -130,6 +132,29 @@ fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptio
                 })?;
                 options.cooldown_for.push((crate_name.to_owned(), days));
             }
+            continue;
+        }
+        if argument == "--ecosystems" || argument.starts_with("--ecosystems=") {
+            let value = match argument.strip_prefix("--ecosystems=") {
+                Some(value) => Some(value.to_owned()),
+                None => arguments.next(),
+            }
+            .filter(|val| !val.trim().is_empty())
+            .ok_or("Missing value for --ecosystems.")?;
+            let mut list = Vec::new();
+            for item in value.split(',') {
+                let norm = item.trim().to_ascii_lowercase();
+                if !matches!(
+                    norm.as_str(),
+                    "auto" | "all" | "cargo" | "github-actions" | "docker"
+                ) {
+                    return Err(format!(
+                        "Unsupported ecosystem `{item}` in --ecosystems. Use auto, all, cargo, github-actions, or docker."
+                    ));
+                }
+                list.push(norm);
+            }
+            options.ecosystems = Some(list);
             continue;
         }
         if argument == "--versioning-strategy" || argument.starts_with("--versioning-strategy=") {
@@ -216,11 +241,13 @@ fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptio
     }
     if (options.cooldown.is_some()
         || !options.cooldown_for.is_empty()
-        || options.versioning_strategy.is_some())
+        || options.versioning_strategy.is_some()
+        || options.ecosystems.is_some())
         && !options.updates
     {
         return Err(
-            "--cooldown, --cooldown-for, and --versioning-strategy require --updates".to_owned(),
+            "--cooldown, --cooldown-for, --versioning-strategy, and --ecosystems require --updates"
+                .to_owned(),
         );
     }
     Ok(options)
@@ -269,6 +296,7 @@ fn run_fix(options: &FixOptions) -> Result<ExitCode, ExitCode> {
                 cooldown_days: options.cooldown,
                 cooldown_overrides: &options.cooldown_for,
                 versioning_strategy: options.versioning_strategy,
+                ecosystems: options.ecosystems.as_deref(),
                 now: None,
             },
             paint,
