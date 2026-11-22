@@ -34,6 +34,32 @@ pub(super) struct Sources {
     pub(super) skipped: usize,
 }
 
+/// Precomputed workspace root context shared across workspace members so ancestor
+/// manifests and `.git` directories are not probed repeatedly.
+#[derive(Debug, Clone)]
+pub(crate) struct WorkspaceContext {
+    pub(super) bound: PathBuf,
+    pub(super) canonical_root: PathBuf,
+    pub(super) in_workspace: bool,
+    pub(super) git_checkout: bool,
+}
+
+impl WorkspaceContext {
+    pub(crate) fn for_root(project_root: &Path) -> Self {
+        let canonical_root = project_root
+            .canonicalize()
+            .unwrap_or_else(|_| project_root.to_path_buf());
+        let (bound, in_workspace) = source_bound_and_workspace(&canonical_root);
+        let git_checkout = in_git_checkout(&canonical_root);
+        Self {
+            bound,
+            canonical_root,
+            in_workspace,
+            git_checkout,
+        }
+    }
+}
+
 /// The directory that `include!`, `#[path]` and target paths may reach: the
 /// workspace root (the nearest ancestor whose `Cargo.toml` has a
 /// `[workspace]` table), or the package itself outside a workspace.
@@ -82,10 +108,28 @@ pub(super) fn is_within(bound: &Path, path: &Path) -> bool {
 }
 
 pub(super) fn collect_sources(package_dir: &Path, manifest: &toml::Value) -> Sources {
-    let (bound, in_workspace) = source_bound_and_workspace(package_dir);
+    collect_sources_with(package_dir, manifest, None)
+}
+
+pub(super) fn collect_sources_with(
+    package_dir: &Path,
+    manifest: &toml::Value,
+    workspace_ctx: Option<&WorkspaceContext>,
+) -> Sources {
+    let ((bound, in_workspace), git_checkout) = if let Some(ctx) = workspace_ctx
+        && let Ok(canon) = package_dir.canonicalize()
+        && canon.starts_with(&ctx.canonical_root)
+    {
+        ((ctx.bound.clone(), ctx.in_workspace), ctx.git_checkout)
+    } else {
+        (
+            source_bound_and_workspace(package_dir),
+            in_git_checkout(package_dir),
+        )
+    };
     let mut sources = Sources {
         published_copy: is_regular_file(&package_dir.join("Cargo.toml.orig")),
-        git_checkout: in_git_checkout(package_dir),
+        git_checkout,
         in_workspace,
         ..Sources::default()
     };
