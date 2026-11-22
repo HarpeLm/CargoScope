@@ -301,6 +301,7 @@ pub fn find_unused(
     }
     collect_external_proc_macros(project_root, inventory, &mut workspace_macros);
 
+    let member_warnings = warnings.clone();
     let mut findings = Vec::new();
     for (dir, label, manifest) in &packages {
         let name = manifest
@@ -323,6 +324,14 @@ pub fn find_unused(
         findings.append(&mut package_findings);
         warnings.extend(package_warnings);
     }
+    let (mut ws_findings, ws_warnings) = unused::orphan_workspace_dependencies(
+        project_root,
+        &packages,
+        workspace_dependencies,
+        &member_warnings,
+    );
+    findings.append(&mut ws_findings);
+    warnings.extend(ws_warnings);
     Ok((findings, warnings))
 }
 
