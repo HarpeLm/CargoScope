@@ -324,6 +324,37 @@ pub fn set_requirement_for_version(
     from_version: Option<&str>,
     requirement: &str,
 ) -> Result<(String, bool), String> {
+    rewrite_requirement_for_version(contents, package, from_version, |old| {
+        keep_pin(old, requirement)
+    })
+}
+
+/// Like [`set_requirement_for_version`], widening existing bounded requirements
+/// (`"1.0"` -> `">=1.0, <3.0.0"`, `">=1.0, <2.0"` -> `">=1.0, <3.0.0"`) when
+/// `target` sits outside the existing SemVer line (Dependabot's
+/// `versioning-strategy: widen`). Pinned requirements (`=1.2.3`) stay pinned.
+///
+/// # Errors
+///
+/// Returns a message when the manifest is not valid TOML.
+pub fn widen_requirement_for_version(
+    contents: &str,
+    package: &str,
+    from_version: Option<&str>,
+    target: &semver::Version,
+) -> Result<(String, bool), String> {
+    let target_str = target.to_string();
+    rewrite_requirement_for_version(contents, package, from_version, |old| {
+        widen_range(old, target, &target_str)
+    })
+}
+
+fn rewrite_requirement_for_version(
+    contents: &str,
+    package: &str,
+    from_version: Option<&str>,
+    mut make_req: impl FnMut(Option<&str>) -> String,
+) -> Result<(String, bool), String> {
     let mut document: DocumentMut = contents.parse().map_err(|error| format!("{error}"))?;
     let from = from_version.and_then(|version| semver::Version::parse(version).ok());
     let sections = [
@@ -368,7 +399,7 @@ pub fn set_requirement_for_version(
                 if !matches_from(value.as_str(), from.as_ref()) {
                     continue;
                 }
-                let requirement = keep_pin(value.as_str(), requirement);
+                let requirement = make_req(value.as_str());
                 if value.as_str() != Some(requirement.as_str()) {
                     // `name = "1.2"`: keep the surrounding spaces and comment.
                     let decor = value.as_value().map(|v| v.decor().clone());
@@ -392,7 +423,7 @@ pub fn set_requirement_for_version(
                 if existing.is_none() || !matches_from(existing.as_deref(), from.as_ref()) {
                     continue;
                 }
-                let requirement = keep_pin(existing.as_deref(), requirement);
+                let requirement = make_req(existing.as_deref());
                 if existing.as_deref() != Some(requirement.as_str()) {
                     let decor = entry
                         .get("version")
@@ -410,6 +441,38 @@ pub fn set_requirement_for_version(
         }
     }
     Ok((document.to_string(), changed))
+}
+
+fn widen_range(old: Option<&str>, target: &semver::Version, target_str: &str) -> String {
+    let Some(old_str) = old.map(str::trim).filter(|s| !s.is_empty()) else {
+        return target_str.to_owned();
+    };
+    if old_str.starts_with('=') {
+        return format!("={target_str}");
+    }
+    if semver::VersionReq::parse(old_str).is_ok_and(|req| req.matches(target)) {
+        return old_str.to_owned();
+    }
+    let upper = if target.major > 0 {
+        format!("<{}.0.0", target.major + 1)
+    } else if target.minor > 0 {
+        format!("<0.{}.0", target.minor + 1)
+    } else {
+        format!("<0.0.{}", target.patch + 1)
+    };
+    let lower = if let Some(rest) = old_str.strip_prefix(">=") {
+        rest.split(',').next().unwrap_or(rest).trim()
+    } else {
+        old_str
+            .trim_start_matches('^')
+            .trim_start_matches('~')
+            .trim()
+    };
+    if lower.starts_with(|c: char| c.is_ascii_digit()) {
+        format!(">={lower}, {upper}")
+    } else {
+        target_str.to_owned()
+    }
 }
 
 fn matches_from(old: Option<&str>, from: Option<&semver::Version>) -> bool {
@@ -683,5 +746,33 @@ git_time = { package = "time", git = "https://example.test/time", version = "0.1
         .expect("valid member b");
         assert!(!changed_b);
         assert_eq!(edited_b, newer_major_member);
+    }
+
+    #[test]
+    fn widen_requirement_for_version_expands_restrictive_bounds() {
+        let manifest = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = \"=1.0.200\"\nanyhow = \"~1.0.80\"\n";
+        let serde_target = semver::Version::parse("1.0.210").expect("semver");
+        let (edited_serde, changed_serde) =
+            super::widen_requirement_for_version(manifest, "serde", Some("1.0.200"), &serde_target)
+                .expect("valid manifest");
+        assert!(changed_serde);
+        assert!(
+            edited_serde.contains("serde = \"=1.0.210\""),
+            "{edited_serde}"
+        );
+
+        let anyhow_target = semver::Version::parse("1.1.0").expect("semver");
+        let (edited_anyhow, changed_anyhow) = super::widen_requirement_for_version(
+            &edited_serde,
+            "anyhow",
+            Some("1.0.80"),
+            &anyhow_target,
+        )
+        .expect("valid manifest");
+        assert!(changed_anyhow);
+        assert!(
+            edited_anyhow.contains("anyhow = \">=1.0.80, <2.0.0\""),
+            "{edited_anyhow}"
+        );
     }
 }
