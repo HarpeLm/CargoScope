@@ -1,5 +1,7 @@
 # GitHub Action (**CargoScope-Bot**)
 
+> Want zero copied `.github/workflows/*.yml` files and native CI execution on bot PRs? See the [hosted 1-click GitHub App (`cargoscope-bot[bot]`)](github-app.md).
+
 CargoScope ships a composite GitHub Action (`action.yml` at the repository root), listed on the GitHub Marketplace as [**CargoScope-Bot**](https://github.com/marketplace/actions/cargoscope-bot).
 
 It downloads the prebuilt binary (no Rust compilation required), caches RustSec and crates.io data across runs, and supports CI scanning, SARIF uploads, PR diff comments, automated security update PRs, and Dependabot-style dependency update PRs.
