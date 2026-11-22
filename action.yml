@@ -54,6 +54,9 @@ inputs:
   versioning-strategy:
     description: "Manifest requirement update strategy: auto, lockfile-only, increase-if-necessary, increase, or widen (defaults to cargoscope.toml / .github/dependabot.yml)."
     default: ""
+  ecosystems:
+    description: "Ecosystems to update: auto (Cargo + github-actions/docker when in .github/dependabot.yml), all, or comma-separated cargo,github-actions,docker."
+    default: ""
   labels:
     description: "Comma-separated labels for the security and update pull requests (created when missing), such as dependencies,rust."
     default: ""
@@ -235,6 +238,7 @@ runs:
         UPDATES_GROUPED: ${{ inputs.updates-grouped }}
         COOLDOWN: ${{ inputs.cooldown }}
         VERSIONING_STRATEGY: ${{ inputs.versioning-strategy }}
+        ECOSYSTEMS: ${{ inputs.ecosystems }}
         LABELS: ${{ inputs.labels }}
         REVIEWERS: ${{ inputs.reviewers }}
         PREFIX: ${{ inputs.commit-prefix }}
@@ -299,7 +303,7 @@ runs:
           [ "$#" -gt 0 ] && only=(--only "$(IFS=,; echo "$*")")
           # shellcheck disable=SC2086
           cargoscope fix $fix "$PROJECT" --apply --format markdown "${only[@]}" > "$body" || return 0
-          changed=$(git status --porcelain -- '*Cargo.lock' 'Cargo.lock' '*Cargo.toml' 'Cargo.toml' | awk '{print $2}' | sort -u)
+          changed=$(git status --porcelain -- '*Cargo.lock' 'Cargo.lock' '*Cargo.toml' 'Cargo.toml' '.github/workflows' '*Dockerfile*' '*Containerfile*' | awk '{print $2}' | sort -u)
           [ -n "$changed" ] || return 0
           git switch -q -C "$branch"
           # shellcheck disable=SC2086
@@ -378,7 +382,7 @@ runs:
             new_body="$RUNNER_TEMP/cargoscope-rebased-$number.md"
             # shellcheck disable=SC2086
             cargoscope fix $fix_args "$PROJECT" --apply --format markdown "${only[@]}" > "$new_body" || continue
-            changed=$(git status --porcelain -- '*Cargo.lock' 'Cargo.lock' '*Cargo.toml' 'Cargo.toml' | awk '{print $2}' | sort -u)
+            changed=$(git status --porcelain -- '*Cargo.lock' 'Cargo.lock' '*Cargo.toml' 'Cargo.toml' '.github/workflows' '*Dockerfile*' '*Containerfile*' | awk '{print $2}' | sort -u)
             [ -n "$changed" ] || continue
             git switch -q -C "$head"
             # shellcheck disable=SC2086
@@ -422,6 +426,7 @@ runs:
           [ "$UPDATES" = "breaking" ] && fix="--updates --breaking"
           [ -n "$COOLDOWN" ] && fix="$fix --cooldown $COOLDOWN"
           [ -n "$VERSIONING_STRATEGY" ] && fix="$fix --versioning-strategy $VERSIONING_STRATEGY"
+          [ -n "$ECOSYSTEMS" ] && fix="$fix --ecosystems $ECOSYSTEMS"
           git checkout -q --detach --force "$GITHUB_SHA"
           plan="$RUNNER_TEMP/cargoscope-updates-plan.json"
           # shellcheck disable=SC2086
@@ -538,7 +543,7 @@ runs:
           new_body="$RUNNER_TEMP/cargoscope-rebuilt-pr.md"
           # shellcheck disable=SC2086
           cargoscope fix $fix "$PROJECT" --apply --format markdown --only "$pkg_csv" > "$new_body"
-          changed=$(git status --porcelain -- '*Cargo.lock' 'Cargo.lock' '*Cargo.toml' 'Cargo.toml' | awk '{print $2}' | sort -u)
+          changed=$(git status --porcelain -- '*Cargo.lock' 'Cargo.lock' '*Cargo.toml' 'Cargo.toml' '.github/workflows' '*Dockerfile*' '*Containerfile*' | awk '{print $2}' | sort -u)
           if [ -n "$changed" ]; then
             git switch -q -C "$head_branch"
             # shellcheck disable=SC2086
