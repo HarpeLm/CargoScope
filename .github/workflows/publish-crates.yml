@@ -23,6 +23,6 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Publish the workspace crates in dependency order
-        run: cargo publish --workspace --exclude cargoscope-corpus --locked
+        run: cargo publish --workspace --exclude cargoscope-corpus --exclude cargoscope-bot --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
