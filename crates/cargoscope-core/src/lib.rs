@@ -699,6 +699,28 @@ pub struct UnusedFinding {
     pub ignored: Option<String>,
 }
 
+/// An enabled dependency feature (or feature bundle like `"full"`) that
+/// static analysis found no matching source usage for. Informational only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeatureHint {
+    /// Name of the project package declaring the features (or `"workspace"`).
+    pub declared_by: String,
+    /// Manifest containing the feature declaration, relative to project root.
+    pub manifest: String,
+    /// Key used in the manifest.
+    pub dependency: String,
+    /// Real crate name (`package = "..."`), or the dependency key.
+    pub package: String,
+    /// Manifest section.
+    pub kind: DependencyKind,
+    /// Enabled features flagged as unused or overly broad (e.g. `["full"]`).
+    pub features: Vec<String>,
+    /// Narrower replacement features observed in source code (empty when dropping them suffices).
+    pub suggested: Vec<String>,
+    /// Human-readable explanation of what was checked and not found.
+    pub reason: String,
+}
+
 /// Whether an available update stays within SemVer compatibility or breaks it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OutdatedKind {
@@ -1098,6 +1120,9 @@ pub struct Report {
     pub registry_date: Option<String>,
     /// Dependencies with no usage found, including ignored ones.
     pub unused: Vec<UnusedFinding>,
+    /// Enabled dependency features that static analysis found unused (e.g.
+    /// `features = ["full"]`); informational hints only.
+    pub feature_hints: Vec<FeatureHint>,
     /// Date the RustSec database was downloaded (`YYYY-MM-DD`), if known.
     pub advisory_db_date: Option<String>,
     /// Whether unused dependencies were checked with the compiler
