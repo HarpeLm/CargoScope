@@ -15,15 +15,18 @@ use std::str::FromStr;
 use cargoscope_core::{DependencyKind, Inventory, UnusedConfidence, UnusedFinding};
 use proc_macro2::{TokenStream, TokenTree};
 
+mod features;
 mod macros;
 mod references;
 mod rules;
 mod sources;
 
+pub use self::features::find_unused_features;
 #[cfg(test)]
 use self::macros::*;
 pub use self::macros::{
-    WorkspaceMacros, is_proc_macro, macro_references, proc_macro_generated, proc_macro_quoted,
+    WorkspaceMacros, build_dep_emitted, is_proc_macro, macro_references, proc_macro_generated,
+    proc_macro_quoted,
 };
 use self::references::*;
 use self::rules::*;
@@ -79,7 +82,22 @@ fn selects_features(specification: &toml::Value, from_workspace: Option<&toml::V
         .filter_map(|spec| spec.get("features").and_then(toml::Value::as_array))
         .flatten()
         .filter_map(toml::Value::as_str)
-        .any(|feature| feature != "derive")
+        .any(|feature| {
+            !matches!(
+                feature,
+                "derive"
+                    | "macros"
+                    | "default"
+                    | "cargo"
+                    | "env"
+                    | "help"
+                    | "usage"
+                    | "color"
+                    | "suggestions"
+                    | "wrap_help"
+                    | "error-context"
+            )
+        })
 }
 
 /// Whether a declaration enables a feature meant for tests, by its name.
@@ -585,11 +603,15 @@ pub fn check_package(
             .collect();
     let build_dependency_names: Vec<&str> =
         build_dependency_names.iter().map(String::as_str).collect();
-    let mut build_tree: BTreeSet<String> =
-        build_dependency_tree(inventory, package.name, &build_dependency_names)
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
+    let mut build_tree: BTreeSet<String> = build_dependency_tree(
+        inventory,
+        package.name,
+        &build_dependency_names,
+        &workspace_macros.build_dep_emitted,
+    )
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
     let build_reads_files = sources.has_build_script && build_script_reads_files(&sources.build);
     // A code generator named `X-build` or `X-codegen` writes code for the
     // crate `X`, which it need not depend on (`tonic-prost-build` writes
@@ -1075,9 +1097,28 @@ pub mod sys;
                 package("sha2", false, vec![]),
             ],
         };
-        let tree = super::build_dependency_tree(&inventory, "app", &["prost-build"]);
+        let empty = std::collections::BTreeMap::new();
+        let tree = super::build_dependency_tree(&inventory, "app", &["prost-build"], &empty);
         assert!(tree.contains("prost") && tree.contains("prost-build"));
         assert!(!tree.contains("sha2") && !tree.contains("serde"));
+
+        // When on-disk build-dep sources were inspected, only crates it emits stay in build_tree.
+        let mut emitted = std::collections::BTreeMap::new();
+        emitted.insert(
+            "prost-build".to_owned(),
+            ["prost".to_owned()].into_iter().collect(),
+        );
+        let with_tempfile = Inventory {
+            packages: vec![
+                package("app", true, vec![1, 3]),
+                package("prost-build", false, vec![2, 3]),
+                package("prost", false, vec![]),
+                package("tempfile", false, vec![]),
+            ],
+        };
+        let narrowed =
+            super::build_dependency_tree(&with_tempfile, "app", &["prost-build"], &emitted);
+        assert!(narrowed.contains("prost") && !narrowed.contains("tempfile"));
 
         let dir = std::env::temp_dir().join(format!("cargoscope-gen-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
