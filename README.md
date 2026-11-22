@@ -83,7 +83,7 @@ docker run --rm -v "$PWD:/src" -v cargoscope-cache:/cache ghcr.io/harpelm/cargos
 # GitLab CI
 cargoscope:
   image:
-    name: ghcr.io/harpelm/cargoscope:0.10.0
+    name: ghcr.io/harpelm/cargoscope:0.11.0
     entrypoint: [""]
   script:
     - cargoscope update .
@@ -122,7 +122,7 @@ Reports also come as <code>--format json</code>, <code>sarif</code>, <code>html<
 </div>
 
 ```yaml
-- uses: HarpeLm/CargoScope@v0.10.0
+- uses: HarpeLm/CargoScope@v0.11.0
   with:
     fail-on: high
 ```
