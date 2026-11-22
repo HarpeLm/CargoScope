@@ -24,7 +24,7 @@ pub(crate) struct FeatureSignals {
     scoped_paths: BTreeSet<(String, String)>,
     glob_uses: BTreeSet<String>,
     reexported_roots: BTreeSet<String>,
-    incomplete: bool,
+    pub(crate) incomplete: bool,
 }
 
 impl FeatureSignals {
@@ -46,6 +46,27 @@ impl FeatureSignals {
     }
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct PrecomputedSignals {
+    pub(crate) code: FeatureSignals,
+    pub(crate) build: FeatureSignals,
+}
+
+pub(crate) fn consume_feature_stream(
+    tokens: Option<TokenStream>,
+    generated_code: bool,
+    signals: &mut FeatureSignals,
+) {
+    let Some(tokens) = tokens else {
+        signals.incomplete = true;
+        return;
+    };
+    if generated_code {
+        signals.incomplete = true;
+    }
+    walk_stream(tokens, signals);
+}
+
 fn collect_signals_from_files(files: &[std::path::PathBuf], skipped: usize) -> FeatureSignals {
     let mut signals = FeatureSignals {
         incomplete: skipped > 0,
@@ -60,10 +81,8 @@ fn collect_signals_from_files(files: &[std::path::PathBuf], skipped: usize) -> F
             signals.incomplete = true;
             continue;
         };
-        if includes_generated_code(tokens.clone()) {
-            signals.incomplete = true;
-        }
-        walk_stream(tokens, &mut signals);
+        let generated = includes_generated_code(tokens.clone());
+        consume_feature_stream(Some(tokens), generated, &mut signals);
     }
     signals
 }
@@ -215,21 +234,50 @@ pub fn find_unused_features(
     workspace_dependencies: Option<&toml::Value>,
     unused_findings: &[UnusedFinding],
 ) -> Vec<FeatureHint> {
+    find_unused_features_with_signals(
+        project_root,
+        packages,
+        workspace_dependencies,
+        unused_findings,
+        None,
+    )
+}
+
+/// Like [`find_unused_features`], reusing precomputed per-package feature signals
+/// when available so workspace source files are only read and lexed once.
+#[must_use]
+pub(crate) fn find_unused_features_with_signals(
+    project_root: &Path,
+    packages: &[(std::path::PathBuf, String, toml::Value)],
+    workspace_dependencies: Option<&toml::Value>,
+    unused_findings: &[UnusedFinding],
+    precomputed: Option<Vec<PrecomputedSignals>>,
+) -> Vec<FeatureHint> {
     let unused_set: BTreeSet<(&str, DependencyKind, &str)> = unused_findings
         .iter()
         .map(|f| (f.manifest.as_str(), f.kind, f.dependency.as_str()))
         .collect();
 
+    let signals_vec = precomputed.unwrap_or_else(|| {
+        packages
+            .iter()
+            .map(|(dir, _, manifest)| {
+                let sources = collect_sources(dir, manifest);
+                PrecomputedSignals {
+                    code: collect_signals_from_files(&sources.code, sources.skipped),
+                    build: collect_signals_from_files(&sources.build, sources.skipped),
+                }
+            })
+            .collect()
+    });
+
     let mut analyzed = Vec::with_capacity(packages.len());
-    for (dir, label, manifest) in packages {
+    for ((_, label, manifest), sig) in packages.iter().zip(signals_vec) {
         let name = manifest
             .get("package")
             .and_then(|pkg| pkg.get("name"))
             .and_then(toml::Value::as_str)
             .unwrap_or("unknown");
-        let sources = collect_sources(dir, manifest);
-        let code = collect_signals_from_files(&sources.code, sources.skipped);
-        let build = collect_signals_from_files(&sources.build, sources.skipped);
         let (ignored, _) = ignore_list(manifest);
         let forwarded = forwarded_keys(manifest);
         let mut inherited_keys = BTreeSet::new();
@@ -238,8 +286,8 @@ pub fn find_unused_features(
             name,
             manifest_label: label.as_str(),
             manifest,
-            code,
-            build,
+            code: sig.code,
+            build: sig.build,
             ignored,
             forwarded,
             inherited_keys,
