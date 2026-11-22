@@ -90,6 +90,10 @@ pub struct WorkspaceMacros {
     /// emit in `quote!` / `quote_spanned!` / `parse_quote!`, by proc-macro
     /// crate identifier.
     pub external_proc_macros: BTreeMap<String, BTreeSet<String>>,
+    /// Crates that external build-dependencies unpacked on disk emit paths to
+    /// (by package name), used to avoid treating build-only helpers such as
+    /// `syn`/`tempfile`/`regex` as runtime generated-code targets.
+    pub build_dep_emitted: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// Whether a manifest declares a proc-macro library.
@@ -115,6 +119,32 @@ pub fn proc_macro_generated(dir: &Path, manifest: &toml::Value) -> BTreeSet<Stri
 #[must_use]
 pub fn proc_macro_quoted(dir: &Path, manifest: &toml::Value) -> BTreeSet<String> {
     collect_proc_macro_paths(dir, manifest, false)
+}
+
+/// Crate identifiers that a build-dependency (`prost-build`, `cxx-build`, ...)
+/// emits in generated Rust code (`quote!` paths and `"crate::..."` string
+/// literals across its source files).
+#[must_use]
+pub fn build_dep_emitted(dir: &Path, manifest: &toml::Value) -> BTreeSet<String> {
+    let sources = collect_sources(dir, manifest);
+    let mut names = BTreeSet::new();
+    for file in &sources.code {
+        let Ok(text) = fs::read_to_string(file) else {
+            continue;
+        };
+        if let Ok(tokens) = TokenStream::from_str(&text) {
+            collect_quoted_references(tokens.clone(), &mut names);
+            let tokens: Vec<TokenTree> = tokens.into_iter().collect();
+            super::references::collect_path_literals(&tokens, &mut names);
+        } else {
+            for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                if text.contains(&format!("{word}::")) && !word.is_empty() {
+                    names.insert(word.to_owned());
+                }
+            }
+        }
+    }
+    names
 }
 
 fn collect_proc_macro_paths(
