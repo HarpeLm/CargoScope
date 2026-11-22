@@ -70,6 +70,7 @@ impl CompilerReport {
                     }
                     DependencyKind::Dev => *receives == Receives::NormalAndDev,
                     DependencyKind::Build => *receives == Receives::Build,
+                    DependencyKind::Workspace => false,
                 })
             })
             .collect();
@@ -86,10 +87,12 @@ impl CompilerReport {
     }
 
     /// Whether the compiler checks dependencies of `kind`: Cargo's lint does
-    /// not check dev-dependencies.
+    /// not check dev-dependencies, and `[workspace.dependencies]` inheritance
+    /// is purely structural.
     #[must_use]
     pub fn checks(&self, kind: DependencyKind) -> bool {
-        self.cargo_lint.is_none() || kind != DependencyKind::Dev
+        kind != DependencyKind::Workspace
+            && (self.cargo_lint.is_none() || kind != DependencyKind::Dev)
     }
 
     /// The lint the answers come from, for evidence.
@@ -357,6 +360,10 @@ pub fn refine(
     let mut refined = Vec::new();
     let mut seen = BTreeSet::new();
     for mut finding in findings {
+        if finding.kind == DependencyKind::Workspace {
+            refined.push(finding);
+            continue;
+        }
         let Some((dir, _, _)) = packages
             .iter()
             .find(|(_, label, _)| *label == finding.manifest)
