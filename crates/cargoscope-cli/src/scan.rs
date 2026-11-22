@@ -237,161 +237,227 @@ fn run_scan(options: &ScanOptions) -> Result<ExitCode, ExitCode> {
     }
     let checks = options.checks;
     let mut warnings = Vec::new();
+    let cache_dir = cargoscope_advisory::cache_dir().ok();
 
-    let (mut advisories, advisory_db_date) = if checks.advisories {
-        check_advisories(root, &inventory, options.rustsec_only, &mut warnings)?
-    } else {
-        (Vec::new(), None)
-    };
-    let config_ignore_unlikely = if checks.advisories {
-        cargoscope_cargo::config::load_advisory_ignore_unlikely(root).map_err(|error| {
-            eprintln!("CargoScope could not read the advisory ignores: {error}");
-            ExitCode::from(2)
-        })?
-    } else {
-        false
-    };
-    let (unused, feature_hints) = if checks.unused {
-        let scan = find_unused_and_feature_hints(root, &inventory, options.precise)?;
-        warnings.extend(scan.warnings);
-        (scan.unused, scan.feature_hints)
-    } else {
-        (Vec::new(), Vec::new())
-    };
-    if checks.policy || checks.advisories {
-        warnings.extend(cargoscope_cargo::config::deny_notes(root));
-    }
-    let policy = if checks.policy {
-        load_policy(root)?
-    } else {
-        None
-    };
-    let needs_licenses = policy.as_ref().is_some_and(|policy| policy.check_licenses);
-    let (mut package_info, registry_date) = if checks.licenses || checks.versions || needs_licenses
-    {
-        registry_data(root, &inventory, &mut warnings)
-    } else {
-        (vec![PackageInfo::default(); inventory.packages.len()], None)
-    };
-    // Clarified licenses (verified against on-disk license-files hashes when
-    // specified) replace the registry's everywhere in the report.
-    let (violations, mut policy_active, policy_non_dev, mut policy_targets) = match &policy {
-        Some(policy) => {
-            let (verified_clarifications, clarify_warnings) =
-                cargoscope_cargo::crate_sources::verify_clarifications(
+    let (
+        advisories,
+        advisory_db_date,
+        config_ignore_unlikely,
+        unused_res,
+        unsafe_code,
+        direct_kinds,
+        mut policy_warnings,
+        mut package_info,
+        registry_date,
+        violations,
+    ) = std::thread::scope(|scope| {
+        let unused_handle = checks.unused.then(|| {
+            scope.spawn(|| find_unused_and_feature_hints(root, &inventory, options.precise))
+        });
+        let unsafe_handle = checks.unsafe_code.then(|| {
+            scope.spawn(|| {
+                cargoscope_cargo::unsafe_code::count_unsafe(root, &inventory, cache_dir.as_deref())
+            })
+        });
+
+        let mut adv_warnings = Vec::new();
+        let (mut advisories, advisory_db_date, config_ignore_unlikely) = if checks.advisories {
+            match check_advisories(root, &inventory, options.rustsec_only, &mut adv_warnings) {
+                Ok((adv, db_date)) => {
+                    let ignore_unlikely = cargoscope_cargo::config::load_advisory_ignore_unlikely(
+                        root,
+                    )
+                    .map_err(|error| {
+                        eprintln!("CargoScope could not read the advisory ignores: {error}");
+                        ExitCode::from(2)
+                    });
+                    match ignore_unlikely {
+                        Ok(flag) => (Ok(adv), db_date, flag),
+                        Err(code) => (Err(code), None, false),
+                    }
+                }
+                Err(code) => (Err(code), None, false),
+            }
+        } else {
+            (Ok(Vec::new()), None, false)
+        };
+
+        let mut pol_warnings = Vec::new();
+        if checks.policy || checks.advisories {
+            pol_warnings.extend(cargoscope_cargo::config::deny_notes(root));
+        }
+        let policy_res = if checks.policy {
+            load_policy(root)
+        } else {
+            Ok(None)
+        };
+        let policy_ok = policy_res.as_ref().ok().and_then(Option::as_ref);
+        let needs_licenses = policy_ok.is_some_and(|policy| policy.check_licenses);
+        let (mut package_info, registry_date) =
+            if checks.licenses || checks.versions || needs_licenses {
+                registry_data(root, &inventory, &mut pol_warnings)
+            } else {
+                (vec![PackageInfo::default(); inventory.packages.len()], None)
+            };
+        let check_res = match policy_res {
+            Ok(Some(policy)) => {
+                let (verified_clarifications, clarify_warnings) =
+                    cargoscope_cargo::crate_sources::verify_clarifications(
+                        root,
+                        &inventory,
+                        &policy.license_clarifications,
+                    );
+                pol_warnings.extend(clarify_warnings);
+                policy.clarify_verified(&inventory, &mut package_info, &verified_clarifications);
+                let gathered = cargoscope_cargo::licenses::gather(
                     root,
                     &inventory,
-                    &policy.license_clarifications,
+                    &policy,
+                    &package_info,
+                    &verified_clarifications,
                 );
-            warnings.extend(clarify_warnings);
-            policy.clarify_verified(&inventory, &mut package_info, &verified_clarifications);
-            // Licenses of the project's own packages, git and other registries,
-            // and of crates without a usable `license` field (from LICENSE files).
-            let gathered = cargoscope_cargo::licenses::gather(
-                root,
-                &inventory,
-                policy,
-                &package_info,
-                &verified_clarifications,
-            );
-            for ((info, facts), license) in package_info
-                .iter_mut()
-                .zip(&gathered.facts)
-                .zip(gathered.licenses)
-            {
-                if facts.known {
-                    info.license = license;
+                for ((info, facts), license) in package_info
+                    .iter_mut()
+                    .zip(&gathered.facts)
+                    .zip(gathered.licenses)
+                {
+                    if facts.known {
+                        info.license = license;
+                    }
+                }
+                pol_warnings.extend(gathered.warnings);
+                match check_policy(
+                    root,
+                    &policy,
+                    &inventory,
+                    &package_info,
+                    registry_date.as_deref(),
+                    &verified_clarifications,
+                    &gathered.facts,
+                    &mut pol_warnings,
+                ) {
+                    Ok(checked) => Ok((
+                        Some(checked.violations),
+                        checked.active,
+                        checked.non_dev_active,
+                        policy.targets.clone(),
+                    )),
+                    Err(code) => Err(code),
                 }
             }
-            warnings.extend(gathered.warnings);
-            let checked = check_policy(
-                root,
-                policy,
-                &inventory,
-                &package_info,
-                registry_date.as_deref(),
-                &verified_clarifications,
-                &gathered.facts,
-                &mut warnings,
-            )?;
-            (
-                Some(checked.violations),
-                checked.active,
-                checked.non_dev_active,
-                policy.targets.clone(),
-            )
-        }
-        None => (None, None, None, Vec::new()),
-    };
-    keep_checked_info(&mut package_info, checks);
-
-    if policy.is_none()
-        && !advisories.is_empty()
-        && let Some(graph) = cargoscope_cargo::config::load_graph_config(root).map_err(|error| {
-            eprintln!("CargoScope could not read the policy: {error}");
-            ExitCode::from(2)
-        })?
-    {
-        policy_targets = graph.targets.clone();
-        if let Ok((packages, _)) = cargoscope_cargo::targets::active_packages(
-            root,
-            &graph.targets,
-            graph.features.as_ref(),
-            graph.exclude_dev,
-            &[],
-            false,
-        ) {
-            policy_active = Some(packages);
-        }
-    }
-    // Without `[graph]`, what any feature or platform builds: an advisory in a
-    // crate nothing builds is unlikely to matter. `cargo tree --offline` only
-    // reads the manifests; when it cannot run, no advisory is ranked that way.
-    if policy_active.is_none() && !advisories.is_empty() {
-        match cargoscope_cargo::targets::built_packages(root) {
-            Ok(packages) => policy_active = Some(packages),
-            Err(error) => warnings.push(format!(
-                "advisory relevance: `cargo tree --offline` could not list what the project builds ({}); run `cargo fetch` so that advisories in crates no feature builds are ranked unlikely",
-                error
-                    .lines()
-                    .next()
-                    .unwrap_or("failed")
-                    .trim_start_matches("`cargo tree`: ")
-                    .trim_start_matches("error: ")
-            )),
-        }
-    }
-
-    // Only labels in the report: a failure leaves the dependencies unlabelled.
-    let direct_kinds = cargoscope_cargo::direct_dependency_kinds(root).unwrap_or_default();
-    if !advisories.is_empty() {
-        let ident_tokens = if advisories
-            .iter()
-            .any(|finding| !finding.affected_functions.is_empty())
-        {
-            cargoscope_cargo::project_ident_tokens(root)
-        } else {
-            BTreeSet::new()
+            Ok(None) => Ok((None, None, None, Vec::new())),
+            Err(code) => Err(code),
         };
-        evaluate_advisory_relevance(
-            &inventory,
-            &direct_kinds,
-            &policy_targets,
-            policy_active.as_ref(),
-            policy_non_dev.as_ref(),
-            &ident_tokens,
-            &mut advisories,
-        );
-    }
-    let unsafe_code = if checks.unsafe_code {
-        cargoscope_cargo::unsafe_code::count_unsafe(
-            root,
-            &inventory,
-            cargoscope_advisory::cache_dir().ok().as_deref(),
+
+        let direct_kinds = cargoscope_cargo::direct_dependency_kinds(root).unwrap_or_default();
+        let mut graph_err: Option<ExitCode> = None;
+        if let Ok(ref mut adv_list) = advisories
+            && !adv_list.is_empty()
+            && let Ok((
+                ref checked_violations,
+                ref policy_active,
+                ref policy_non_dev,
+                ref policy_targets,
+            )) = check_res
+        {
+            let mut active = policy_active.clone();
+            let mut targets = policy_targets.clone();
+            if checked_violations.is_none() {
+                match cargoscope_cargo::config::load_graph_config(root) {
+                    Ok(Some(graph)) => {
+                        targets = graph.targets.clone();
+                        if let Ok((packages, _)) = cargoscope_cargo::targets::active_packages(
+                            root,
+                            &graph.targets,
+                            graph.features.as_ref(),
+                            graph.exclude_dev,
+                            &[],
+                            false,
+                        ) {
+                            active = Some(packages);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        eprintln!("CargoScope could not read the policy: {error}");
+                        graph_err = Some(ExitCode::from(2));
+                    }
+                }
+            }
+            if graph_err.is_none() {
+                if active.is_none() {
+                    match cargoscope_cargo::targets::built_packages(root) {
+                        Ok(packages) => active = Some(packages),
+                        Err(error) => pol_warnings.push(format!(
+                            "advisory relevance: `cargo tree --offline` could not list what the project builds ({}); run `cargo fetch` so that advisories in crates no feature builds are ranked unlikely",
+                            error
+                                .lines()
+                                .next()
+                                .unwrap_or("failed")
+                                .trim_start_matches("`cargo tree`: ")
+                                .trim_start_matches("error: ")
+                        )),
+                    }
+                }
+                let ident_tokens = if adv_list
+                    .iter()
+                    .any(|finding| !finding.affected_functions.is_empty())
+                {
+                    cargoscope_cargo::project_ident_tokens(root)
+                } else {
+                    BTreeSet::new()
+                };
+                evaluate_advisory_relevance(
+                    &inventory,
+                    &direct_kinds,
+                    &targets,
+                    active.as_ref(),
+                    policy_non_dev.as_ref(),
+                    &ident_tokens,
+                    adv_list,
+                );
+            }
+        }
+        if let Some(code) = graph_err {
+            advisories = Err(code);
+        }
+
+        let unused_res = unused_handle.map(|h| h.join().unwrap_or_else(|_| Err(ExitCode::from(2))));
+        let unsafe_code = unsafe_handle
+            .map(|h| {
+                h.join()
+                    .unwrap_or_else(|_| vec![None; inventory.packages.len()])
+            })
+            .unwrap_or_default();
+
+        let mut all_warnings = adv_warnings;
+        all_warnings.extend(pol_warnings);
+        (
+            advisories,
+            advisory_db_date,
+            config_ignore_unlikely,
+            unused_res,
+            unsafe_code,
+            direct_kinds,
+            all_warnings,
+            package_info,
+            registry_date,
+            check_res,
         )
-    } else {
-        Vec::new()
+    });
+
+    let advisories = advisories?;
+    let (unused, feature_hints) = match unused_res {
+        Some(res) => {
+            let scan = res?;
+            warnings.extend(scan.warnings);
+            (scan.unused, scan.feature_hints)
+        }
+        None => (Vec::new(), Vec::new()),
     };
+    warnings.append(&mut policy_warnings);
+    let (violations, _, _, _) = violations?;
+    keep_checked_info(&mut package_info, checks);
     let fix_versions = compute_fix_versions(&inventory, &advisories, options.rustsec_only);
     let report = Report {
         direct_kinds,
