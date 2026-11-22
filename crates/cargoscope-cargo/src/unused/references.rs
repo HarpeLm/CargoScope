@@ -28,20 +28,30 @@ impl References {
     }
 }
 
+pub(super) fn scan_parsed_file(
+    file: &Path,
+    text: String,
+    tokens: Option<TokenStream>,
+    references: &mut References,
+) {
+    if let Some(tokens) = tokens {
+        references.includes_generated_code |= includes_generated_code(tokens.clone());
+        collect_doc_text(tokens.clone(), &mut references.doc_text, file.parent());
+        collect_references(tokens, &mut references.names);
+    } else {
+        references.text_fallback.push(file.to_path_buf());
+        references.raw_text.push(text);
+    }
+}
+
 pub(super) fn scan_files(files: &[PathBuf]) -> References {
     let mut references = References::default();
     for file in files {
         let Ok(text) = fs::read_to_string(file) else {
             continue;
         };
-        if let Ok(tokens) = TokenStream::from_str(&text) {
-            references.includes_generated_code |= includes_generated_code(tokens.clone());
-            collect_doc_text(tokens.clone(), &mut references.doc_text, file.parent());
-            collect_references(tokens, &mut references.names);
-        } else {
-            references.text_fallback.push(file.clone());
-            references.raw_text.push(text);
-        }
+        let tokens = TokenStream::from_str(&text).ok();
+        scan_parsed_file(file, text, tokens, &mut references);
     }
     references
 }
