@@ -168,6 +168,16 @@ pub fn remove_dependencies(
 
     let mut outcomes = Vec::new();
     for &(section, key) in removals {
+        if section == "workspace.dependencies" {
+            outcomes.push(
+                if remove_from(&mut document, &["workspace", "dependencies"], key) {
+                    Outcome::Removed(vec![section.to_owned()])
+                } else {
+                    Outcome::Skipped(format!("`{key}` was not found in [{section}]"))
+                },
+            );
+            continue;
+        }
         let is_optional = is_optional_dependency(&document, key, &targets);
         if has_blocking_feature_reference(&document, key, is_optional) {
             outcomes.push(Outcome::Skipped(format!("`{key}` is named in [features]")));
