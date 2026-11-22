@@ -293,28 +293,57 @@ fn map_update_types(raw: &[String]) -> Vec<UpdateType> {
     out
 }
 
+/// Parsed Cargo, GitHub Actions, and Docker ecosystem configurations from
+/// `.github/dependabot.yml`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DependabotConfigs {
+    /// Merged `package-ecosystem: "cargo"` configuration, if any.
+    pub cargo: Option<UpdatesConfig>,
+    /// Merged `package-ecosystem: "github-actions"` configuration, if any.
+    pub github_actions: Option<UpdatesConfig>,
+    /// Merged `package-ecosystem: "docker"` configuration, if any.
+    pub docker: Option<UpdatesConfig>,
+}
+
 /// Parses `.github/dependabot.yml` content and returns an [`UpdatesConfig`]
 /// merged from every `package-ecosystem: "cargo"` entry, or `None` when no
 /// Cargo ecosystem block exists.
 #[must_use]
 pub fn parse_dependabot_yml(text: &str) -> Option<UpdatesConfig> {
+    parse_all_ecosystems(text).cargo
+}
+
+/// Parses `.github/dependabot.yml` content across Cargo, `github-actions`, and
+/// `docker` ecosystems.
+#[must_use]
+pub fn parse_all_ecosystems(text: &str) -> DependabotConfigs {
     let root = parse_yaml(text);
-    let updates = root.get("updates")?.as_seq()?;
-    let cargo_blocks: Vec<&Yaml> = updates
+    let Some(updates) = root.get("updates").and_then(Yaml::as_seq) else {
+        return DependabotConfigs::default();
+    };
+    DependabotConfigs {
+        cargo: merge_ecosystem_blocks(updates, "cargo"),
+        github_actions: merge_ecosystem_blocks(updates, "github-actions"),
+        docker: merge_ecosystem_blocks(updates, "docker"),
+    }
+}
+
+fn merge_ecosystem_blocks(updates: &[Yaml], ecosystem: &str) -> Option<UpdatesConfig> {
+    let blocks: Vec<&Yaml> = updates
         .iter()
         .filter(|entry| {
             entry
                 .get("package-ecosystem")
                 .and_then(Yaml::as_str)
-                .is_some_and(|eco| eco.eq_ignore_ascii_case("cargo"))
+                .is_some_and(|eco| eco.eq_ignore_ascii_case(ecosystem))
         })
         .collect();
-    if cargo_blocks.is_empty() {
+    if blocks.is_empty() {
         return None;
     }
 
     let mut config = UpdatesConfig::default();
-    for block in cargo_blocks {
+    for block in blocks {
         if let Some(limit) = block
             .get("open-pull-requests-limit")
             .and_then(Yaml::as_str)
@@ -458,6 +487,13 @@ fn parse_dependabot_cooldown(node: &Yaml, cooldown: &mut CooldownConfig) {
 /// and defining at least one `cargo` ecosystem entry.
 #[must_use]
 pub fn load(project_root: &Path) -> Option<UpdatesConfig> {
+    load_all(project_root).cargo
+}
+
+/// Loads all supported ecosystem configurations (`cargo`, `github-actions`,
+/// `docker`) from `.github/dependabot.yml` or `.yaml` if present.
+#[must_use]
+pub fn load_all(project_root: &Path) -> DependabotConfigs {
     for rel in [".github/dependabot.yml", ".github/dependabot.yaml"] {
         let path = project_root.join(rel);
         let Ok(meta) = std::fs::symlink_metadata(&path) else {
@@ -466,13 +502,11 @@ pub fn load(project_root: &Path) -> Option<UpdatesConfig> {
         if !meta.is_file() || meta.len() > 1024 * 1024 {
             continue;
         }
-        if let Ok(text) = std::fs::read_to_string(&path)
-            && let Some(config) = parse_dependabot_yml(&text)
-        {
-            return Some(config);
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            return parse_all_ecosystems(&text);
         }
     }
-    None
+    DependabotConfigs::default()
 }
 
 #[cfg(test)]
@@ -544,5 +578,40 @@ updates:
             cfg.groups[0].update_types,
             vec![UpdateType::Minor, UpdateType::Patch]
         );
+    }
+
+    #[test]
+    fn parses_github_actions_and_docker_blocks() {
+        let yml = r#"
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["ci", "dependencies"]
+    ignore:
+      - dependency-name: "actions/*"
+        update-types: ["major"]
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    cooldown:
+      default-days: 3
+"#;
+        let all = super::parse_all_ecosystems(yml);
+        assert!(all.cargo.is_none());
+        let gha = all.github_actions.expect("github-actions config");
+        assert_eq!(gha.schedule_interval.as_deref(), Some("weekly"));
+        assert_eq!(gha.labels, vec!["ci", "dependencies"]);
+        assert!(
+            gha.ignored("actions/checkout", "5.0.0", UpdateType::Major)
+                .is_some()
+        );
+
+        let docker = all.docker.expect("docker config");
+        assert_eq!(docker.schedule_interval.as_deref(), Some("daily"));
+        assert_eq!(docker.cooldown.default_days, 3);
     }
 }
