@@ -10,6 +10,7 @@ use std::process::ExitCode;
 use cargoscope_cargo::fix::{
     Outcome, remove_dependencies, remove_workspace_dependencies, workspace_references,
 };
+use cargoscope_cargo::updates::VersioningStrategy;
 use cargoscope_core::{UnusedConfidence, UnusedFinding};
 use cargoscope_report::Paint;
 
@@ -41,6 +42,12 @@ struct FixOptions {
     comment_command: Option<String>,
     /// File containing the pull request Markdown body (`--pr-body`).
     pr_body: Option<PathBuf>,
+    /// Override minimum release age in days before proposing `--updates` (default: 7).
+    cooldown: Option<u64>,
+    /// Per-dependency cooldown overrides (`CRATE=DAYS`, e.g. `serde=1`).
+    cooldown_for: Vec<(String, u64)>,
+    /// Manifest requirement update strategy (`--versioning-strategy`).
+    versioning_strategy: Option<VersioningStrategy>,
 }
 
 fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptions, String> {
@@ -87,6 +94,56 @@ fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptio
             .filter(|val| !val.trim().is_empty())
             .ok_or("Missing value for --pr-body.")?;
             options.pr_body = Some(PathBuf::from(value));
+            continue;
+        }
+        if argument == "--cooldown" || argument.starts_with("--cooldown=") {
+            let value = match argument.strip_prefix("--cooldown=") {
+                Some(value) => Some(value.to_owned()),
+                None => arguments.next(),
+            }
+            .ok_or("Missing value for --cooldown.")?;
+            let stripped = value.trim().strip_suffix('d').unwrap_or(value.trim());
+            let days = stripped.parse::<u64>().map_err(|_| {
+                format!("Invalid --cooldown value `{value}`: expected days such as 7 or 0.")
+            })?;
+            options.cooldown = Some(days);
+            continue;
+        }
+        if argument == "--cooldown-for" || argument.starts_with("--cooldown-for=") {
+            let value = match argument.strip_prefix("--cooldown-for=") {
+                Some(value) => Some(value.to_owned()),
+                None => arguments.next(),
+            }
+            .filter(|val| !val.trim().is_empty())
+            .ok_or("Missing value for --cooldown-for (expected CRATE=DAYS).")?;
+            for item in value.split(',') {
+                let (crate_name, days_raw) = item.trim().split_once('=').ok_or_else(|| {
+                    format!("Invalid --cooldown-for `{item}`: expected CRATE=DAYS (e.g. serde=1).")
+                })?;
+                let crate_name = crate_name.trim();
+                if crate_name.is_empty() {
+                    return Err("Missing crate name in --cooldown-for.".to_owned());
+                }
+                let stripped = days_raw.trim().strip_suffix('d').unwrap_or(days_raw.trim());
+                let days = stripped.parse::<u64>().map_err(|_| {
+                    format!("Invalid days `{days_raw}` for `{crate_name}` in --cooldown-for.")
+                })?;
+                options.cooldown_for.push((crate_name.to_owned(), days));
+            }
+            continue;
+        }
+        if argument == "--versioning-strategy" || argument.starts_with("--versioning-strategy=") {
+            let value = match argument.strip_prefix("--versioning-strategy=") {
+                Some(value) => Some(value.to_owned()),
+                None => arguments.next(),
+            }
+            .ok_or("Missing value for --versioning-strategy.")?;
+            let strategy = VersioningStrategy::parse(&value).ok_or_else(|| {
+                format!(
+                    "Unsupported versioning strategy `{value}`. Use auto, lockfile-only, increase-if-necessary, increase, or widen."
+                )
+            })?;
+            options.versioning_strategy = Some(strategy);
             continue;
         }
         match argument.as_str() {
@@ -157,6 +214,15 @@ fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptio
     if options.comment_command.is_some() && !options.updates {
         return Err("--comment-command requires --updates".to_owned());
     }
+    if (options.cooldown.is_some()
+        || !options.cooldown_for.is_empty()
+        || options.versioning_strategy.is_some())
+        && !options.updates
+    {
+        return Err(
+            "--cooldown, --cooldown-for, and --versioning-strategy require --updates".to_owned(),
+        );
+    }
     Ok(options)
 }
 
@@ -193,12 +259,18 @@ fn run_fix(options: &FixOptions) -> Result<ExitCode, ExitCode> {
         );
     }
     if options.updates {
-        return crate::fix_updates::run(
+        return crate::fix_updates::run_with_options(
             root,
-            options.breaking,
-            options.apply,
-            options.format,
-            options.only.as_deref(),
+            &crate::fix_updates::UpdateOptions {
+                breaking: options.breaking,
+                apply: options.apply,
+                format: options.format,
+                only: options.only.as_deref(),
+                cooldown_days: options.cooldown,
+                cooldown_overrides: &options.cooldown_for,
+                versioning_strategy: options.versioning_strategy,
+                now: None,
+            },
             paint,
         );
     }
@@ -524,5 +596,28 @@ mod tests {
         assert!(parse(&["--verify"]).is_err());
         assert!(parse(&["--advisories", "--apply", "--verify"]).is_err());
         assert!(parse(&["--updates", "--apply", "--verify"]).is_err());
+
+        let with_cd = parse(&[
+            "--updates",
+            "--cooldown",
+            "3",
+            "--cooldown-for",
+            "serde=1,tokio=0",
+            "--versioning-strategy",
+            "widen",
+        ])
+        .expect("valid updates options");
+        assert_eq!(with_cd.cooldown, Some(3));
+        assert_eq!(
+            with_cd.cooldown_for,
+            vec![("serde".to_owned(), 1), ("tokio".to_owned(), 0)]
+        );
+        assert_eq!(
+            with_cd.versioning_strategy,
+            Some(super::VersioningStrategy::Widen)
+        );
+        assert!(parse(&["--cooldown", "1"]).is_err());
+        assert!(parse(&["--updates", "--cooldown-for", "bad"]).is_err());
+        assert!(parse(&["--updates", "--versioning-strategy", "bad"]).is_err());
     }
 }
