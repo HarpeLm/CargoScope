@@ -61,6 +61,11 @@
         }
       }
     },
+    "feature_hints": {
+      "description": "Enabled dependency features with no matching static usage found (informational hints only, since 0.12.0).",
+      "type": "array",
+      "items": { "$ref": "#/$defs/feature_hint" }
+    },
     "policy": {
       "description": "Violations of the cargoscope.toml policy, or null when no policy is configured or checked.",
       "oneOf": [{ "type": "array", "items": { "$ref": "#/$defs/violation" } }, { "type": "null" }]
@@ -243,6 +248,24 @@
         "confidence": { "enum": ["likely-unused", "possibly-unused"] },
         "evidence": { "type": "array", "minItems": 1, "items": { "type": "string" } },
         "ignored_reason": { "$ref": "#/$defs/nullable_string" }
+      }
+    },
+    "feature_hint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dependency", "package", "section", "declared_by", "manifest",
+        "features", "suggested", "reason"
+      ],
+      "properties": {
+        "dependency": { "type": "string" },
+        "package": { "type": "string" },
+        "section": { "enum": ["dependencies", "dev-dependencies", "build-dependencies", "workspace.dependencies"] },
+        "declared_by": { "type": "string" },
+        "manifest": { "type": "string" },
+        "features": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "suggested": { "type": "array", "items": { "type": "string" } },
+        "reason": { "type": "string" }
       }
     }
   }
