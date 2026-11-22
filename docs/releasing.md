@@ -178,6 +178,12 @@ Released on 2026-11-22: non-yanked advisory fix selection across `fix --advisori
 - ✅ `cargo fmt`, `clippy -D warnings`, `cargo test --workspace` (304 tests), `dist plan`. Tag `v0.11.0` pushed (2026-11-22).
 - ✅ Set the version back to `1.0.0-dev`.
 
+## v0.12.0
+
+Released on 2026-11-22: native `.github/dependabot.yml` parsing, 7-day default cooldown with per-crate overrides (`--cooldown-for` / `[updates.cooldown.overrides]`), full `versioning-strategy`, `git+` & alternative registry updates, Action auto-rebase on merge conflicts, unused feature hints (#27) & static `unused` recall improvements, and 3.16× faster multi-core `--checks unused` / concurrent full scans (`871 ms` on `jdx/mise`'s 1,184 crates).
+
+- ✅ `cargo fmt`, `clippy -D warnings`, `cargo test --workspace` (314 tests), `dist plan`. Tag `v0.12.0` pushed (2026-11-22).
+
 ## One-time setup (maintainer)
 
 1. **crates.io**: create an API token with the `publish-new` and `publish-update` scopes, then add it as the repository secret `CARGO_REGISTRY_TOKEN`.
