@@ -127,6 +127,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cargoscope-bot"
+version = "1.0.0-dev"
+dependencies = [
+ "cargoscope-cargo",
+ "ring",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "cargoscope-cargo"
 version = "1.0.0-dev"
 dependencies = [
