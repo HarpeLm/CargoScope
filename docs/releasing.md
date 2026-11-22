@@ -167,7 +167,9 @@ Released on 2026-11-19: PyPI wheel matrix fix (`macos-15-intel`, `macos-15`, nat
 
 Released on 2026-11-22: OSV advisories (GitHub advisories and malicious crates alongside RustSec, `--rustsec-only`), published `cargo-vet` audits, offline `unsafe` code counter across dependency sources, advisory age warning and `< 72h` recent-release listing, 7× faster parallel sparse-index downloads in `cargoscope update` with live progress, `cargoscope fix --advisories` updating parent crates that block a fix and `(blocked)` / `(via parent)` reporting, enriched `cargoscope why` (advisories, fix, yanked status, grouped direct paths), and redesigned interactive HTML report (What to do, Supply Chain tab, dependency map).
 
-- ⬜ `cargo fmt`, `clippy -D warnings`, `cargo test --workspace`, `cargo package`, `dist plan`; tag `v0.10.0` and verify all 7 channels.
+- ✅ `cargo fmt`, `clippy -D warnings`, `cargo test --workspace` (296 tests), `cargo package --workspace --exclude cargoscope-corpus`, `dist plan`. Tag `v0.10.0` pushed (2026-11-22).
+- ✅ Verified live across all 7 channels: GitHub Release, crates.io (5 crates), PyPI (6 wheels + sdist via Trusted Publisher), npm, Docker (`:latest` + `:full`), Homebrew tap, and GitHub Action.
+- ✅ Set the version back to `1.0.0-dev`.
 
 ## One-time setup (maintainer)
 
