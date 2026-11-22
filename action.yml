@@ -16,7 +16,7 @@ inputs:
     description: none, low, medium, high or critical. Empty means the CargoScope default (any vulnerability).
     default: ""
   checks:
-    description: Comma-separated checks (inventory, advisories, unused, licenses, versions, policy). Empty means all.
+    description: Comma-separated checks (inventory, advisories, unused, licenses, versions, policy, unsafe). Empty means all.
     default: ""
   sarif:
     description: Path of the SARIF file to write.
@@ -48,6 +48,12 @@ inputs:
   updates-grouped:
     description: "With updates, one pull request for every dependency instead of one per dependency (or per [updates] group of cargoscope.toml)."
     default: "false"
+  cooldown:
+    description: "Minimum release age in days before proposing a version update (defaults to cargoscope.toml / .github/dependabot.yml, or 7 days)."
+    default: ""
+  versioning-strategy:
+    description: "Manifest requirement update strategy: auto, lockfile-only, increase-if-necessary, increase, or widen (defaults to cargoscope.toml / .github/dependabot.yml)."
+    default: ""
   labels:
     description: "Comma-separated labels for the security and update pull requests (created when missing), such as dependencies,rust."
     default: ""
@@ -227,6 +233,8 @@ runs:
         UPDATES: ${{ inputs.updates }}
         UPDATES_BRANCH: ${{ inputs.updates-branch }}
         UPDATES_GROUPED: ${{ inputs.updates-grouped }}
+        COOLDOWN: ${{ inputs.cooldown }}
+        VERSIONING_STRATEGY: ${{ inputs.versioning-strategy }}
         LABELS: ${{ inputs.labels }}
         REVIEWERS: ${{ inputs.reviewers }}
         PREFIX: ${{ inputs.commit-prefix }}
@@ -344,6 +352,51 @@ runs:
           done || true
         }
 
+        # Automatically rebases open CargoScope pull requests of PREFIX that have merge conflicts.
+        rebase_conflicting_prs() {
+          prefix="$1"; fix_args="$2"
+          git fetch -q origin "$BASE" || true
+          gh pr list --repo "$REPOSITORY" --state open --limit 200 \
+            --json number,headRefName,mergeable,mergeStateStatus,body 2>/dev/null \
+            | jq -c '.[] | select(.mergeable == "CONFLICTING" or .mergeStateStatus == "DIRTY")' \
+            | while read -r pr; do
+            number=$(echo "$pr" | jq -r .number)
+            head=$(echo "$pr" | jq -r .headRefName)
+            case "$head" in
+              "$prefix" | "$prefix"-*) ;;
+              *) continue ;;
+            esac
+            case "$kept" in
+              *" $head "*) continue ;;
+            esac
+            pr_body="$RUNNER_TEMP/cargoscope-rebase-$number.md"
+            echo "$pr" | jq -r .body > "$pr_body"
+            pkgs=$(cargoscope fix --updates "$PROJECT" --comment-command "/cargoscope rebase" --pr-body "$pr_body" 2>/dev/null | jq -r '.packages | join(",")' || true)
+            git checkout -q --detach --force "origin/$BASE" 2>/dev/null || git checkout -q --detach --force "$GITHUB_SHA"
+            only=()
+            [ -n "$pkgs" ] && only=(--only "$pkgs")
+            new_body="$RUNNER_TEMP/cargoscope-rebased-$number.md"
+            # shellcheck disable=SC2086
+            cargoscope fix $fix_args "$PROJECT" --apply --format markdown "${only[@]}" > "$new_body" || continue
+            changed=$(git status --porcelain -- '*Cargo.lock' 'Cargo.lock' '*Cargo.toml' 'Cargo.toml' | awk '{print $2}' | sort -u)
+            [ -n "$changed" ] || continue
+            git switch -q -C "$head"
+            # shellcheck disable=SC2086
+            git add $changed
+            git commit -q -m "${PREFIX}Auto-rebase conflicted update on $BASE"
+            if git -c http.https://github.com/.extraheader= push -q --force \
+              "https://x-access-token:${TOKEN}@github.com/${REPOSITORY}.git" "HEAD:refs/heads/${head}"; then
+              gh pr edit "$number" --repo "$REPOSITORY" --body-file "$new_body" > /dev/null || true
+              if [ -n "$CI_WORKFLOW" ]; then
+                gh workflow run "$CI_WORKFLOW" --repo "$REPOSITORY" --ref "$head" || true
+              fi
+              gh pr comment "$number" --repo "$REPOSITORY" \
+                --body "CargoScope: automatically rebased onto \`${BASE}\` after a merge conflict." > /dev/null || true
+              echo "Auto-rebased conflicting pull request #$number ($head)."
+            fi
+          done || true
+        }
+
         if [ "$SECURITY" = "true" ]; then
           plan="$RUNNER_TEMP/cargoscope-security-plan.json"
           if cargoscope fix --advisories "$PROJECT" --format json > "$plan"; then
@@ -358,6 +411,7 @@ runs:
             fi
             [ -n "$packages" ] || echo "No vulnerable package can be updated."
             close_obsolete "$BRANCH" "nothing left to update in this pull request (the vulnerable version is gone from the base branch, it can no longer be updated, or the pull request mode changed)."
+            rebase_conflicting_prs "$BRANCH" "--advisories"
           else
             echo "::warning::CargoScope could not plan the security updates: no pull request opened or closed."
           fi
@@ -366,10 +420,21 @@ runs:
         if [ "$UPDATES" != "none" ]; then
           fix="--updates"
           [ "$UPDATES" = "breaking" ] && fix="--updates --breaking"
+          [ -n "$COOLDOWN" ] && fix="$fix --cooldown $COOLDOWN"
+          [ -n "$VERSIONING_STRATEGY" ] && fix="$fix --versioning-strategy $VERSIONING_STRATEGY"
           git checkout -q --detach --force "$GITHUB_SHA"
           plan="$RUNNER_TEMP/cargoscope-updates-plan.json"
           # shellcheck disable=SC2086
           if cargoscope fix $fix "$PROJECT" --format json > "$plan"; then
+            if [ -z "$LABELS" ]; then
+              LABELS=$(jq -r '(.config.labels // []) | join(",")' "$plan")
+            fi
+            if [ -z "$REVIEWERS" ]; then
+              REVIEWERS=$(jq -r '(.config.reviewers // []) | join(",")' "$plan")
+            fi
+            if [ -z "$PREFIX" ]; then
+              PREFIX=$(jq -r '.config.commit_prefix // ""' "$plan")
+            fi
             packages=$(jq -r '.updates[].package' "$plan" | sort -u)
             if [ "$UPDATES_GROUPED" = "true" ]; then
               if [ -n "$packages" ]; then
@@ -392,6 +457,7 @@ runs:
             fi
             [ -n "$packages" ] || echo "Every direct dependency is up to date."
             close_obsolete "$UPDATES_BRANCH" "this update is no longer needed (the dependency was updated on the base branch, or the update mode changed)."
+            rebase_conflicting_prs "$UPDATES_BRANCH" "$fix"
           else
             echo "::warning::CargoScope could not plan the version updates: no pull request opened or closed."
           fi
