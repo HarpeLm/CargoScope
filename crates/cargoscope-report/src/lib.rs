@@ -1371,6 +1371,7 @@ mod tests {
             warnings: Vec::new(),
             direct_kinds: std::collections::BTreeMap::new(),
             unsafe_code: Vec::new(),
+            fix_versions: std::collections::BTreeMap::new(),
         }
     }
 
@@ -1651,6 +1652,23 @@ mod tests {
             "{\"name\":\"orphan\",\"version\":\"1.0.0\",\"scope\":\"transitive\",\"direct\":false,\"source\":null,\"path\":null,\"license\":null,\"latest_version\":null,\"latest_published\":null,\"latest_compatible\":null,\"compatible_published\":null,\"outdated\":false,\"outdated_kind\":\"none\",\"yanked\":null,\"last_release\":null,\"owners\":null,\"repository\":null,\"archived\":null,\"maintenance\":[],\"published\":null,\"unsafe\":null,\"audits\":null}"
         ));
         assert!(json.ends_with("\"unused\":[],\"warnings\":[]}\n"));
+    }
+
+    #[test]
+    fn hud_report_prefers_precomputed_fix_versions_over_raw_patched_bound() {
+        let mut report = sample(vec![finding(
+            AdvisoryKind::Vulnerability,
+            vec![">= 1.2.0".to_owned()],
+        )]);
+        let pkg_index = report.advisories[0].package;
+        let opts = TextOptions::default();
+        let without_override = render_text(Path::new("."), &report, opts);
+        assert!(without_override.contains("→ 1.2.0"), "{without_override}");
+
+        report.fix_versions.insert(pkg_index, "1.2.5".to_owned());
+        let with_override = render_text(Path::new("."), &report, opts);
+        assert!(with_override.contains("→ 1.2.5"), "{with_override}");
+        assert!(!with_override.contains("→ 1.2.0"), "{with_override}");
     }
 
     fn unused(
