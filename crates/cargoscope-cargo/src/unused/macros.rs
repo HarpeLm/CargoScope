@@ -147,6 +147,18 @@ pub fn build_dep_emitted(dir: &Path, manifest: &toml::Value) -> BTreeSet<String>
     names
 }
 
+pub(super) fn collect_proc_macro_tokens(
+    tokens: TokenStream,
+    include_strings: bool,
+    names: &mut BTreeSet<String>,
+) {
+    collect_quoted_references(tokens.clone(), names);
+    if include_strings {
+        let tokens: Vec<TokenTree> = tokens.into_iter().collect();
+        collect_identifier_strings(&tokens, names);
+    }
+}
+
 fn collect_proc_macro_paths(
     dir: &Path,
     manifest: &toml::Value,
@@ -159,11 +171,7 @@ fn collect_proc_macro_paths(
             continue;
         };
         if let Ok(tokens) = TokenStream::from_str(&text) {
-            collect_quoted_references(tokens.clone(), &mut names);
-            if include_strings {
-                let tokens: Vec<TokenTree> = tokens.into_iter().collect();
-                collect_identifier_strings(&tokens, &mut names);
-            }
+            collect_proc_macro_tokens(tokens, include_strings, &mut names);
         }
     }
     names
