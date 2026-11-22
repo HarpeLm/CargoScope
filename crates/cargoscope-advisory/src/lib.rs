@@ -515,6 +515,38 @@ pub(crate) fn severity_from_cvss(vector: &str) -> Option<Severity> {
     })
 }
 
+/// Returns candidate non-yanked versions above `package.version` that
+/// satisfy `patched_sets` and introduce no unignored vulnerability in
+/// `database`, oldest first.
+#[must_use]
+pub fn safe_fix_candidates(
+    database: Option<&AdvisoryDatabase>,
+    package: &cargoscope_core::Package,
+    patched_sets: &[Vec<String>],
+    ignored: &std::collections::BTreeSet<&str>,
+    registry: Option<&crates_io::RegistryCache>,
+) -> Vec<semver::Version> {
+    let cached = registry.and_then(|cache| cache.cached_versions(&package.name));
+    cargoscope_core::fix_candidates(patched_sets, &package.version, cached.as_deref())
+        .into_iter()
+        .filter(|version| {
+            !database.is_some_and(|db| {
+                let probe = Inventory {
+                    packages: vec![cargoscope_core::Package {
+                        version: version.to_string(),
+                        dependencies: Vec::new(),
+                        ..package.clone()
+                    }],
+                };
+                db.check(&probe).findings.iter().any(|found| {
+                    matches!(found.kind, AdvisoryKind::Vulnerability)
+                        && !ignored.contains(found.id.as_str())
+                })
+            })
+        })
+        .collect()
+}
+
 /// Converts Unix seconds to a `YYYY-MM-DD` UTC date.
 /// Today's date in UTC, as `YYYY-MM-DD`.
 #[must_use]
@@ -825,5 +857,47 @@ os = ["windows"]
         assert_eq!(finding.affected_functions, vec!["demo::New::extract"]);
         assert_eq!(finding.relevance, super::AdvisoryRelevance::AffectsYou);
         assert_eq!(finding.relevance_reason, None);
+    }
+
+    #[test]
+    fn safe_fix_candidates_skips_yanked_and_vulnerable_versions() {
+        let cache = temp_cache("safe-fix");
+        std::fs::create_dir_all(cache.join("crates-io/versions")).expect("dir");
+        std::fs::create_dir_all(cache.join("advisory-db/crates/demo")).expect("dir");
+        std::fs::write(
+            cache.join("crates-io/versions/demo"),
+            "1.0.0\tfalse\n1.0.1\ttrue\n1.0.2\tfalse\n1.0.3\tfalse\n",
+        )
+        .expect("versions");
+        // 1.0.2 introduces another advisory in the database; 1.0.1 is yanked.
+        let adv2 = "```toml\n[advisory]\nid = \"RUSTSEC-0000-0002\"\npackage = \"demo\"\ndate = \"2026-02-01\"\n[versions]\npatched = [\">= 1.0.3\"]\n```\n\n# Second bug\n";
+        std::fs::write(
+            cache.join("advisory-db/crates/demo/RUSTSEC-0000-0002.md"),
+            adv2,
+        )
+        .expect("adv2");
+
+        let db = AdvisoryDatabase::open(&cache).expect("db");
+        let reg = crate::crates_io::RegistryCache::open(&cache);
+        let pkg = cargoscope_core::Package {
+            name: "demo".to_owned(),
+            version: "1.0.0".to_owned(),
+            source: Some("registry+https://github.com/rust-lang/crates.io-index".to_owned()),
+            root: false,
+            direct: true,
+            dependencies: Vec::new(),
+        };
+        let patched_sets = vec![vec![">= 1.0.1".to_owned()]];
+        let ignored = std::collections::BTreeSet::new();
+        let candidates =
+            super::safe_fix_candidates(Some(&db), &pkg, &patched_sets, &ignored, Some(&reg));
+        assert_eq!(
+            candidates
+                .into_iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>(),
+            vec!["1.0.3"]
+        );
+        let _ = std::fs::remove_dir_all(&cache);
     }
 }
