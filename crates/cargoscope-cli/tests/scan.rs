@@ -1583,6 +1583,82 @@ fn scan_and_fix_remove_preexisting_orphan_workspace_dependencies() {
 }
 
 #[test]
+fn feature_hints_flag_broad_features_without_failing_scan() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-feat-hints-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).expect("src");
+
+    let manifest = "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ntokio = { version = \"1\", features = [\"full\"] }\nserde = { version = \"1\", features = [\"derive\"] }\n";
+    std::fs::write(dir.join("Cargo.toml"), manifest).expect("manifest");
+    std::fs::write(
+        dir.join("src/lib.rs"),
+        "use serde::de::DeserializeOwned;\n#[tokio::main]\nasync fn start() { let _ = tokio::sync::Notify::new(); }\npub fn takes<T: DeserializeOwned>() {}\n",
+    )
+    .expect("lib");
+    let registry = "source = \"registry+https://github.com/rust-lang/crates.io-index\"";
+    std::fs::write(
+        dir.join("Cargo.lock"),
+        format!(
+            "version = 4\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\"serde\", \"tokio\"]\n\n[[package]]\nname = \"serde\"\nversion = \"1.0.219\"\n{registry}\n\n[[package]]\nname = \"tokio\"\nversion = \"1.44.0\"\n{registry}\n"
+        ),
+    )
+    .expect("lock");
+
+    // HUD lists FEATURE HINTS and stays exit 0.
+    let hud = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+        .env("CARGO_HOME", fixture("empty-cargo-home"))
+        .args(["scan", "--checks", "inventory,unused"])
+        .arg(&dir)
+        .output()
+        .expect("scan runs");
+    assert_eq!(hud.status.code(), Some(0));
+    let hud_text = stdout(&hud);
+    assert!(hud_text.contains("FEATURE HINTS"), "{hud_text}");
+    assert!(hud_text.contains("tokio"), "{hud_text}");
+    assert!(hud_text.contains("serde"), "{hud_text}");
+
+    // JSON exports `feature_hints` matching the schema; HTML renders them.
+    let json_raw = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+        .env("CARGO_HOME", fixture("empty-cargo-home"))
+        .args(["scan", "--checks", "inventory,unused", "--format", "json"])
+        .arg(&dir)
+        .output()
+        .expect("json scan");
+    assert_eq!(json_raw.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&json_raw.stdout).expect("json");
+    let hints = json["feature_hints"]
+        .as_array()
+        .expect("feature_hints array");
+    assert_eq!(hints.len(), 2, "{hints:?}");
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../../../docs/schema/report-v1.json")).expect("schema");
+    assert!(jsonschema::is_valid(&schema, &json), "{json}");
+
+    let html = stdout(
+        &Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+            .env("CARGOSCOPE_CACHE_DIR", fixture("advisory-cache"))
+            .env("CARGO_HOME", fixture("empty-cargo-home"))
+            .args(["scan", "--checks", "inventory,unused", "--format", "html"])
+            .arg(&dir)
+            .output()
+            .expect("html scan"),
+    );
+    assert!(html.contains("Unused feature hints"), "{html}");
+
+    // `cargoscope fix` never strips dependency features automatically.
+    let fixed = fix(&dir, &["--apply"]);
+    assert_eq!(fixed.status.code(), Some(0));
+    assert_eq!(
+        std::fs::read_to_string(dir.join("Cargo.toml")).expect("manifest"),
+        manifest
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn multiple_versions_rule_fails_the_scan_unless_the_crate_is_skipped() {
     let dir = std::env::temp_dir().join(format!("cargoscope-dups-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -3704,4 +3780,242 @@ fn old_advisory_data_gets_a_warning() {
     std::fs::write(db.join("fetched-at"), now.to_string()).expect("write date");
     assert!(!warns(&cache));
     let _ = std::fs::remove_dir_all(&cache);
+}
+
+fn civil_today_ymd() -> String {
+    let days = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs()
+        / 86_400) as i64;
+    // Howard Hinnant civil-from-days algorithm.
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if m <= 2 { 1 } else { 0 };
+    format!("{year:04}-{m:02}-{d:02}")
+}
+
+#[test]
+fn fix_updates_reads_dependabot_yml_applies_7d_cooldown_and_overrides() {
+    let dir =
+        std::env::temp_dir().join(format!("cargoscope-dependabot-fix-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let proj = dir.join("proj");
+    let cache = dir.join("cache");
+    copy_dir(&fixture("simple"), &proj);
+    copy_dir(&fixture("advisory-cache"), &cache);
+
+    // Put serde_json 1.0.200 inside today's 7-day cooldown window.
+    let today = civil_today_ymd();
+    std::fs::write(
+        cache.join("crates-io/versions/serde_json"),
+        format!("1.0.128\tfalse\t2024-09-01\n1.0.200\tfalse\t{today}\n"),
+    )
+    .expect("write versions cache");
+
+    std::fs::create_dir_all(proj.join(".github")).expect("mkdir .github");
+    std::fs::write(
+        proj.join(".github/dependabot.yml"),
+        r#"version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    versioning-strategy: "lockfile-only"
+    labels: ["dependencies", "rust"]
+    reviewers: ["alice"]
+    commit-message:
+      prefix: "chore(deps): "
+"#,
+    )
+    .expect("write dependabot.yml");
+
+    // Fake cargo binary returning exit 0 so update probing succeeds offline.
+    let fake_src = dir.join("fake_cargo.rs");
+    let fake_cargo = dir.join(format!("fake_cargo{}", std::env::consts::EXE_SUFFIX));
+    std::fs::write(&fake_src, "fn main() {}").expect("write fake cargo");
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    assert!(
+        Command::new(rustc)
+            .arg(&fake_src)
+            .arg("-o")
+            .arg(&fake_cargo)
+            .status()
+            .expect("rustc runs")
+            .success()
+    );
+
+    let out = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", &cache)
+        .env("CARGO_HOME", fixture("empty-cargo-home"))
+        .env("CARGO", &fake_cargo)
+        .args(["fix", "--updates", "--format", "json"])
+        .arg(&proj)
+        .output()
+        .expect("fix updates json");
+    assert_eq!(out.status.code(), Some(0));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
+    assert_eq!(
+        json["config"]["cooldown_default_days"],
+        serde_json::json!(7)
+    );
+    assert_eq!(
+        json["config"]["versioning_strategy"],
+        serde_json::json!("lockfile-only")
+    );
+    assert_eq!(
+        json["config"]["labels"],
+        serde_json::json!(["dependencies", "rust"])
+    );
+    assert_eq!(json["config"]["reviewers"], serde_json::json!(["alice"]));
+    assert_eq!(
+        json["config"]["commit_prefix"],
+        serde_json::json!("chore(deps): ")
+    );
+    assert_eq!(json["cooldown"][0]["package"], "serde_json");
+    assert_eq!(json["cooldown"][0]["required_days"], 7);
+    assert!(json["updates"].as_array().expect("updates").is_empty());
+
+    // Override per dependency + strategy via CLI.
+    let overridden = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", &cache)
+        .env("CARGO_HOME", fixture("empty-cargo-home"))
+        .env("CARGO", &fake_cargo)
+        .args([
+            "fix",
+            "--updates",
+            "--cooldown-for",
+            "serde_json=0",
+            "--versioning-strategy",
+            "widen",
+            "--format",
+            "json",
+        ])
+        .arg(&proj)
+        .output()
+        .expect("fix updates override");
+    assert_eq!(overridden.status.code(), Some(0));
+    let over_json: serde_json::Value =
+        serde_json::from_slice(&overridden.stdout).expect("valid JSON");
+    assert_eq!(over_json["config"]["versioning_strategy"], "widen");
+    assert!(
+        over_json["cooldown"]
+            .as_array()
+            .expect("cooldown")
+            .is_empty()
+    );
+    assert_eq!(over_json["updates"][0]["package"], "serde_json");
+    assert_eq!(over_json["updates"][0]["to"], "1.0.200");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fix_updates_tracks_git_dependency_commits() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-git-update-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let upstream = dir.join("upstream");
+    let proj = dir.join("proj");
+    let cargo_home = dir.join("cargo-home");
+    let cache = dir.join("cache");
+    std::fs::create_dir_all(upstream.join("src")).expect("mkdir upstream");
+    std::fs::create_dir_all(proj.join("src")).expect("mkdir proj");
+    std::fs::create_dir_all(&cargo_home).expect("mkdir cargo home");
+    std::fs::create_dir_all(&cache).expect("mkdir cache");
+
+    std::fs::write(
+        upstream.join("Cargo.toml"),
+        "[package]\nname = \"gitdep\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write upstream manifest");
+    std::fs::write(upstream.join("src/lib.rs"), "pub fn v() -> u32 { 1 }\n").expect("write lib.rs");
+
+    let run_git = |cwd: &std::path::Path, args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run_git(&upstream, &["init", "-q"]);
+    run_git(&upstream, &["config", "user.name", "Test"]);
+    run_git(&upstream, &["config", "user.email", "test@example.com"]);
+    run_git(&upstream, &["add", "."]);
+    run_git(&upstream, &["commit", "-q", "-m", "initial"]);
+
+    let repo_url = format!("file://{}", upstream.display());
+    std::fs::write(
+        proj.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"consumer\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ngitdep = {{ git = \"{repo_url}\" }}\n"
+        ),
+    )
+    .expect("write consumer manifest");
+    std::fs::write(proj.join("src/main.rs"), "fn main() {}\n").expect("write main.rs");
+
+    assert!(
+        Command::new("cargo")
+            .current_dir(&proj)
+            .env("CARGO_HOME", &cargo_home)
+            .args(["generate-lockfile", "-q"])
+            .status()
+            .expect("cargo generate-lockfile")
+            .success()
+    );
+    let lock_before = std::fs::read_to_string(proj.join("Cargo.lock")).expect("read Cargo.lock");
+
+    // Push a second commit to upstream without changing version (0.1.0 -> new rev).
+    std::fs::write(upstream.join("src/lib.rs"), "pub fn v() -> u32 { 2 }\n")
+        .expect("update lib.rs");
+    run_git(&upstream, &["add", "src/lib.rs"]);
+    run_git(&upstream, &["commit", "-q", "-m", "second"]);
+
+    let plan = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", &cache)
+        .env("CARGO_HOME", &cargo_home)
+        .args(["fix", "--updates", "--format", "json"])
+        .arg(&proj)
+        .output()
+        .expect("fix updates git");
+    assert_eq!(
+        plan.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&plan.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&plan.stdout).expect("valid JSON");
+    assert_eq!(json["updates"][0]["package"], "gitdep");
+    assert_eq!(json["updates"][0]["is_git"], serde_json::json!(true));
+
+    let applied = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", &cache)
+        .env("CARGO_HOME", &cargo_home)
+        .args(["fix", "--updates", "--apply"])
+        .arg(&proj)
+        .output()
+        .expect("apply git update");
+    assert_eq!(
+        applied.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    let lock_after = std::fs::read_to_string(proj.join("Cargo.lock")).expect("read updated lock");
+    assert_ne!(lock_before, lock_after);
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
