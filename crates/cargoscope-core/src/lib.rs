@@ -641,6 +641,8 @@ pub enum DependencyKind {
     Dev,
     /// `[build-dependencies]`.
     Build,
+    /// `[workspace.dependencies]`.
+    Workspace,
 }
 
 impl DependencyKind {
@@ -651,6 +653,7 @@ impl DependencyKind {
             Self::Normal => "dependencies",
             Self::Dev => "dev-dependencies",
             Self::Build => "build-dependencies",
+            Self::Workspace => "workspace.dependencies",
         }
     }
 }
@@ -941,6 +944,8 @@ pub struct Checks {
     pub versions: bool,
     /// Check the policy of `cargoscope.toml`, when the file defines one.
     pub policy: bool,
+    /// Count uses of `unsafe` in dependency sources on disk.
+    pub unsafe_code: bool,
 }
 
 impl Checks {
@@ -951,16 +956,18 @@ impl Checks {
         licenses: true,
         versions: true,
         policy: true,
+        unsafe_code: true,
     };
 
     /// Names accepted by `--checks`, in report order.
-    pub const NAMES: [&'static str; 6] = [
+    pub const NAMES: [&'static str; 7] = [
         "inventory",
         "advisories",
         "unused",
         "licenses",
         "versions",
         "policy",
+        "unsafe",
     ];
 
     /// Parses a comma-separated list such as `inventory,advisories`.
@@ -975,6 +982,7 @@ impl Checks {
             licenses: false,
             versions: false,
             policy: false,
+            unsafe_code: false,
         };
         for name in list
             .split(',')
@@ -988,6 +996,7 @@ impl Checks {
                 "licenses" => checks.licenses = true,
                 "versions" => checks.versions = true,
                 "policy" => checks.policy = true,
+                "unsafe" => checks.unsafe_code = true,
                 other => return Err(other.to_owned()),
             }
         }
@@ -1004,6 +1013,7 @@ impl Checks {
             self.licenses,
             self.versions,
             self.policy,
+            self.unsafe_code,
         ];
         Self::NAMES
             .iter()
@@ -1230,11 +1240,20 @@ mod tests {
     #[test]
     fn parses_check_lists() {
         let checks = Checks::parse("inventory, advisories,versions").expect("valid");
-        assert!(checks.advisories && checks.versions && !checks.unused && !checks.licenses);
+        assert!(
+            checks.advisories
+                && checks.versions
+                && !checks.unused
+                && !checks.licenses
+                && !checks.unsafe_code
+        );
         assert_eq!(
             checks.enabled(),
             vec!["inventory", "advisories", "versions"]
         );
+        let with_unsafe = Checks::parse("inventory,unsafe").expect("valid");
+        assert!(with_unsafe.unsafe_code && !with_unsafe.advisories);
+        assert_eq!(with_unsafe.enabled(), vec!["inventory", "unsafe"]);
         assert_eq!(Checks::parse("inventory,typo"), Err("typo".to_owned()));
         assert_eq!(Checks::default().enabled(), Checks::NAMES.to_vec());
     }
