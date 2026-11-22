@@ -9,7 +9,7 @@ A release is started by pushing a version tag. Everything else runs in GitHub Ac
 | Homebrew (`brew install HarpeLm/tap/cargoscope`) | `release.yml` | `HarpeLm/homebrew-tap` repository and `HOMEBREW_TAP_TOKEN` secret |
 | npm (`npx cargoscope`) | `release.yml` | `NPM_TOKEN` secret |
 | PyPI (`pip install cargoscope`, `uvx cargoscope`) | `pypi.yml` | `pypi` GitHub environment (configured) + PyPI Pending Publisher (no token) |
-| GitHub Action (`uses: HarpeLm/CargoScope@v0.9.1`) | `action.yml` at the repository root | The GitHub Release |
+| GitHub Action (`uses: HarpeLm/CargoScope@v0.10.0`) | `action.yml` at the repository root | The GitHub Release |
 | Container images (`ghcr.io/harpelm/cargoscope`) | `docker/Dockerfile`, `.github/workflows/docker.yml` | The Docker workflow, once Release succeeds (or by hand with a tag) |
 
 ## v0.1.0 checklist
@@ -162,6 +162,12 @@ Released on 2026-11-19: PyPI wheel matrix fix (`macos-15-intel`, `macos-15`, nat
 - ✅ `cargo fmt`, `clippy -D warnings`, `cargo test --workspace` (276 tests), `cargo package --workspace --exclude cargoscope-corpus`, `dist plan`. Tag `v0.9.1` pushed (2026-11-19) after a manual `pypi.yml` run built the 6 wheels and the sdist.
 - ✅ First PyPI publish through Trusted Publisher (no token): 6 wheels + sdist with attestations; `pip install cargoscope` and `uvx cargoscope` report 0.9.1. GitHub Release, crates.io (5 crates), Homebrew and the installer report 0.9.1; npm and Docker follow after processing.
 - ✅ Set the version back to `1.0.0-dev`.
+
+## v0.10.0
+
+Released on 2026-11-22: OSV advisories (GitHub advisories and malicious crates alongside RustSec, `--rustsec-only`), published `cargo-vet` audits, offline `unsafe` code counter across dependency sources, advisory age warning and `< 72h` recent-release listing, 7× faster parallel sparse-index downloads in `cargoscope update` with live progress, `cargoscope fix --advisories` updating parent crates that block a fix and `(blocked)` / `(via parent)` reporting, enriched `cargoscope why` (advisories, fix, yanked status, grouped direct paths), and redesigned interactive HTML report (What to do, Supply Chain tab, dependency map).
+
+- ⬜ `cargo fmt`, `clippy -D warnings`, `cargo test --workspace`, `cargo package`, `dist plan`; tag `v0.10.0` and verify all 7 channels.
 
 ## One-time setup (maintainer)
 

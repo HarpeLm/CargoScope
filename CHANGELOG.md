@@ -2,7 +2,7 @@
 
 All notable changes to CargoScope are documented in this file.
 
-## Unreleased
+## 0.10.0 (2026-11-22)
 
 - `cargoscope fix --advisories`: when a fix is a breaking version that the crates pulling the package in do not accept, updates those crates within their range (`cargo update -p xcb`) if that moves the package to a fixed version. On halloy this fixes both quick-xml versions (xcb 1.7.0 → 1.7.1, wayland-scanner 0.31.10 → 0.31.11), where every update used to be refused. Packages that stay blocked get a plain reason (`xcb 1.7.0 requires quick-xml ^0.30.0, and the fix is 0.41.0`) with any newer release of the crates holding them back, instead of Cargo's error (`no matching package named crypto-bigint found` when elliptic-curve asks for 0.5); with nothing to update, the summary no longer suggests `--apply`. The scan, the HTML report and `why` mark such fixes `(via parent)` and count them for `fix --advisories`.
 - Terminal report: a fix outside the SemVer range of a transitive crate is shown as `→ 0.41.0 (blocked)`, with the crates that have to accept it first (`waits on a new xcb release`), instead of a fix that `cargo update` cannot apply. Next steps count only the fixes `fix --advisories` can apply, and point to `cargoscope why` for the blocked ones. The HTML report and `why` use the same rule, and name every crate that holds the fix back.
