@@ -20,13 +20,14 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use cargoscope_advisory::crate_files::CrateFiles;
-use cargoscope_cargo::updates::{DependencyType, UpdateType, UpdatesConfig};
+use cargoscope_advisory::crates_io::{RegistryCache, ReleaseTime};
+use cargoscope_cargo::updates::{DependencyType, UpdateType, UpdatesConfig, VersioningStrategy};
 use cargoscope_core::{DependencyKind, Inventory, MaintenanceConcern, Package, PackageInfo};
 
 use crate::execution_error;
 use crate::fix_advisories::{
-    Format, Manifest, apply_manifest_update, cargo_update, probe_manifest_update, read_manifests,
-    reason,
+    Format, Manifest, apply_manifest_update_with_widen, cargo_update,
+    probe_manifest_update_with_widen, read_manifests, reason, run_cargo_update, strip_ansi,
 };
 use crate::update_notes::{
     LockDiff, project_rust_version, release_notes, rust_version_key, sanitize_notes,
@@ -354,21 +355,153 @@ enum Plan {
         spec: String,
         to: String,
         kind: Kind,
-        /// Manifests whose requirement is raised (breaking updates only).
+        /// Manifests whose requirement is raised (breaking updates or `increase`/`widen`).
         manifests: Vec<String>,
         /// A newer major version Cargo refused, and why (when `--breaking`
         /// fell back to the compatible update).
         breaking_blocked: Option<(String, String)>,
+        /// True when updating a `git+...` dependency (applied with `cargo update -p` without `--precise`).
+        is_git: bool,
+        /// Newer release skipped due to cooldown, when an older eligible release was chosen instead.
+        cooldown_skipped: Option<String>,
     },
     Blocked {
         to: String,
         reason: String,
     },
-    /// Skipped by `[updates] ignore` in cargoscope.toml.
+    /// Skipped by `[updates] ignore` in cargoscope.toml or `.github/dependabot.yml`.
     Ignored {
         to: String,
         reason: String,
     },
+    /// Held back by the release age cooldown (default 7 days).
+    Cooldown {
+        to: String,
+        age_days: u64,
+        required_days: u64,
+    },
+}
+
+enum CooldownPick {
+    Use {
+        version: String,
+        skipped_note: Option<String>,
+    },
+    Held {
+        to: String,
+        age_days: u64,
+        required_days: u64,
+    },
+}
+
+fn pick_with_cooldown(
+    package: &str,
+    current: &str,
+    candidate: &str,
+    compatible_only: bool,
+    releases: Option<&[ReleaseTime]>,
+    config: &UpdatesConfig,
+    now_unix: u64,
+) -> CooldownPick {
+    let Some(update_type) = UpdateType::between(current, candidate) else {
+        return CooldownPick::Use {
+            version: candidate.to_owned(),
+            skipped_note: None,
+        };
+    };
+    let required_days = config.cooldown.days_for(package, update_type);
+    if required_days == 0 {
+        return CooldownPick::Use {
+            version: candidate.to_owned(),
+            skipped_note: None,
+        };
+    }
+    let Some(releases) = releases else {
+        return CooldownPick::Use {
+            version: candidate.to_owned(),
+            skipped_note: None,
+        };
+    };
+    let pub_unix = releases
+        .iter()
+        .find(|r| r.version == candidate)
+        .and_then(|r| r.published_unix);
+    let Some(pub_ts) = pub_unix else {
+        return CooldownPick::Use {
+            version: candidate.to_owned(),
+            skipped_note: None,
+        };
+    };
+    let age_secs = now_unix.saturating_sub(pub_ts);
+    let required_secs = required_days.saturating_mul(86_400);
+    if age_secs >= required_secs {
+        return CooldownPick::Use {
+            version: candidate.to_owned(),
+            skipped_note: None,
+        };
+    }
+    let age_days = age_secs / 86_400;
+    let cur_parsed = semver::Version::parse(current).ok();
+    let best_older = cur_parsed.as_ref().and_then(|cur| {
+        let mut eligible: Vec<(&str, semver::Version)> = releases
+            .iter()
+            .filter(|r| !r.yanked)
+            .filter(|r| {
+                r.published_unix
+                    .is_some_and(|ts| now_unix.saturating_sub(ts) >= required_secs)
+            })
+            .filter_map(|r| {
+                let v = semver::Version::parse(&r.version).ok()?;
+                if v <= *cur {
+                    return None;
+                }
+                if !v.pre.is_empty() && cur.pre.is_empty() {
+                    return None;
+                }
+                if compatible_only && !cargoscope_core::is_semver_compatible(cur, &v) {
+                    return None;
+                }
+                Some((r.version.as_str(), v))
+            })
+            .collect();
+        eligible.sort_by(|(_, a), (_, b)| a.cmp(b));
+        eligible.pop().map(|(s, _)| s.to_owned())
+    });
+    if let Some(version) = best_older {
+        let note = format!(
+            "{candidate} published {age_days}d ago (< {required_days}d cooldown; override with `--cooldown-for {package}=1` or `[updates.cooldown.overrides]`)"
+        );
+        CooldownPick::Use {
+            version,
+            skipped_note: Some(note),
+        }
+    } else {
+        CooldownPick::Held {
+            to: candidate.to_owned(),
+            age_days,
+            required_days,
+        }
+    }
+}
+
+/// Options controlling `cargoscope fix --updates`.
+pub struct UpdateOptions<'a> {
+    /// Also consider newer SemVer-breaking major/0.x lines.
+    pub breaking: bool,
+    /// Write changes to `Cargo.lock` and `Cargo.toml`.
+    pub apply: bool,
+    /// Output format (`Text`, `Markdown`, or `Json`).
+    pub format: Format,
+    /// Optional dependency name filter.
+    pub only: Option<&'a [String]>,
+    /// Override default cooldown days (7 by default).
+    pub cooldown_days: Option<u64>,
+    /// Per-dependency cooldown overrides `(crate, days)`.
+    pub cooldown_overrides: &'a [(String, u64)],
+    /// Manifest requirement update strategy override.
+    pub versioning_strategy: Option<VersioningStrategy>,
+    /// Scan clock in Unix seconds (`None` uses system wall-clock).
+    pub now: Option<u64>,
 }
 
 /// Why `[updates] ignore` skips moving `name` from `from` to `to`, if it does.
@@ -391,69 +524,169 @@ fn breaking_target<'a>(info: &'a PackageInfo, current: &str) -> Option<&'a str> 
         .then_some(latest)
 }
 
+struct PlanContext<'a> {
+    root: &'a Path,
+    strategy: VersioningStrategy,
+    breaking: bool,
+    config: &'a UpdatesConfig,
+    releases: Option<&'a [ReleaseTime]>,
+    now_unix: u64,
+}
+
 fn plan_package(
-    root: &Path,
+    ctx: &PlanContext<'_>,
     package: &Package,
     info: &PackageInfo,
-    breaking: bool,
-    config: &UpdatesConfig,
     manifests: &mut Option<Vec<Manifest>>,
 ) -> Result<Option<Plan>, ExitCode> {
+    let root = ctx.root;
+    let config = ctx.config;
+    let strategy = ctx.strategy;
+    let widen = strategy == VersioningStrategy::Widen;
+    let allow_manifest_edit = strategy != VersioningStrategy::LockfileOnly;
+    let always_edit_manifest = strategy == VersioningStrategy::Increase;
+    let allow_breaking = ctx.breaking
+        || matches!(
+            strategy,
+            VersioningStrategy::Increase | VersioningStrategy::Widen
+        );
+
     let spec = format!("{}@{}", package.name, package.version);
-    let compatible = info.compatible_upgrade(&package.version).map(str::to_owned);
+    let compatible_raw = info.compatible_upgrade(&package.version).map(str::to_owned);
     let mut breaking_blocked = None;
     let mut ignored = None;
+    let mut cooldown_held: Option<Plan> = None;
 
-    let breaking_target = breaking_target(info, &package.version).filter(|target| {
-        match ignore_reason(config, &package.name, &package.version, target) {
-            Some(reason) => {
-                ignored = Some(Plan::Ignored {
-                    to: (*target).to_owned(),
-                    reason,
+    let mut breaking_plan: Option<(String, Option<String>)> = None;
+    if allow_breaking
+        && allow_manifest_edit
+        && let Some(target) = breaking_target(info, &package.version)
+    {
+        match pick_with_cooldown(
+            &package.name,
+            &package.version,
+            target,
+            false,
+            ctx.releases,
+            config,
+            ctx.now_unix,
+        ) {
+            CooldownPick::Held {
+                to,
+                age_days,
+                required_days,
+            } => {
+                cooldown_held = Some(Plan::Cooldown {
+                    to,
+                    age_days,
+                    required_days,
                 });
-                false
             }
-            None => true,
+            CooldownPick::Use {
+                version,
+                skipped_note,
+            } => {
+                if let Some(reason) =
+                    ignore_reason(config, &package.name, &package.version, &version)
+                {
+                    ignored = Some(Plan::Ignored {
+                        to: version,
+                        reason,
+                    });
+                } else {
+                    breaking_plan = Some((version, skipped_note));
+                }
+            }
         }
-    });
-    if breaking && let Some(target) = breaking_target {
+    }
+
+    if let Some((target, cooldown_skipped)) = breaking_plan {
         let loaded = match manifests {
             Some(loaded) => loaded,
             None => manifests.insert(read_manifests(root)?),
         };
-        // A requirement never carries build metadata (`1.2.1`, not
-        // `1.2.1+spec-1.1.0`); it still matches that version.
-        let mut version = semver::Version::parse(target).map_err(|_| ExitCode::from(2))?;
+        let mut version = semver::Version::parse(&target).map_err(|_| ExitCode::from(2))?;
         version.build = semver::BuildMetadata::EMPTY;
         let target = version.to_string();
-        match probe_manifest_update(root, package, &version, loaded) {
+        match probe_manifest_update_with_widen(root, package, &version, loaded, widen) {
             Ok(Some(labels)) => {
                 return Ok(Some(Plan::Update {
                     spec,
-                    to: target.clone(),
+                    to: target,
                     kind: Kind::Breaking,
                     manifests: labels,
                     breaking_blocked: None,
+                    is_git: false,
+                    cooldown_skipped,
                 }));
             }
             Ok(None) => {
-                breaking_blocked = Some((
-                    target.clone(),
-                    "no manifest of the project declares it".to_owned(),
-                ));
+                breaking_blocked =
+                    Some((target, "no manifest of the project declares it".to_owned()));
             }
             Err(error) => breaking_blocked = Some((target, reason(&error))),
         }
     }
 
-    let Some(to) = compatible else {
+    let Some(compat_candidate) = compatible_raw else {
         return Ok(breaking_blocked
             .map(|(to, reason)| Plan::Blocked { to, reason })
-            .or(ignored.filter(|_| breaking)));
+            .or(ignored.filter(|_| allow_breaking))
+            .or(cooldown_held));
     };
+
+    let (to, cooldown_skipped) = match pick_with_cooldown(
+        &package.name,
+        &package.version,
+        &compat_candidate,
+        true,
+        ctx.releases,
+        config,
+        ctx.now_unix,
+    ) {
+        CooldownPick::Held {
+            to,
+            age_days,
+            required_days,
+        } => {
+            return Ok(Some(cooldown_held.unwrap_or(Plan::Cooldown {
+                to,
+                age_days,
+                required_days,
+            })));
+        }
+        CooldownPick::Use {
+            version,
+            skipped_note,
+        } => (version, skipped_note),
+    };
+
     if let Some(reason) = ignore_reason(config, &package.name, &package.version, &to) {
         return Ok(Some(Plan::Ignored { to, reason }));
     }
+
+    if always_edit_manifest {
+        let loaded = match manifests {
+            Some(loaded) => loaded,
+            None => manifests.insert(read_manifests(root)?),
+        };
+        let mut version = semver::Version::parse(&to).map_err(|_| ExitCode::from(2))?;
+        version.build = semver::BuildMetadata::EMPTY;
+        if let Ok(Some(labels)) =
+            probe_manifest_update_with_widen(root, package, &version, loaded, false)
+        {
+            return Ok(Some(Plan::Update {
+                spec,
+                to: version.to_string(),
+                kind: Kind::Compatible,
+                manifests: labels,
+                breaking_blocked,
+                is_git: false,
+                cooldown_skipped,
+            }));
+        }
+    }
+
     let lock_error = match cargo_update(root, &spec, &to, true) {
         Ok(()) => {
             return Ok(Some(Plan::Update {
@@ -462,12 +695,25 @@ fn plan_package(
                 kind: Kind::Compatible,
                 manifests: Vec::new(),
                 breaking_blocked,
+                is_git: false,
+                cooldown_skipped,
             }));
         }
         Err(error) => error,
     };
+
+    if !allow_manifest_edit {
+        return Ok(Some(Plan::Blocked {
+            to,
+            reason: format!(
+                "versioning-strategy is `lockfile-only`; {}",
+                reason(&lock_error)
+            ),
+        }));
+    }
+
     // A requirement that holds the version back (`=0.4.19`, `~1.2.0`, `<1.5`):
-    // raise it in the manifests, as Dependabot does; a pin stays a pin.
+    // raise or widen it in the manifests, as Dependabot does.
     let loaded = match manifests {
         Some(loaded) => loaded,
         None => manifests.insert(read_manifests(root)?),
@@ -475,13 +721,15 @@ fn plan_package(
     let mut version = semver::Version::parse(&to).map_err(|_| ExitCode::from(2))?;
     version.build = semver::BuildMetadata::EMPTY;
     Ok(Some(
-        match probe_manifest_update(root, package, &version, loaded) {
+        match probe_manifest_update_with_widen(root, package, &version, loaded, widen) {
             Ok(Some(labels)) => Plan::Update {
                 spec,
                 to: version.to_string(),
                 kind: Kind::Compatible,
                 manifests: labels,
                 breaking_blocked,
+                is_git: false,
+                cooldown_skipped,
             },
             Ok(None) | Err(_) => Plan::Blocked {
                 to,
@@ -491,18 +739,100 @@ fn plan_package(
     ))
 }
 
-fn apply(root: &Path, rows: &[Row], manifests: &mut Option<Vec<Manifest>>) -> Result<(), ExitCode> {
+/// Parses `cargo update -p <spec> --dry-run` output for a git or private-registry
+/// dependency. Returns `(new_label, is_git)` when Cargo found an update.
+fn parse_non_crates_io_update(
+    stderr: &str,
+    name: &str,
+    from: &str,
+    source: &str,
+) -> Option<(String, bool)> {
+    let prefix = format!("Updating {name} v{from}");
+    for raw_line in stderr.lines() {
+        let line = raw_line.trim();
+        let Some(rest) = line.strip_prefix(&prefix) else {
+            continue;
+        };
+        let Some((_, after)) = rest.split_once("->") else {
+            continue;
+        };
+        let after = after.trim();
+        if source.starts_with("git+") {
+            let short = |s: &str| s.chars().take(7).collect::<String>();
+            if let Some(hash) = after.rsplit('#').next() {
+                let sha = hash.trim_end_matches(')');
+                if after.starts_with('v')
+                    && let Some((ver, _)) = after.split_once(' ')
+                {
+                    let ver = ver.trim_start_matches('v');
+                    return Some((format!("{ver} (#{})", short(sha)), true));
+                }
+                return Some((format!("{from} (#{})", short(sha)), true));
+            }
+            return Some((after.trim_start_matches('v').to_owned(), true));
+        }
+        let target = after
+            .split_whitespace()
+            .next()
+            .unwrap_or(after)
+            .trim_start_matches('v');
+        if !target.is_empty() && target != from {
+            return Some((target.to_owned(), false));
+        }
+    }
+    None
+}
+
+fn probe_non_crates_io_package(
+    root: &Path,
+    package: &Package,
+    config: &UpdatesConfig,
+) -> Option<Plan> {
+    let source = package.source.as_deref()?;
+    if !source.starts_with("git+") && !source.starts_with("registry+") {
+        return None;
+    }
+    let spec = format!("{}@{}", package.name, package.version);
+    let stderr = run_cargo_update(root, &spec, None, true).ok()?;
+    let clean = strip_ansi(&stderr);
+    let (to, is_git) = parse_non_crates_io_update(&clean, &package.name, &package.version, source)?;
+    if let Some(reason) = ignore_reason(config, &package.name, &package.version, &to) {
+        return Some(Plan::Ignored { to, reason });
+    }
+    Some(Plan::Update {
+        spec,
+        to,
+        kind: Kind::Compatible,
+        manifests: Vec::new(),
+        breaking_blocked: None,
+        is_git,
+        cooldown_skipped: None,
+    })
+}
+
+fn apply(
+    root: &Path,
+    rows: &[Row],
+    widen: bool,
+    manifests: &mut Option<Vec<Manifest>>,
+) -> Result<(), ExitCode> {
     for row in rows {
         let Plan::Update {
             spec,
             to,
             manifests: labels,
+            is_git,
             ..
         } = &row.plan
         else {
             continue;
         };
-        if labels.is_empty() {
+        if *is_git {
+            run_cargo_update(root, spec, None, false).map_err(|error| {
+                eprintln!("cargo update -p {spec} failed: {}", reason(&error));
+                ExitCode::from(2)
+            })?;
+        } else if labels.is_empty() {
             cargo_update(root, spec, to, false).map_err(|error| {
                 eprintln!(
                     "cargo update -p {spec} --precise {to} failed: {}",
@@ -515,7 +845,9 @@ fn apply(root: &Path, rows: &[Row], manifests: &mut Option<Vec<Manifest>>) -> Re
                 Some(loaded) => loaded,
                 None => manifests.insert(read_manifests(root)?),
             };
-            apply_manifest_update(root, &row.name, &row.from, to, labels, loaded)?;
+            apply_manifest_update_with_widen(
+                root, &row.name, &row.from, to, labels, loaded, widen,
+            )?;
         }
     }
     Ok(())
@@ -532,7 +864,9 @@ fn title(rows: &[Row]) -> String {
         [] => "No dependency to update".to_owned(),
         [row] => match &row.plan {
             Plan::Update { to, .. } => format!("Bump {} from {} to {to}", row.name, row.from),
-            Plan::Blocked { .. } | Plan::Ignored { .. } => unreachable!("filtered above"),
+            Plan::Blocked { .. } | Plan::Ignored { .. } | Plan::Cooldown { .. } => {
+                unreachable!("filtered above")
+            }
         },
         many => format!("Bump {} dependencies", many.len()),
     }
@@ -540,8 +874,10 @@ fn title(rows: &[Row]) -> String {
 
 fn update_type_of(row: &Row) -> Option<UpdateType> {
     match &row.plan {
-        Plan::Update { to, .. } => UpdateType::between(&row.from, to),
-        Plan::Blocked { .. } | Plan::Ignored { .. } => None,
+        Plan::Update { to, is_git, .. } => {
+            UpdateType::between(&row.from, to).or((*is_git).then_some(UpdateType::Patch))
+        }
+        Plan::Blocked { .. } | Plan::Ignored { .. } | Plan::Cooldown { .. } => None,
     }
 }
 
@@ -821,7 +1157,11 @@ fn render_markdown(rows: &[Row], body: &Body) -> String {
                 row.from,
                 why.replace('\n', " ")
             )),
-            Plan::Update { .. } | Plan::Ignored { .. } => None,
+            Plan::Update {
+                cooldown_skipped: Some(note),
+                ..
+            } => Some(format!("- `{}`: {note}", row.name)),
+            Plan::Update { .. } | Plan::Cooldown { .. } | Plan::Ignored { .. } => None,
         })
         .collect();
     if !refused.is_empty() {
@@ -830,6 +1170,33 @@ fn render_markdown(rows: &[Row], body: &Body) -> String {
             let _ = writeln!(out, "{line}");
         }
         out.push('\n');
+    }
+
+    let held_cooldown: Vec<(&Row, &str, u64, u64)> = rows
+        .iter()
+        .filter_map(|row| match &row.plan {
+            Plan::Cooldown {
+                to,
+                age_days,
+                required_days,
+            } => Some((row, to.as_str(), *age_days, *required_days)),
+            _ => None,
+        })
+        .collect();
+    if !held_cooldown.is_empty() {
+        let _ = writeln!(out, "**Held by cooldown: {}**\n", held_cooldown.len());
+        for (row, to, age_days, required_days) in &held_cooldown {
+            let _ = writeln!(
+                out,
+                "- `{}` {} → {to}: published {age_days}d ago (cooldown {required_days}d)",
+                row.name, row.from
+            );
+        }
+        out.push_str("\n<details><summary>Override cooldown for a dependency</summary>\n\nAdd an entry under `[updates.cooldown.overrides]` in `cargoscope.toml` (or pass `--cooldown-for NAME=1`):\n\n```toml\n[updates.cooldown.overrides]\n");
+        for (row, _, _, _) in &held_cooldown {
+            let _ = writeln!(out, "{} = 1", row.name);
+        }
+        out.push_str("```\n\n</details>\n\n");
     }
 
     if !updates.is_empty() {
@@ -861,6 +1228,13 @@ fn render_markdown(rows: &[Row], body: &Body) -> String {
 /// Links to read before merging: the source diff between the two versions
 /// on diff.rs, and the release notes when the repository is on GitHub.
 fn links(row: &Row, to: &str) -> String {
+    if matches!(row.plan, Plan::Update { is_git: true, .. }) {
+        return row
+            .repository
+            .as_deref()
+            .map(|url| format!("[repo]({})", url.trim_end_matches('/')))
+            .unwrap_or_else(|| "—".to_owned());
+    }
     let mut links = vec![format!(
         "[diff](https://diff.rs/{name}/{from}/{to})",
         name = row.name,
@@ -899,10 +1273,10 @@ fn pull_requests(rows: &[Row], config: &UpdatesConfig) -> Vec<PullRequest> {
         .collect();
     let mut singles: Vec<(&Row, UpdateType)> = Vec::new();
     for row in rows {
-        let Plan::Update { to, .. } = &row.plan else {
+        let Plan::Update { .. } = &row.plan else {
             continue;
         };
-        let Some(update_type) = UpdateType::between(&row.from, to) else {
+        let Some(update_type) = update_type_of(row) else {
             continue;
         };
         let dependency_type = if row.dev {
@@ -954,12 +1328,15 @@ fn pull_requests(rows: &[Row], config: &UpdatesConfig) -> Vec<PullRequest> {
 fn single_title(row: &Row) -> String {
     match &row.plan {
         Plan::Update { to, .. } => format!("Bump {} from {} to {to}", row.name, row.from),
-        Plan::Blocked { .. } | Plan::Ignored { .. } => format!("Bump {}", row.name),
+        Plan::Cooldown { .. } | Plan::Blocked { .. } | Plan::Ignored { .. } => {
+            format!("Bump {}", row.name)
+        }
     }
 }
 
 fn render_json(rows: &[Row], config: &UpdatesConfig) -> String {
     let mut updates = Vec::new();
+    let mut cooldown = Vec::new();
     let mut blocked = Vec::new();
     let mut ignored = Vec::new();
     for row in rows {
@@ -969,11 +1346,26 @@ fn render_json(rows: &[Row], config: &UpdatesConfig) -> String {
                 kind,
                 manifests,
                 breaking_blocked,
+                is_git,
+                cooldown_skipped,
                 ..
             } => updates.push(serde_json::json!({
                 "package": row.name, "from": row.from, "to": to,
                 "kind": kind.as_str(), "manifests": manifests,
+                "is_git": is_git,
+                "cooldown_skipped": cooldown_skipped,
                 "breaking_blocked": breaking_blocked.as_ref().map(|(to, reason)| serde_json::json!({"to": to, "reason": reason})),
+            })),
+            Plan::Cooldown {
+                to,
+                age_days,
+                required_days,
+            } => cooldown.push(serde_json::json!({
+                "package": row.name,
+                "from": row.from,
+                "to": to,
+                "age_days": age_days,
+                "required_days": required_days,
             })),
             Plan::Blocked { to, reason } => blocked.push(serde_json::json!({
                 "package": row.name, "from": row.from, "to": to, "reason": reason,
@@ -996,8 +1388,16 @@ fn render_json(rows: &[Row], config: &UpdatesConfig) -> String {
         "title": title(rows),
         "pull_requests": pulls,
         "updates": updates,
+        "cooldown": cooldown,
         "blocked": blocked,
         "ignored": ignored,
+        "config": {
+            "versioning_strategy": config.versioning_strategy.as_str(),
+            "cooldown_default_days": config.cooldown.default_days,
+            "labels": config.labels,
+            "reviewers": config.reviewers,
+            "commit_prefix": config.commit_prefix,
+        },
     }))
     .unwrap_or_default();
     text.push('\n');
@@ -1011,6 +1411,7 @@ fn print_row(row: &Row, paint: cargoscope_report::Paint) {
             kind,
             manifests,
             breaking_blocked,
+            cooldown_skipped,
             ..
         } => {
             let place = if manifests.is_empty() {
@@ -1033,6 +1434,24 @@ fn print_row(row: &Row, paint: cargoscope_report::Paint) {
             if let Some((to, why)) = breaking_blocked {
                 println!("  {}", paint.yellow(&format!("= {to} refused: {why}")));
             }
+            if let Some(note) = cooldown_skipped {
+                println!("  {}", paint.dim(&format!("= skipped {note}")));
+            }
+        }
+        Plan::Cooldown {
+            to,
+            age_days,
+            required_days,
+        } => {
+            println!(
+                "{} {} -> {to}: {}",
+                paint.bold(&row.name),
+                paint.dim(&row.from),
+                paint.yellow(&format!(
+                    "held by {required_days}d cooldown (published {age_days}d ago; override with --cooldown-for {}=1 or [updates.cooldown.overrides])",
+                    row.name
+                ))
+            );
         }
         Plan::Blocked { to, reason } => {
             println!(
@@ -1112,9 +1531,12 @@ fn body_facts(
 ) -> Result<Body, ExitCode> {
     let cache = cargoscope_advisory::cache_dir().ok();
     for row in rows.iter_mut() {
-        let Plan::Update { to, .. } = &row.plan else {
+        let Plan::Update { to, is_git, .. } = &row.plan else {
             continue;
         };
+        if *is_git {
+            continue;
+        }
         let Some(cache) = cache.as_deref() else {
             break;
         };
@@ -1230,6 +1652,30 @@ pub fn run(
     only: Option<&[String]>,
     paint: cargoscope_report::Paint,
 ) -> Result<ExitCode, ExitCode> {
+    let options = UpdateOptions {
+        breaking,
+        apply: apply_changes,
+        format,
+        only,
+        cooldown_days: None,
+        cooldown_overrides: &[],
+        versioning_strategy: None,
+        now: None,
+    };
+    run_with_options(root, &options, paint)
+}
+
+/// Runs `cargoscope fix --updates` with cooldown and versioning-strategy options.
+///
+/// # Errors
+///
+/// Returns an execution error exit code (`2`) when the project cannot be
+/// scanned, manifests cannot be edited, or `cargo update` fails.
+pub fn run_with_options(
+    root: &Path,
+    options: &UpdateOptions<'_>,
+    paint: cargoscope_report::Paint,
+) -> Result<ExitCode, ExitCode> {
     let inventory: Inventory = cargoscope_cargo::scan_cargo_project(root)
         .map_err(|error| execution_error(root, &error))?;
     let mut warnings = Vec::new();
@@ -1237,15 +1683,42 @@ pub fn run(
     for warning in &warnings {
         eprintln!("warning: {warning}");
     }
-    if date.is_none() {
+    let has_crates_io_direct = inventory.packages.iter().any(|package| {
+        package.direct
+            && !package.root
+            && cargoscope_advisory::crates_io::is_crates_io(package.source.as_deref())
+    });
+    if has_crates_io_direct && date.is_none() {
         eprintln!(
             "CargoScope needs crates.io data to find newer versions: run `cargoscope update` first."
         );
         return Err(ExitCode::from(2));
     }
 
-    let config =
+    let mut config =
         cargoscope_cargo::updates::load(root).map_err(|error| execution_error(root, &error))?;
+    if let Some(days) = options.cooldown_days {
+        config.cooldown.default_days = days;
+    }
+    if !options.cooldown_overrides.is_empty() {
+        // CLI overrides take priority over file-configured overrides.
+        let mut combined = options.cooldown_overrides.to_vec();
+        combined.extend(std::mem::take(&mut config.cooldown.overrides));
+        config.cooldown.overrides = combined;
+    }
+    if let Some(strategy) = options.versioning_strategy {
+        config.versioning_strategy = strategy;
+    }
+    let strategy = config.versioning_strategy;
+    let now_unix = options.now.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+    });
+    let registry_cache = cargoscope_advisory::cache_dir()
+        .ok()
+        .map(|dir| RegistryCache::open(&dir));
+
     let kinds = cargoscope_cargo::direct_dependency_kinds(root).unwrap_or_default();
     let dev_only = |name: &str| {
         kinds
@@ -1258,44 +1731,73 @@ pub fn run(
     for (package, info) in inventory.packages.iter().zip(&info) {
         if !package.direct
             || package.root
-            || !info.outdated
-            || !cargoscope_advisory::crates_io::is_crates_io(package.source.as_deref())
-            || only.is_some_and(|names| !names.contains(&package.name))
+            || options
+                .only
+                .is_some_and(|names| !names.contains(&package.name))
             || (!config.include_dev && dev_only(&package.name))
             || !seen.insert((package.name.clone(), package.version.clone()))
         {
             continue;
         }
-        if let Some(plan) = plan_package(root, package, info, breaking, &config, &mut manifests)? {
-            let row = Row {
-                name: package.name.clone(),
-                from: package.version.clone(),
-                details: Details {
-                    published_version: published_version(&plan, info),
-                    published: published(&plan, info),
-                    concerns: info
-                        .maintenance_concerns()
-                        .into_iter()
-                        .map(|concern| describe_concern(concern, info))
-                        .collect(),
-                    ..Details::default()
-                },
-                plan,
-                dev: dev_only(&package.name),
-                repository: info.repository.clone(),
-            };
-            if format == Format::Text {
-                print_row(&row, paint);
+        let is_crates_io = cargoscope_advisory::crates_io::is_crates_io(package.source.as_deref());
+        let plan = if is_crates_io {
+            if !info.outdated {
+                continue;
             }
-            rows.push(row);
+            let releases = registry_cache
+                .as_ref()
+                .and_then(|cache| cache.version_timestamps(&package.name));
+            let ctx = PlanContext {
+                root,
+                strategy,
+                breaking: options.breaking,
+                config: &config,
+                releases: releases.as_deref(),
+                now_unix,
+            };
+            let Some(plan) = plan_package(&ctx, package, info, &mut manifests)? else {
+                continue;
+            };
+            plan
+        } else if let Some(plan) = probe_non_crates_io_package(root, package, &config) {
+            plan
+        } else {
+            continue;
+        };
+
+        let row = Row {
+            name: package.name.clone(),
+            from: package.version.clone(),
+            details: Details {
+                published_version: published_version(&plan, info),
+                published: published(&plan, info),
+                concerns: info
+                    .maintenance_concerns()
+                    .into_iter()
+                    .map(|concern| describe_concern(concern, info))
+                    .collect(),
+                ..Details::default()
+            },
+            plan,
+            dev: dev_only(&package.name),
+            repository: info.repository.clone(),
+        };
+        if options.format == Format::Text {
+            print_row(&row, paint);
         }
+        rows.push(row);
     }
-    if apply_changes {
-        apply(root, &rows, &mut manifests)?;
+    if options.apply {
+        apply(
+            root,
+            &rows,
+            strategy == VersioningStrategy::Widen,
+            &mut manifests,
+        )?;
     }
-    match format {
+    match options.format {
         Format::Markdown => {
-            let body = body_facts(root, &inventory, &mut rows, &config, apply_changes)?;
+            let body = body_facts(root, &inventory, &mut rows, &config, options.apply)?;
             print!("{}", render_markdown(&rows, &body));
         }
         Format::Json => print!("{}", render_json(&rows, &config)),
@@ -1304,9 +1806,13 @@ pub fn run(
                 .iter()
                 .filter(|row| matches!(row.plan, Plan::Update { .. }))
                 .count();
+            let held = rows
+                .iter()
+                .filter(|row| matches!(row.plan, Plan::Cooldown { .. }))
+                .count();
             if rows.is_empty() {
                 println!("{}", paint.green("Every direct dependency is up to date."));
-            } else if apply_changes {
+            } else if options.apply {
                 println!(
                     "\n{} Build and test before committing.",
                     paint.green(&format!("Updated {updates} dependency(ies)."))
@@ -1315,7 +1821,16 @@ pub fn run(
                 println!(
                     "\n{} nothing was changed. Run `cargoscope fix --updates{} --apply` to make {updates} update(s).",
                     paint.bold("Dry run:"),
-                    if breaking { " --breaking" } else { "" }
+                    if options.breaking { " --breaking" } else { "" }
+                );
+            }
+            if held > 0 {
+                println!(
+                    "{}",
+                    paint.dim(&format!(
+                        "Note: {held} dependency(ies) held by cooldown (default {}d). Override per crate via `--cooldown-for CRATE=1` or `[updates.cooldown.overrides]` in `cargoscope.toml`.",
+                        config.cooldown.default_days
+                    ))
                 );
             }
         }
@@ -1352,6 +1867,8 @@ mod tests {
                     Vec::new()
                 },
                 breaking_blocked: None,
+                is_git: false,
+                cooldown_skipped: None,
             },
             dev: false,
             repository: Some(format!("https://github.com/example/{name}")),
@@ -1582,6 +2099,121 @@ mod tests {
                 ),
                 ("ureq".to_owned(), "2.12.1".to_owned(), "3.1.0".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn cooldown_picks_older_eligible_release_and_supports_overrides() {
+        use super::{CooldownPick, pick_with_cooldown};
+        use cargoscope_advisory::crates_io::ReleaseTime;
+
+        let now = 2_000_000_000u64;
+        let releases = vec![
+            ReleaseTime {
+                version: "1.0.0".to_owned(),
+                yanked: false,
+                published_unix: Some(now - 30 * 86_400),
+            },
+            ReleaseTime {
+                version: "1.0.5".to_owned(),
+                yanked: false,
+                published_unix: Some(now - 10 * 86_400),
+            },
+            ReleaseTime {
+                version: "1.0.9".to_owned(),
+                yanked: false,
+                published_unix: Some(now - 2 * 86_400),
+            },
+        ];
+
+        let default_cfg = cargoscope_cargo::updates::UpdatesConfig::default();
+        assert_eq!(default_cfg.cooldown.default_days, 7);
+        match pick_with_cooldown(
+            "serde",
+            "1.0.0",
+            "1.0.9",
+            true,
+            Some(&releases),
+            &default_cfg,
+            now,
+        ) {
+            CooldownPick::Use {
+                version,
+                skipped_note,
+            } => {
+                assert_eq!(version, "1.0.5");
+                assert!(skipped_note.is_some());
+            }
+            CooldownPick::Held { .. } => panic!("expected older eligible release 1.0.5"),
+        }
+
+        // Only 1.0.9 is newer than 1.0.5 -> held by 7d cooldown.
+        match pick_with_cooldown(
+            "serde",
+            "1.0.5",
+            "1.0.9",
+            true,
+            Some(&releases),
+            &default_cfg,
+            now,
+        ) {
+            CooldownPick::Held {
+                to,
+                age_days,
+                required_days,
+            } => {
+                assert_eq!(to, "1.0.9");
+                assert_eq!(age_days, 2);
+                assert_eq!(required_days, 7);
+            }
+            CooldownPick::Use { .. } => panic!("expected cooldown hold"),
+        }
+
+        // Per-crate 1-day override unlocks 1.0.9 immediately.
+        let mut override_cfg = default_cfg;
+        override_cfg
+            .cooldown
+            .overrides
+            .push(("serde".to_owned(), 1));
+        match pick_with_cooldown(
+            "serde",
+            "1.0.5",
+            "1.0.9",
+            true,
+            Some(&releases),
+            &override_cfg,
+            now,
+        ) {
+            CooldownPick::Use { version, .. } => assert_eq!(version, "1.0.9"),
+            CooldownPick::Held { .. } => panic!("expected override to allow 1.0.9"),
+        }
+    }
+
+    #[test]
+    fn parses_git_and_alternative_registry_cargo_update_lines() {
+        use super::parse_non_crates_io_update;
+
+        let git_stderr =
+            "    Updating foo v0.1.0 (https://github.com/org/foo#11111111) -> #22222222\n";
+        assert_eq!(
+            parse_non_crates_io_update(
+                git_stderr,
+                "foo",
+                "0.1.0",
+                "git+https://github.com/org/foo#11111111"
+            ),
+            Some(("0.1.0 (#2222222)".to_owned(), true))
+        );
+
+        let reg_stderr = "    Updating private-crate v1.2.0 (registry `corp`) -> v1.3.0\n";
+        assert_eq!(
+            parse_non_crates_io_update(
+                reg_stderr,
+                "private-crate",
+                "1.2.0",
+                "registry+https://corp.example/index"
+            ),
+            Some(("1.3.0".to_owned(), false))
         );
     }
 }
