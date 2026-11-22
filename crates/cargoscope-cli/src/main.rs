@@ -72,17 +72,19 @@ const FIX_USAGE: &str =
       fix), and say which dependency blocks the others. Runs cargo update,
       which may read the registry index; it compiles nothing.
   cargoscope fix --updates [PATH] [--breaking] [--dry-run | --apply] [--only NAMES]
-                 [--cooldown DAYS] [--cooldown-for CRATE=DAYS]
+                 [--ecosystems LIST] [--cooldown DAYS] [--cooldown-for CRATE=DAYS]
                  [--versioning-strategy STRATEGY]
                  [--format text|markdown|json] [--color WHEN]
                  [--comment-command COMMENT --pr-body FILE]
       Update direct dependencies to their newest version outside the cooldown
-      window (default: 7 days, configurable per crate via `--cooldown-for` or
-      `[updates.cooldown.overrides]` / `.github/dependabot.yml`). With
-      --versioning-strategy (auto, lockfile-only, increase-if-necessary,
-      increase, widen) or --breaking, control how Cargo.toml constraints are
-      updated; also updates git and private registry dependencies when Cargo
-      can resolve them. Needs `cargoscope update` data; compiles nothing.";
+      window (default: 7 days, configurable per dependency via `--cooldown-for`
+      or `[updates.cooldown.overrides]` / `.github/dependabot.yml`).
+      `--ecosystems` selects `auto` (Cargo plus `github-actions`/`docker` when
+      declared in `.github/dependabot.yml`), `all`, or a comma-separated list
+      of `cargo`, `github-actions`, `docker`. With `--versioning-strategy`
+      (auto, lockfile-only, increase-if-necessary, increase, widen) or
+      --breaking, control how Cargo.toml constraints are updated; also updates
+      git and private registry dependencies when Cargo can resolve them.";
 
 const SCAN_USAGE: &str = "  cargoscope scan [PATH] [--update] [--no-maintenance | --fast] [--format text|json|sarif|cyclonedx|html] [--output FILE] [--fail-on THRESHOLD] [--ignore-unlikely] [--rustsec-only] [--show-uncertain] [--verbose] [--precise] [--color WHEN]
       Report on a Cargo project, read-only and offline (unless --update is given).
