@@ -42,6 +42,7 @@ Reads `Cargo.lock`, manifests, `cargoscope.toml` / `deny.toml`, and `.rs` files 
 ```sh
 cargoscope scan .                                              # default Telemetry HUD (offline)
 cargoscope scan . --checks inventory,unused                    # structural + unused checks only (zero downloads needed)
+cargoscope scan . --checks inventory,unsafe                    # count unsafe usage in dependencies on disk only
 cargoscope scan . --update --fast                              # refresh data then scan
 cargoscope scan . --format json --output report.json           # versioned JSON (docs/schema/report-v1.json)
 cargoscope scan . --format sarif --output results.sarif        # SARIF 2.1.0 for GitHub Code Scanning
