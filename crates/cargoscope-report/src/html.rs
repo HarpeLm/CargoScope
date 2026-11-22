@@ -365,7 +365,7 @@ fn render_actions(out: &mut String, report: &Report, now: Option<u64>) {
             } else {
                 ""
             };
-            let (fix, _) = crate::terminal::crate_fix(findings, &pkg.version);
+            let (fix, _) = crate::terminal::resolved_crate_fix(report, *index, findings);
             // A fix outside the SemVer range of the resolved version cannot
             // come from Cargo.lock alone when another crate pulls this one
             // in: that crate has to accept the new version first.
@@ -2217,6 +2217,7 @@ mod tests {
             ],
             unused_precise: false,
             direct_kinds,
+            fix_versions: BTreeMap::new(),
             warnings: vec!["cache note <test>".to_owned()],
         }
     }
