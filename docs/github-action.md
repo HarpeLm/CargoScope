@@ -102,23 +102,36 @@ jobs:
           upload-sarif: false
           updates: compatible      # compatible or breaking
           updates-grouped: false   # true: combine updates into one PR
+          cooldown: "7"            # optional: default release age cooldown in days (7 by default)
+          versioning-strategy: ""  # optional: auto | lockfile-only | increase-if-necessary | increase | widen
           ci-workflow: ci.yml      # optional: trigger CI on PR commit
-          labels: dependencies     # optional (created automatically if missing)
-          reviewers: my-org/rust   # optional GitHub users or teams
+          labels: dependencies     # optional (created automatically if missing; falls back to dependabot.yml)
+          reviewers: my-org/rust   # optional GitHub users or teams (falls back to dependabot.yml)
           commit-prefix: "chore(deps): "
           auto-merge: patch        # none | patch | minor (requires branch protection checks!)
 ```
 
 > **Warning on `auto-merge`:** GitHub's auto-merge waits only for status checks marked **required** by a branch protection rule. Without required checks configured on your default branch, GitHub merges the PR immediately before CI runs.
 
-### `[updates]` configuration in `cargoscope.toml`
+### `[updates]` configuration in `cargoscope.toml` (or `.github/dependabot.yml`)
 
-Matches `dependabot.yml` semantics:
+CargoScope matches Dependabot semantics in `cargoscope.toml`, and **reads `.github/dependabot.yml` (`package-ecosystem: "cargo"`) automatically** when `cargoscope.toml` has no `[updates]` table:
 
 ```toml
 [updates]
 open-pull-requests-limit = 5   # groups first, then individual crates
 include-dev = true             # also propose dev-dependency updates (default)
+versioning-strategy = "auto"   # auto | lockfile-only | increase-if-necessary | increase | widen
+
+[updates.cooldown]
+default-days = 7               # hold back new crates.io releases for 7 days by default
+# semver-major-days = 14
+# semver-minor-days = 7
+# semver-patch-days = 3
+# exclude = ["serde"]
+overrides = { tokio = 1 }      # fast-track specific dependencies (or pass --cooldown-for tokio=1)
+
+[updates]
 ignore = [
   { name = "tokio", update-types = ["major"], reason = "migrating later" },
   { name = "aws-*" },
@@ -129,6 +142,8 @@ groups = [
   { name = "patches", update-types = ["patch"], dependency-type = "production" },
 ]
 ```
+
+Each run also **automatically rebases** any open CargoScope PR that hits merge conflicts against the base branch (`CONFLICTING` / `DIRTY`).
 
 Each PR body includes:
 - A leading **Needs attention** section when a major version, higher MSRV (compared against the project's `rust-version`), license change, or new advisory is detected.
