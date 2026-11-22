@@ -1,0 +1,23 @@
+{
+  "name": "cargoscope-bot",
+  "url": "https://github.com/HarpeLm/CargoScope",
+  "hook_attributes": {
+    "url": "https://cargoscope-bot.fly.dev/webhook",
+    "active": true
+  },
+  "redirect_url": "https://cargoscope-bot.fly.dev/",
+  "description": "1-click Rust, GitHub Actions, and Docker dependency updates reading .github/dependabot.yml and deny.toml natively, with 7-day anti-supply-chain cooldown and native CI triggers.",
+  "public": true,
+  "default_events": [
+    "issue_comment",
+    "pull_request",
+    "push"
+  ],
+  "default_permissions": {
+    "contents": "write",
+    "issues": "write",
+    "metadata": "read",
+    "pull_requests": "write",
+    "workflows": "write"
+  }
+}
