@@ -112,7 +112,11 @@ pub fn render_text(project_root: &Path, report: &Report, options: TextOptions) -
     if report.checks.versions {
         render_recent_text(&mut out, report, options.now);
     }
-    render_unsafe_text(&mut out, report, options.verbose);
+    if report.checks.unsafe_code {
+        render_unsafe_text(&mut out, report, options.verbose);
+    } else {
+        not_checked(&mut out, "Unsafe code", options.verbose);
+    }
     render_audits_text(&mut out, report, options.verbose);
     render_policy_text(&mut out, report, options.verbose);
 
@@ -460,6 +464,7 @@ pub(crate) fn kind_names(report: &Report, name: &str) -> Vec<String> {
                     DependencyKind::Normal => "normal".to_owned(),
                     DependencyKind::Dev => "dev".to_owned(),
                     DependencyKind::Build => "build".to_owned(),
+                    DependencyKind::Workspace => "workspace".to_owned(),
                 })
                 .collect()
         })
@@ -1819,6 +1824,7 @@ mod tests {
             licenses: false,
             versions: false,
             policy: false,
+            unsafe_code: false,
         };
         assert_eq!(super::summary(&report), "4 packages");
         assert!(render_text(Path::new("."), &report, VERBOSE).contains("\nSummary: 4 packages\n"));
