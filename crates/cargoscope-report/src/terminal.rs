@@ -402,6 +402,7 @@ pub(crate) fn render_hud(project_root: &Path, report: &Report, options: TextOpti
     }
     if report.checks.unused {
         showed_any_section |= hud_unused(&mut out, report, options.show_uncertain, width, paint);
+        showed_any_section |= hud_feature_hints(&mut out, report, width, paint);
     }
     if report.checks.versions {
         showed_any_section |= hud_outdated(&mut out, report, width, paint);
@@ -1339,6 +1340,61 @@ fn hud_unused(
             paint.dim(&format!(
                 "{ignored} ignored via [package.metadata.cargoscope]"
             ))
+        );
+    }
+    true
+}
+
+fn hud_feature_hints(out: &mut String, report: &Report, width: usize, paint: Paint) -> bool {
+    if report.feature_hints.is_empty() {
+        return false;
+    }
+    let sub = format!(
+        "{} · informational",
+        plural(report.feature_hints.len(), "dependency")
+    );
+    section_rule(out, "FEATURE HINTS", Some(&sub), width, paint);
+
+    let dep_width = report
+        .feature_hints
+        .iter()
+        .map(|h| h.dependency.len())
+        .max()
+        .unwrap_or(0);
+    for hint in &report.feature_hints {
+        let feats = hint
+            .features
+            .iter()
+            .map(|f| format!("\"{f}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let advice = if hint.suggested.is_empty() {
+            "none of those feature symbols seen in sources".to_owned()
+        } else {
+            format!(
+                "try [{}]",
+                hint.suggested
+                    .iter()
+                    .map(|s| format!("\"{s}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        let detail = clip(
+            &format!(
+                "{}  [{}]  features = [{feats}]  → {advice}",
+                hint.manifest,
+                hint.kind.section()
+            ),
+            width.saturating_sub(dep_width + 7),
+        );
+        let _ = writeln!(
+            out,
+            "  {} {}{}  {}",
+            paint.yellow("~"),
+            paint.bold(&hint.dependency),
+            " ".repeat(dep_width.saturating_sub(hint.dependency.len())),
+            paint.dim(&detail)
         );
     }
     true
