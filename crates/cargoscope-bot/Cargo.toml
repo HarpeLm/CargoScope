@@ -1,0 +1,21 @@
+[package]
+name = "cargoscope-bot"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Hosted GitHub App (cargoscope-bot[bot]) for 1-click Cargo, GitHub Actions, and Docker dependency PRs"
+publish = false
+
+[package.metadata.dist]
+dist = false
+
+[dependencies]
+cargoscope-cargo = { path = "../cargoscope-cargo", version = "1.0.0-dev" }
+ring = "0.17"
+serde_json = "1"
+ureq = "2"
+
+[lints]
+workspace = true
