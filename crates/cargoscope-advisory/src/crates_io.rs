@@ -12,7 +12,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use cargoscope_core::{Inventory, PackageInfo};
+use cargoscope_core::{CachedVersion, Inventory, PackageInfo};
 
 use crate::{AdvisoryError, io_error, utc_date};
 
@@ -504,6 +504,25 @@ impl RegistryCache {
         self.audits
             .as_ref()
             .map_or(&[], |audits| audits.organisations.as_slice())
+    }
+
+    /// Published status of every version cached for crates.io package `name`,
+    /// or `None` when no crates.io version list is cached for it.
+    #[must_use]
+    pub fn cached_versions(&self, name: &str) -> Option<Vec<CachedVersion>> {
+        if !is_valid_name(name) {
+            return None;
+        }
+        let text = fs::read_to_string(self.root.join("versions").join(name)).ok()?;
+        Some(
+            read_versions(&text)
+                .into_iter()
+                .map(|entry| CachedVersion {
+                    version: entry.version,
+                    yanked: entry.yanked,
+                })
+                .collect(),
+        )
     }
 
     /// Registry data for every package of `inventory`, in the same order.
