@@ -1104,6 +1104,123 @@ pub struct Report {
     /// `unsafe` code of each package, by package index (empty when not
     /// counted; `None` for packages whose sources are not on disk).
     pub unsafe_code: Vec<Option<UnsafeCount>>,
+    /// Smallest non-yanked version fixing all advisories of each vulnerable
+    /// package, by package index, when resolved against the local crates.io
+    /// cache. Reports fall back to the raw `patched` lower bound when absent.
+    pub fix_versions: std::collections::BTreeMap<usize, String>,
+}
+
+/// Publication status of one cached crates.io version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedVersion {
+    /// SemVer string of the published release.
+    pub version: String,
+    /// Whether this release has been yanked.
+    pub yanked: bool,
+}
+
+/// Whether `version` satisfies a `patched` range in every advisory of a crate
+/// (advisories with no `patched` range impose no constraint here).
+#[must_use]
+pub fn fixes_all_patched(version: &semver::Version, patched_sets: &[Vec<String>]) -> bool {
+    patched_sets.iter().all(|patched| {
+        patched.is_empty()
+            || patched.iter().any(|range| {
+                semver::VersionReq::parse(range)
+                    .is_ok_and(|requirement| requirement.matches(version))
+            })
+    })
+}
+
+/// Candidate fix versions above `current` satisfying every advisory's `patched`
+/// constraints, oldest first.
+///
+/// When `cached` is provided from the crates.io sparse-index cache, yanked
+/// versions are excluded and actual published non-yanked versions that satisfy
+/// `patched_sets` are included instead (falling back to mathematical range
+/// lower bounds only when they are newer than anything in the cache and not
+/// known to be yanked).
+#[must_use]
+pub fn fix_candidates(
+    patched_sets: &[Vec<String>],
+    current: &str,
+    cached: Option<&[CachedVersion]>,
+) -> Vec<semver::Version> {
+    use std::collections::BTreeSet;
+
+    let Ok(current) = semver::Version::parse(current) else {
+        return Vec::new();
+    };
+    let mut allow_pre = !current.pre.is_empty();
+    let mut math_bounds = BTreeSet::new();
+    for range in patched_sets.iter().flatten() {
+        let Ok(requirement) = semver::VersionReq::parse(range) else {
+            continue;
+        };
+        for comparator in &requirement.comparators {
+            if !comparator.pre.is_empty() {
+                allow_pre = true;
+            }
+            if !matches!(
+                comparator.op,
+                semver::Op::GreaterEq
+                    | semver::Op::Caret
+                    | semver::Op::Tilde
+                    | semver::Op::Exact
+                    | semver::Op::Wildcard
+            ) {
+                continue;
+            }
+            let mut version = semver::Version::new(
+                comparator.major,
+                comparator.minor.unwrap_or(0),
+                comparator.patch.unwrap_or(0),
+            );
+            version.pre = comparator.pre.clone();
+            if version > current && fixes_all_patched(&version, patched_sets) {
+                math_bounds.insert(version);
+            }
+        }
+    }
+
+    let Some(entries) = cached else {
+        return math_bounds.into_iter().collect();
+    };
+
+    let mut yanked = BTreeSet::new();
+    let mut non_yanked = BTreeSet::new();
+    let mut highest_cached: Option<semver::Version> = None;
+    for entry in entries {
+        let Ok(version) = semver::Version::parse(&entry.version) else {
+            continue;
+        };
+        if highest_cached.as_ref().is_none_or(|known| version > *known) {
+            highest_cached = Some(version.clone());
+        }
+        if entry.yanked {
+            yanked.insert(version);
+        } else {
+            non_yanked.insert(version);
+        }
+    }
+
+    let mut found = BTreeSet::new();
+    for version in non_yanked {
+        if version > current
+            && (allow_pre || version.pre.is_empty())
+            && fixes_all_patched(&version, patched_sets)
+        {
+            found.insert(version);
+        }
+    }
+    // Keep mathematical lower bounds only when the cache does not yet reach them
+    // (stale cache before a newly released fix) and they are not known yanked.
+    for bound in math_bounds {
+        if !yanked.contains(&bound) && highest_cached.as_ref().is_none_or(|known| bound > *known) {
+            found.insert(bound);
+        }
+    }
+    found.into_iter().collect()
 }
 
 #[cfg(test)]
@@ -1356,6 +1473,50 @@ mod tests {
             super::PackageInfo::default()
                 .maintenance_concerns()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn fix_candidates_skips_yanked_and_falls_back_when_cache_is_stale() {
+        use super::{CachedVersion, fix_candidates};
+        let patched = vec![vec![">= 0.7.6".to_owned()]];
+        let v = |s: &str| semver::Version::parse(s).expect("semver");
+
+        // Without cache: mathematical lower bound 0.7.6.
+        assert_eq!(fix_candidates(&patched, "0.7.5", None), vec![v("0.7.6")]);
+
+        // With cache where 0.7.6 is yanked and 0.7.7/0.7.11 are live: 0.7.6 is skipped.
+        let cached = vec![
+            CachedVersion {
+                version: "0.7.5".to_owned(),
+                yanked: false,
+            },
+            CachedVersion {
+                version: "0.7.6".to_owned(),
+                yanked: true,
+            },
+            CachedVersion {
+                version: "0.7.7".to_owned(),
+                yanked: false,
+            },
+            CachedVersion {
+                version: "0.7.11".to_owned(),
+                yanked: false,
+            },
+        ];
+        assert_eq!(
+            fix_candidates(&patched, "0.7.5", Some(&cached)),
+            vec![v("0.7.7"), v("0.7.11")]
+        );
+
+        // Stale cache (only knows up to 0.7.5): keeps lower bound fallback 0.7.6.
+        let stale = vec![CachedVersion {
+            version: "0.7.5".to_owned(),
+            yanked: false,
+        }];
+        assert_eq!(
+            fix_candidates(&patched, "0.7.5", Some(&stale)),
+            vec![v("0.7.6")]
         );
     }
 }
