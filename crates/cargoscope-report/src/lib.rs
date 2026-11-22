@@ -13,8 +13,8 @@ use std::fmt::Write;
 use std::path::Path;
 
 use cargoscope_core::{
-    AdvisoryFinding, AdvisoryKind, AdvisoryRelevance, DependencyKind, Inventory, Package, Report,
-    UnusedConfidence, UnusedFinding, VERSION,
+    AdvisoryFinding, AdvisoryKind, AdvisoryRelevance, DependencyKind, FeatureHint, Inventory,
+    Package, Report, UnusedConfidence, UnusedFinding, VERSION,
 };
 
 /// Version of the JSON report format.
@@ -103,6 +103,7 @@ pub fn render_text(project_root: &Path, report: &Report, options: TextOptions) -
             options.show_uncertain,
             report.unused_precise,
         );
+        render_feature_hints_text(&mut out, &report.feature_hints);
     } else {
         not_checked(&mut out, "Unused dependencies", verbose);
     }
@@ -432,6 +433,29 @@ fn render_unused_text(
             finding.dependency,
             finding.manifest,
             finding.ignored.as_deref().unwrap_or_default()
+        );
+    }
+}
+
+fn render_feature_hints_text(out: &mut String, hints: &[FeatureHint]) {
+    if hints.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "\nFeature hints: {} (informational)", hints.len());
+    for hint in hints {
+        let suggestion = if hint.suggested.is_empty() {
+            "drop those features if unneeded".to_owned()
+        } else {
+            format!("try: {}", hint.suggested.join(", "))
+        };
+        let _ = writeln!(
+            out,
+            "- {} [{}] in {} (features: {}) — {} ({suggestion})",
+            hint.dependency,
+            hint.kind.section(),
+            hint.manifest,
+            hint.features.join(", "),
+            hint.reason
         );
     }
 }
@@ -1202,6 +1226,26 @@ pub fn render_json(project_root: &Path, report: &Report) -> String {
     }
     out.push_str("],");
 
+    out.push_str("\"feature_hints\":[");
+    for (position, hint) in report.feature_hints.iter().enumerate() {
+        if position > 0 {
+            out.push(',');
+        }
+        let _ = write!(
+            out,
+            "{{\"dependency\":\"{}\",\"package\":\"{}\",\"section\":\"{}\",\"declared_by\":\"{}\",\"manifest\":\"{}\",\"features\":{},\"suggested\":{},\"reason\":\"{}\"}}",
+            json_escape(&hint.dependency),
+            json_escape(&hint.package),
+            hint.kind.section(),
+            json_escape(&hint.declared_by),
+            json_escape(&hint.manifest),
+            json_string_array(&hint.features),
+            json_string_array(&hint.suggested),
+            json_escape(&hint.reason),
+        );
+    }
+    out.push_str("],");
+
     out.push_str("\"policy\":");
     match &report.policy {
         None => out.push_str("null,"),
@@ -1368,6 +1412,7 @@ mod tests {
             },
             advisories,
             unused: Vec::new(),
+            feature_hints: Vec::new(),
             policy: None,
             unused_precise: false,
             package_info: Vec::new(),
