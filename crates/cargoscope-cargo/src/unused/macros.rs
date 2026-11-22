@@ -86,6 +86,10 @@ pub struct WorkspaceMacros {
     /// proc-macro crate: paths in `quote!` and crate names in strings, as in
     /// `manifest.get_path("bevy_extract")`.
     pub proc_macros: BTreeMap<String, BTreeSet<String>>,
+    /// Crates that external (registry/git) proc-macro crates in `Cargo.lock`
+    /// emit in `quote!` / `quote_spanned!` / `parse_quote!`, by proc-macro
+    /// crate identifier.
+    pub external_proc_macros: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// Whether a manifest declares a proc-macro library.
@@ -99,9 +103,25 @@ pub fn is_proc_macro(manifest: &toml::Value) -> bool {
     })
 }
 
-/// Crates a proc-macro crate may generate paths to.
+/// Crates a proc-macro crate may generate paths to (`quote!` paths plus
+/// identifier-like string literals, for workspace proc-macros).
 #[must_use]
 pub fn proc_macro_generated(dir: &Path, manifest: &toml::Value) -> BTreeSet<String> {
+    collect_proc_macro_paths(dir, manifest, true)
+}
+
+/// Crates an external proc-macro crate emits in `quote!` / `quote_spanned!`
+/// / `parse_quote!`.
+#[must_use]
+pub fn proc_macro_quoted(dir: &Path, manifest: &toml::Value) -> BTreeSet<String> {
+    collect_proc_macro_paths(dir, manifest, false)
+}
+
+fn collect_proc_macro_paths(
+    dir: &Path,
+    manifest: &toml::Value,
+    include_strings: bool,
+) -> BTreeSet<String> {
     let sources = collect_sources(dir, manifest);
     let mut names = BTreeSet::new();
     for file in &sources.code {
@@ -110,8 +130,10 @@ pub fn proc_macro_generated(dir: &Path, manifest: &toml::Value) -> BTreeSet<Stri
         };
         if let Ok(tokens) = TokenStream::from_str(&text) {
             collect_quoted_references(tokens.clone(), &mut names);
-            let tokens: Vec<TokenTree> = tokens.into_iter().collect();
-            collect_identifier_strings(&tokens, &mut names);
+            if include_strings {
+                let tokens: Vec<TokenTree> = tokens.into_iter().collect();
+                collect_identifier_strings(&tokens, &mut names);
+            }
         }
     }
     names
