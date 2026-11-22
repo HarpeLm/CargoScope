@@ -128,6 +128,7 @@ fn audit(
         inventory: found.inventory,
         advisories: check.findings,
         unused: Vec::new(),
+        feature_hints: Vec::new(),
         policy: None,
         unused_precise: false,
         advisory_db_date: database.fetched_on.clone(),
