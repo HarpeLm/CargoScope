@@ -99,15 +99,10 @@ fn enables_test_features(
         })
 }
 
-/// Reads every declared dependency of a manifest.
-///
-/// `workspace_dependencies` is the `[workspace.dependencies]` table of the
-/// workspace root, used to resolve `dep = { workspace = true }` entries.
-pub fn declared_dependencies(
+fn visit_dependency_tables(
     manifest: &toml::Value,
-    workspace_dependencies: Option<&toml::Value>,
-) -> Vec<DeclaredDependency> {
-    let mut declared = Vec::new();
+    mut visitor: impl FnMut(DependencyKind, bool, &toml::map::Map<String, toml::Value>),
+) {
     let mut read_tables = |table: &toml::Value, target_specific: bool| {
         for kind in [
             DependencyKind::Normal,
@@ -126,45 +121,7 @@ pub fn declared_dependencies(
                 let Some(entries) = table.get(name).and_then(toml::Value::as_table) else {
                     continue;
                 };
-                for (key, specification) in entries {
-                    let inherited = specification
-                        .get("workspace")
-                        .and_then(toml::Value::as_bool)
-                        .unwrap_or(false);
-                    let from_workspace = inherited
-                        .then(|| workspace_dependencies.and_then(|deps| deps.get(key)))
-                        .flatten();
-                    let lookup = |field: &str| {
-                        specification
-                            .get(field)
-                            .or_else(|| from_workspace.and_then(|spec| spec.get(field)))
-                    };
-                    declared.push(DeclaredDependency {
-                        key: key.clone(),
-                        package: lookup("package")
-                            .and_then(toml::Value::as_str)
-                            .unwrap_or(key)
-                            .to_owned(),
-                        kind,
-                        optional: specification
-                            .get("optional")
-                            .and_then(toml::Value::as_bool)
-                            .unwrap_or(false),
-                        target_specific,
-                        sets_features: selects_features(specification, from_workspace),
-                        test_features: enables_test_features(specification, from_workspace),
-                        path: specification
-                            .get("path")
-                            .and_then(toml::Value::as_str)
-                            .map(|path| (path.to_owned(), false))
-                            .or_else(|| {
-                                from_workspace
-                                    .and_then(|spec| spec.get("path"))
-                                    .and_then(toml::Value::as_str)
-                                    .map(|path| (path.to_owned(), true))
-                            }),
-                    });
-                }
+                visitor(kind, target_specific, entries);
             }
         }
     };
@@ -175,24 +132,87 @@ pub fn declared_dependencies(
             read_tables(target, true);
         }
     }
+}
+
+/// Reads every declared dependency of a manifest.
+///
+/// `workspace_dependencies` is the `[workspace.dependencies]` table of the
+/// workspace root, used to resolve `dep = { workspace = true }` entries.
+pub fn declared_dependencies(
+    manifest: &toml::Value,
+    workspace_dependencies: Option<&toml::Value>,
+) -> Vec<DeclaredDependency> {
+    let mut declared = Vec::new();
+    visit_dependency_tables(manifest, |kind, target_specific, entries| {
+        for (key, specification) in entries {
+            let inherited = specification
+                .get("workspace")
+                .and_then(toml::Value::as_bool)
+                .unwrap_or(false);
+            let from_workspace = inherited
+                .then(|| workspace_dependencies.and_then(|deps| deps.get(key)))
+                .flatten();
+            let lookup = |field: &str| {
+                specification
+                    .get(field)
+                    .or_else(|| from_workspace.and_then(|spec| spec.get(field)))
+            };
+            declared.push(DeclaredDependency {
+                key: key.clone(),
+                package: lookup("package")
+                    .and_then(toml::Value::as_str)
+                    .unwrap_or(key)
+                    .to_owned(),
+                kind,
+                optional: specification
+                    .get("optional")
+                    .and_then(toml::Value::as_bool)
+                    .unwrap_or(false),
+                target_specific,
+                sets_features: selects_features(specification, from_workspace),
+                test_features: enables_test_features(specification, from_workspace),
+                path: specification
+                    .get("path")
+                    .and_then(toml::Value::as_str)
+                    .map(|path| (path.to_owned(), false))
+                    .or_else(|| {
+                        from_workspace
+                            .and_then(|spec| spec.get("path"))
+                            .and_then(toml::Value::as_str)
+                            .map(|path| (path.to_owned(), true))
+                    }),
+            });
+        }
+    });
     declared.sort_by(|left, right| (left.kind, &left.key).cmp(&(right.kind, &right.key)));
     declared.dedup_by(|left, right| left.kind == right.kind && left.key == right.key);
     declared
 }
 
+/// Keys inherited via `workspace = true` in a manifest's dependency tables.
+fn workspace_inherited_keys(manifest: &toml::Value, out: &mut BTreeSet<String>) {
+    visit_dependency_tables(manifest, |_, _, entries| {
+        for (key, specification) in entries {
+            if specification
+                .get("workspace")
+                .and_then(toml::Value::as_bool)
+                .unwrap_or(false)
+            {
+                out.insert(key.clone());
+            }
+        }
+    });
+}
+
 /// Ignore entries from configuration: dependency key → reason.
 pub type IgnoreList = BTreeMap<String, String>;
 
-/// Reads `[package.metadata.cargoscope] ignore-unused = [{ name, reason }]`.
-///
-/// Entries without a non-empty `reason` are not applied and are returned as
-/// warnings, so that every exception stays explained.
-pub fn ignore_list(manifest: &toml::Value) -> (IgnoreList, Vec<String>) {
+fn ignore_list_at(manifest: &toml::Value, root_section: &str) -> (IgnoreList, Vec<String>) {
     let mut ignored = IgnoreList::new();
     let mut warnings = Vec::new();
     let entries = manifest
-        .get("package")
-        .and_then(|package| package.get("metadata"))
+        .get(root_section)
+        .and_then(|section| section.get("metadata"))
         .and_then(|metadata| metadata.get("cargoscope"))
         .and_then(|config| config.get("ignore-unused"))
         .and_then(toml::Value::as_array);
@@ -214,6 +234,81 @@ pub fn ignore_list(manifest: &toml::Value) -> (IgnoreList, Vec<String>) {
         }
     }
     (ignored, warnings)
+}
+
+/// Reads `[package.metadata.cargoscope] ignore-unused = [{ name, reason }]`.
+///
+/// Entries without a non-empty `reason` are not applied and are returned as
+/// warnings, so that every exception stays explained.
+pub fn ignore_list(manifest: &toml::Value) -> (IgnoreList, Vec<String>) {
+    ignore_list_at(manifest, "package")
+}
+
+/// Detects `[workspace.dependencies]` entries that no workspace member inherits
+/// via `workspace = true`.
+#[must_use]
+pub fn orphan_workspace_dependencies(
+    project_root: &Path,
+    packages: &[(PathBuf, String, toml::Value)],
+    workspace_dependencies: Option<&toml::Value>,
+    member_warnings: &[String],
+) -> (Vec<UnusedFinding>, Vec<String>) {
+    let Some(ws_table) = workspace_dependencies.and_then(toml::Value::as_table) else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut inherited = BTreeSet::new();
+    for (_, _, manifest) in packages {
+        workspace_inherited_keys(manifest, &mut inherited);
+    }
+
+    let mut ignored = IgnoreList::new();
+    let mut warnings = Vec::new();
+    if let Ok(contents) = fs::read_to_string(project_root.join("Cargo.toml"))
+        && let Ok(root_manifest) = toml::from_str::<toml::Value>(&contents)
+    {
+        let (ws_ignores, ws_warnings) = ignore_list_at(&root_manifest, "workspace");
+        ignored.extend(ws_ignores);
+        warnings.extend(ws_warnings);
+        if root_manifest.get("package").is_some() {
+            let (pkg_ignores, _) = ignore_list_at(&root_manifest, "package");
+            for (k, v) in pkg_ignores {
+                ignored.entry(k).or_insert(v);
+            }
+        }
+    }
+
+    let mut findings = Vec::new();
+    for (key, spec) in ws_table {
+        if inherited.contains(key) {
+            continue;
+        }
+        let package = spec
+            .get("package")
+            .and_then(toml::Value::as_str)
+            .unwrap_or(key)
+            .to_owned();
+        let mut evidence = vec![
+            "declared in [workspace.dependencies], inherited by no workspace member".to_owned(),
+        ];
+        let confidence = if member_warnings.is_empty() {
+            UnusedConfidence::Likely
+        } else {
+            evidence
+                .push("some workspace member patterns were skipped; confidence lowered".to_owned());
+            UnusedConfidence::Possibly
+        };
+        findings.push(UnusedFinding {
+            declared_by: "workspace".to_owned(),
+            manifest: "Cargo.toml".to_owned(),
+            dependency: key.clone(),
+            package,
+            kind: DependencyKind::Workspace,
+            confidence,
+            evidence,
+            ignored: ignored.get(key).cloned(),
+        });
+    }
+    (findings, warnings)
 }
 
 /// A project package to analyze.
@@ -1912,6 +2007,81 @@ pub mod sys;
         assert_eq!(confidence("criterion"), Some(Possibly));
         assert_eq!(confidence("serde"), Some(Likely));
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn orphan_workspace_dependencies_flags_uninherited_entries_unless_ignored() {
+        let root = std::env::temp_dir().join(format!(
+            "cargoscope-ws-orphan-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir_all(&root).expect("dir");
+        let root_toml = r#"
+[workspace]
+members = ["a"]
+
+[workspace.dependencies]
+used_dep = "1.0"
+orphan_dep = "0.4"
+ignored_dep = { package = "real_pkg", version = "2.0" }
+
+[workspace.metadata.cargoscope]
+ignore-unused = [{ name = "ignored_dep", reason = "kept for feature matrix" }]
+"#;
+        std::fs::write(root.join("Cargo.toml"), root_toml).expect("write");
+        let parsed_root: toml::Value = toml::from_str(root_toml).expect("parse root");
+        let ws_deps = parsed_root
+            .get("workspace")
+            .and_then(|w| w.get("dependencies"));
+        let member_manifest: toml::Value = toml::from_str(
+            r#"
+[package]
+name = "a"
+version = "0.1.0"
+
+[dependencies]
+used_dep.workspace = true
+"#,
+        )
+        .expect("parse member");
+        let packages = vec![(root.join("a"), "a/Cargo.toml".to_owned(), member_manifest)];
+
+        let (findings, warnings) =
+            super::orphan_workspace_dependencies(&root, &packages, ws_deps, &[]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(findings.len(), 2);
+
+        let orphan = findings
+            .iter()
+            .find(|f| f.dependency == "orphan_dep")
+            .expect("orphan");
+        assert_eq!(orphan.declared_by, "workspace");
+        assert_eq!(orphan.manifest, "Cargo.toml");
+        assert_eq!(orphan.kind, cargoscope_core::DependencyKind::Workspace);
+        assert_eq!(orphan.confidence, cargoscope_core::UnusedConfidence::Likely);
+        assert_eq!(orphan.ignored, None);
+
+        let ignored = findings
+            .iter()
+            .find(|f| f.dependency == "ignored_dep")
+            .expect("ignored");
+        assert_eq!(ignored.package, "real_pkg");
+        assert_eq!(ignored.ignored.as_deref(), Some("kept for feature matrix"));
+
+        let (with_warning, _) = super::orphan_workspace_dependencies(
+            &root,
+            &packages,
+            ws_deps,
+            &["skipped member".to_owned()],
+        );
+        assert_eq!(
+            with_warning[0].confidence,
+            cargoscope_core::UnusedConfidence::Possibly
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }
