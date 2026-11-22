@@ -22,7 +22,9 @@ mod sources;
 
 #[cfg(test)]
 use self::macros::*;
-pub use self::macros::{WorkspaceMacros, is_proc_macro, macro_references, proc_macro_generated};
+pub use self::macros::{
+    WorkspaceMacros, is_proc_macro, macro_references, proc_macro_generated, proc_macro_quoted,
+};
 use self::references::*;
 use self::rules::*;
 use self::sources::*;
@@ -509,6 +511,8 @@ pub fn check_package(
         .map(|name| name.replace('-', "_"))
         .collect();
     let declared = declared_dependencies(package.manifest, workspace_dependencies);
+    let external_macro_targets =
+        external_macro_targets(inventory, &declared, package, &code_refs, workspace_macros);
     let facts = PackageFacts {
         sources: &sources,
         code_refs: &code_refs,
@@ -523,6 +527,7 @@ pub fn check_package(
         forwarded_features: features_forwarded_to(package.manifest),
         dep_only_features: dep_only_features(package.manifest),
         workspace_macros,
+        external_macro_targets: &external_macro_targets,
     };
 
     let mut findings = Vec::new();
@@ -587,6 +592,76 @@ pub fn check_package(
         ))
     });
     (findings, warnings)
+}
+
+/// Maps each crate identifier emitted inside `quote!` by an external
+/// proc-macro to the `(provider_ident, proc_macro_ident)` pairs reachable
+/// through direct dependencies actually referenced in `code_refs`.
+fn external_macro_targets(
+    inventory: &Inventory,
+    declared: &[DeclaredDependency],
+    package: &PackageToCheck<'_>,
+    code_refs: &References,
+    workspace_macros: &WorkspaceMacros,
+) -> BTreeMap<String, Vec<(String, String)>> {
+    let mut map: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    if workspace_macros.external_proc_macros.is_empty() {
+        return map;
+    }
+    let pkg_indices: Vec<usize> = inventory
+        .packages
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.source.is_none() && p.name == package.name)
+        .map(|(i, _)| i)
+        .collect();
+
+    for dep in declared {
+        if dep.kind == DependencyKind::Build {
+            continue;
+        }
+        let renamed = dep.key != dep.package;
+        let provider_ident = if renamed {
+            None
+        } else {
+            library_name(dep, package, inventory)
+        }
+        .unwrap_or_else(|| dep.key.replace('-', "_"));
+        if !code_refs.contains(&provider_ident) {
+            continue;
+        }
+        let mut stack: Vec<usize> = pkg_indices
+            .iter()
+            .flat_map(|&idx| inventory.packages[idx].dependencies.iter().copied())
+            .filter(|&idx| inventory.packages[idx].name == dep.package)
+            .collect();
+        if stack.is_empty() {
+            stack = inventory
+                .packages
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.name == dep.package)
+                .map(|(i, _)| i)
+                .collect();
+        }
+        let mut visited = BTreeSet::new();
+        while let Some(idx) = stack.pop() {
+            if !visited.insert(idx) {
+                continue;
+            }
+            let node = &inventory.packages[idx];
+            let pm_ident = node.name.replace('-', "_");
+            if let Some(emitted) = workspace_macros.external_proc_macros.get(&pm_ident) {
+                for target in emitted {
+                    map.entry(target.clone())
+                        .or_default()
+                        .push((provider_ident.clone(), pm_ident.clone()));
+                }
+            }
+            stack.extend(node.dependencies.iter().copied());
+        }
+    }
+    map
 }
 
 #[cfg(test)]
@@ -1718,6 +1793,124 @@ pub mod sys;
                 .map(|finding| finding.confidence),
             Some(Likely)
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn external_proc_macro_protects_emitted_crate_only_when_provider_is_used() {
+        let root = std::env::temp_dir().join(format!(
+            "cargoscope-ext-pm-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir_all(root.join("src")).expect("dir");
+        // Calls `ui::bench_main!()`, never mentions `criterion` directly and never mentions `serde`.
+        std::fs::write(root.join("src/lib.rs"), "ui::bench_main!();\n").expect("write");
+
+        let manifest: toml::Value = toml::from_str(
+            r#"
+            [package]
+            name = "app"
+            version = "0.1.0"
+            edition = "2024"
+
+            [dependencies]
+            ui = { package = "ui-pre", version = "0.1" }
+            serde = { version = "1.0", features = ["derive"] }
+
+            [dev-dependencies]
+            criterion = "0.8"
+            "#,
+        )
+        .expect("manifest");
+
+        let inventory = cargoscope_core::Inventory {
+            packages: vec![
+                cargoscope_core::Package {
+                    name: "app".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    source: None,
+                    root: true,
+                    direct: false,
+                    dependencies: vec![1, 3, 5],
+                },
+                cargoscope_core::Package {
+                    name: "ui-pre".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    source: Some("registry+".to_owned()),
+                    root: false,
+                    direct: true,
+                    dependencies: vec![2],
+                },
+                cargoscope_core::Package {
+                    name: "ui-pre-macros".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    source: Some("registry+".to_owned()),
+                    root: false,
+                    direct: false,
+                    dependencies: vec![],
+                },
+                cargoscope_core::Package {
+                    name: "serde".to_owned(),
+                    version: "1.0.0".to_owned(),
+                    source: Some("registry+".to_owned()),
+                    root: false,
+                    direct: true,
+                    dependencies: vec![4],
+                },
+                cargoscope_core::Package {
+                    name: "serde_derive".to_owned(),
+                    version: "1.0.0".to_owned(),
+                    source: Some("registry+".to_owned()),
+                    root: false,
+                    direct: false,
+                    dependencies: vec![],
+                },
+                cargoscope_core::Package {
+                    name: "criterion".to_owned(),
+                    version: "0.8.0".to_owned(),
+                    source: Some("registry+".to_owned()),
+                    root: false,
+                    direct: true,
+                    dependencies: vec![],
+                },
+            ],
+        };
+
+        let mut macros = super::WorkspaceMacros::default();
+        macros.external_proc_macros.insert(
+            "ui_pre_macros".to_owned(),
+            ["criterion".to_owned()].into_iter().collect(),
+        );
+        macros.external_proc_macros.insert(
+            "serde_derive".to_owned(),
+            ["serde".to_owned()].into_iter().collect(),
+        );
+
+        let (findings, _) = super::check_package(
+            &super::PackageToCheck {
+                name: "app",
+                dir: &root,
+                manifest_label: "Cargo.toml",
+                manifest: &manifest,
+                workspace_root: &root,
+            },
+            None,
+            &inventory,
+            &macros,
+        );
+        let confidence = |name: &str| {
+            findings
+                .iter()
+                .find(|f| f.dependency == name)
+                .map(|f| f.confidence)
+        };
+        use cargoscope_core::UnusedConfidence::{Likely, Possibly};
+        assert_eq!(confidence("criterion"), Some(Possibly));
+        assert_eq!(confidence("serde"), Some(Likely));
 
         let _ = std::fs::remove_dir_all(&root);
     }
