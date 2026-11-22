@@ -273,6 +273,7 @@ mod tests {
             warnings: Vec::new(),
             direct_kinds: BTreeMap::new(),
             unsafe_code: Vec::new(),
+            fix_versions: BTreeMap::new(),
         }
     }
 
