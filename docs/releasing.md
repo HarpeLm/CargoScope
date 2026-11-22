@@ -9,7 +9,7 @@ A release is started by pushing a version tag. Everything else runs in GitHub Ac
 | Homebrew (`brew install HarpeLm/tap/cargoscope`) | `release.yml` | `HarpeLm/homebrew-tap` repository and `HOMEBREW_TAP_TOKEN` secret |
 | npm (`npx cargoscope`) | `release.yml` | `NPM_TOKEN` secret |
 | PyPI (`pip install cargoscope`, `uvx cargoscope`) | `pypi.yml` | `pypi` GitHub environment (configured) + PyPI Pending Publisher (no token) |
-| GitHub Action (`uses: HarpeLm/CargoScope@v0.10.0`) | `action.yml` at the repository root | The GitHub Release |
+| GitHub Action (`uses: HarpeLm/CargoScope@v0.11.0`) | `action.yml` at the repository root | The GitHub Release |
 | Container images (`ghcr.io/harpelm/cargoscope`) | `docker/Dockerfile`, `.github/workflows/docker.yml` | The Docker workflow, once Release succeeds (or by hand with a tag) |
 
 ## v0.1.0 checklist
@@ -170,6 +170,12 @@ Released on 2026-11-22: OSV advisories (GitHub advisories and malicious crates a
 - ✅ `cargo fmt`, `clippy -D warnings`, `cargo test --workspace` (296 tests), `cargo package --workspace --exclude cargoscope-corpus`, `dist plan`. Tag `v0.10.0` pushed (2026-11-22).
 - ✅ Verified live across all 7 channels: GitHub Release, crates.io (5 crates), PyPI (6 wheels + sdist via Trusted Publisher), npm, Docker (`:latest` + `:full`), Homebrew tap, and GitHub Action.
 - ✅ Set the version back to `1.0.0-dev`.
+
+## v0.11.0
+
+Released on 2026-11-22: non-yanked advisory fix selection across `fix --advisories` and scan/HTML reports, on-disk external proc-macro inspection for `unused` reduction, `cargoscope fix --apply --verify` rollback on `cargo check` failure, strict `--checks unsafe` gating, and direct detection/removal of orphan `[workspace.dependencies]` entries.
+
+- ✅ `cargo fmt`, `clippy -D warnings`, `cargo test --workspace` (304 tests), `dist plan`. Tag `v0.11.0` pushed (2026-11-22).
 
 ## One-time setup (maintainer)
 
