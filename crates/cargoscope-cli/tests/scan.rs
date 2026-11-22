@@ -4019,3 +4019,163 @@ fn fix_updates_tracks_git_dependency_commits() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn fix_updates_updates_github_actions_and_docker_with_cooldown() {
+    let dir = std::env::temp_dir().join(format!("cargoscope-ecosystems-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let proj = dir.join("proj");
+    let cache = dir.join("cache");
+    std::fs::create_dir_all(proj.join(".github/workflows")).expect("mkdir workflows");
+    std::fs::create_dir_all(proj.join("src")).expect("mkdir src");
+    std::fs::create_dir_all(cache.join("github-actions")).expect("mkdir ga cache");
+    std::fs::create_dir_all(cache.join("docker")).expect("mkdir docker cache");
+
+    std::fs::write(
+        proj.join("Cargo.toml"),
+        "[package]\nname = \"eco-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+    std::fs::write(proj.join("src/main.rs"), "fn main() {}\n").expect("write main.rs");
+    std::fs::write(
+        proj.join("Cargo.lock"),
+        "version = 4\n\n[[package]]\nname = \"eco-test\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write Cargo.lock");
+
+    std::fs::write(
+        proj.join(".github/dependabot.yml"),
+        "\
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+",
+    )
+    .expect("write dependabot.yml");
+
+    std::fs::write(
+        proj.join(".github/workflows/ci.yml"),
+        "\
+name: CI
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.1.0
+",
+    )
+    .expect("write ci.yml");
+
+    std::fs::write(
+        proj.join("Dockerfile"),
+        "FROM --platform=linux/amd64 rust:1.82-slim-bookworm AS builder\nWORKDIR /app\n",
+    )
+    .expect("write Dockerfile");
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("unix time")
+        .as_secs();
+    let old_ts = now.saturating_sub(20 * 86_400);
+    let fresh_ts = now.saturating_sub(2 * 86_400);
+
+    // actions/checkout: v4.2.2 is mature (20d old), v4.3.0 is too fresh (2d < 7d cooldown).
+    std::fs::write(
+        cache.join("github-actions/actions_checkout.tsv"),
+        format!(
+            "# fetched {now}\nv4.1.0\t{old_ts}\t\t\nv4.2.2\t{old_ts}\t\t\nv4.3.0\t{fresh_ts}\t\t\n"
+        ),
+    )
+    .expect("write actions/checkout cache");
+
+    // docker rust: 1.85-slim-bookworm is mature, 1.86-slim-bookworm is too fresh.
+    std::fs::write(
+        cache.join("docker/docker.io__library_rust.tsv"),
+        format!(
+            "# fetched {now}\n1.82-slim-bookworm\t{old_ts}\t\t\n1.85-slim-bookworm\t{old_ts}\t\t\n1.86-slim-bookworm\t{fresh_ts}\t\t\n"
+        ),
+    )
+    .expect("write docker rust cache");
+
+    let plan = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", &cache)
+        .env("CARGOSCOPE_OFFLINE", "1")
+        .args([
+            "fix",
+            "--updates",
+            "--ecosystems",
+            "github-actions,docker",
+            "--format",
+            "json",
+        ])
+        .arg(&proj)
+        .output()
+        .expect("plan ecosystems");
+    assert_eq!(
+        plan.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&plan.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&plan.stdout).expect("valid plan JSON");
+    let updates = json["updates"].as_array().expect("updates array");
+    assert!(
+        updates.iter().any(|u| u["ecosystem"] == "github-actions"
+            && u["package"] == "actions/checkout"
+            && u["to"] == "v4.2.2"),
+        "expected actions/checkout -> v4.2.2 (cooldown skipping v4.3.0), got: {json}"
+    );
+    assert!(
+        updates.iter().any(|u| u["ecosystem"] == "docker"
+            && u["package"] == "rust"
+            && u["to"] == "1.85-slim-bookworm"),
+        "expected rust -> 1.85-slim-bookworm, got: {json}"
+    );
+
+    // --cooldown-for actions/checkout=0 unlocks v4.3.0 while applying both ecosystems.
+    let applied = Command::new(env!("CARGO_BIN_EXE_cargoscope"))
+        .env("CARGOSCOPE_CACHE_DIR", &cache)
+        .env("CARGOSCOPE_OFFLINE", "1")
+        .args([
+            "fix",
+            "--updates",
+            "--ecosystems",
+            "github-actions,docker",
+            "--cooldown-for",
+            "actions/checkout=0",
+            "--apply",
+        ])
+        .arg(&proj)
+        .output()
+        .expect("apply ecosystems");
+    assert_eq!(
+        applied.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
+
+    let wf_after =
+        std::fs::read_to_string(proj.join(".github/workflows/ci.yml")).expect("read ci.yml");
+    assert!(
+        wf_after.contains("uses: actions/checkout@v4.3.0"),
+        "workflow not updated: {wf_after}"
+    );
+    let df_after = std::fs::read_to_string(proj.join("Dockerfile")).expect("read Dockerfile");
+    assert!(
+        df_after.contains("FROM --platform=linux/amd64 rust:1.85-slim-bookworm AS builder"),
+        "Dockerfile not updated: {df_after}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
