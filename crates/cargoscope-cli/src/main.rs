@@ -55,14 +55,17 @@ const WHY_USAGE: &str =
       that leads to it. --all-paths lists every chain. Offline and read-only.";
 
 const FIX_USAGE: &str =
-    "  cargoscope fix [PATH] [--dry-run | --apply] [--only NAMES] [--include-uncertain] [--precise] [--color WHEN]
+    "  cargoscope fix [PATH] [--dry-run | --apply] [--verify] [--only NAMES] [--include-uncertain] [--precise] [--color WHEN]
       Remove likely-unused dependencies from the Cargo.toml files, and the
       [workspace.dependencies] entries no member uses anymore. Without
-      --apply, only shows what would be removed (dry run). --only limits it
-      to a comma-separated list of dependencies (and may also target
-      possibly-unused crates); --include-uncertain includes all possibly-unused
-      dependencies. Ignored dependencies are never removed. Formatting and
-      comments of the manifests are kept; run cargo check afterwards.
+      --apply, only shows what would be removed (dry run). With --verify
+      (requires --apply), runs `cargo check --workspace --all-targets`
+      afterwards and restores the manifests if compilation fails. --only
+      limits it to a comma-separated list of dependencies (and may also
+      target possibly-unused crates); --include-uncertain includes all
+      possibly-unused dependencies. Ignored dependencies are never removed.
+      Formatting and comments of the manifests are kept; run cargo check
+      afterwards.
   cargoscope fix --advisories [PATH] [--dry-run | --apply] [--format text|markdown] [--color WHEN]
       Update vulnerable packages to the smallest fixed version Cargo accepts
       (in Cargo.lock, and in Cargo.toml when a direct requirement blocks the
