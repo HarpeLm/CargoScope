@@ -17,6 +17,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
+use cargoscope_advisory::AdvisoryDatabase;
 use cargoscope_advisory::crates_io::RegistryCache;
 use cargoscope_cargo::fix::set_requirement_for_version;
 use cargoscope_core::{AdvisoryKind, Inventory, Package, PackageInfo};
@@ -43,34 +44,9 @@ enum Step {
 
 /// Smallest versions the patched ranges allow (`>= 0.2.23`, `^1.1.4`,
 /// `>= 0.4.20, < 0.5`), newer than `current`, oldest first.
+#[cfg(test)]
 fn candidates(patched: &[String], current: &str) -> Vec<semver::Version> {
-    let Ok(current) = semver::Version::parse(current) else {
-        return Vec::new();
-    };
-    let mut found: BTreeSet<semver::Version> = BTreeSet::new();
-    for range in patched {
-        let Ok(requirement) = semver::VersionReq::parse(range) else {
-            continue;
-        };
-        for comparator in &requirement.comparators {
-            use semver::Op;
-            if !matches!(
-                comparator.op,
-                Op::GreaterEq | Op::Caret | Op::Tilde | Op::Exact | Op::Wildcard
-            ) {
-                continue;
-            }
-            let version = semver::Version::new(
-                comparator.major,
-                comparator.minor.unwrap_or(0),
-                comparator.patch.unwrap_or(0),
-            );
-            if version > current && requirement.matches(&version) {
-                found.insert(version);
-            }
-        }
-    }
-    found.into_iter().collect()
+    cargoscope_core::fix_candidates(&[patched.to_vec()], current, None)
 }
 
 /// Runs `cargo update --color never -p target [--precise version] [--dry-run]`,
@@ -213,13 +189,20 @@ fn probe_parents(
     inventory: &Inventory,
     index: usize,
     patched_sets: &[Vec<String>],
-    vulnerable: &dyn Fn(&semver::Version) -> bool,
+    ignored: &BTreeSet<&str>,
+    database: Option<&AdvisoryDatabase>,
+    registry_cache: Option<&RegistryCache>,
 ) -> Option<Step> {
     let package = &inventory.packages[index];
-    let pooled: Vec<String> = patched_sets.iter().flatten().cloned().collect();
-    let fix = candidates(&pooled, &package.version)
-        .into_iter()
-        .find(|version| fixes_all(version, patched_sets))?;
+    let fix = cargoscope_advisory::safe_fix_candidates(
+        database,
+        package,
+        patched_sets,
+        ignored,
+        registry_cache,
+    )
+    .into_iter()
+    .next()?;
     let blockers = cargoscope_report::fix_blockers(inventory, index, &fix);
     if blockers.is_empty() {
         return None;
@@ -235,7 +218,20 @@ fn probe_parents(
     let stderr = run_cargo_update_all(root, &targets, None, true).ok()?;
     let to = replacement(&stderr, &package.name, &package.version)?;
     let version = semver::Version::parse(&to).ok()?;
-    (fixes_all(&version, patched_sets) && !vulnerable(&version)).then(|| Step::Update {
+    let brings_vuln = database.is_some_and(|db| {
+        let probe = Inventory {
+            packages: vec![Package {
+                version: version.to_string(),
+                dependencies: Vec::new(),
+                ..package.clone()
+            }],
+        };
+        db.check(&probe).findings.iter().any(|found| {
+            matches!(found.kind, AdvisoryKind::Vulnerability)
+                && !ignored.contains(found.id.as_str())
+        })
+    });
+    (fixes_all(&version, patched_sets) && !brings_vuln).then(|| Step::Update {
         spec: format!("{}@{}", package.name, package.version),
         version: to,
         manifests: Vec::new(),
@@ -261,16 +257,12 @@ fn refused_requirement(reason: &str) -> Option<&str> {
 fn explain_blocked(
     inventory: &Inventory,
     index: usize,
-    patched_sets: &[Vec<String>],
+    fix: &semver::Version,
     reason: &str,
     registry: &[PackageInfo],
 ) -> Option<String> {
     let package = &inventory.packages[index];
-    let pooled: Vec<String> = patched_sets.iter().flatten().cloned().collect();
-    let fix = candidates(&pooled, &package.version)
-        .into_iter()
-        .find(|version| fixes_all(version, patched_sets))?;
-    let blockers = cargoscope_report::fix_blockers(inventory, index, &fix);
+    let blockers = cargoscope_report::fix_blockers(inventory, index, fix);
     if blockers.is_empty() {
         return None;
     }
@@ -579,45 +571,72 @@ pub(crate) fn probe_manifest_update(
 /// Whether `version` is in a patched range of every advisory (an advisory
 /// without any fixed version does not count).
 fn fixes_all(version: &semver::Version, patched_sets: &[Vec<String>]) -> bool {
-    patched_sets.iter().all(|patched| {
-        patched.is_empty()
-            || patched.iter().any(|range| {
-                semver::VersionReq::parse(range)
-                    .is_ok_and(|requirement| requirement.matches(version))
-            })
-    })
+    cargoscope_core::fixes_all_patched(version, patched_sets)
+}
+
+/// Keeps at most `per_bucket` versions in each SemVer compatibility series
+/// (`^major` or `^0.minor`) so a blocked series does not spawn dozens of
+/// redundant `cargo update` dry-runs.
+fn cap_per_semver(versions: Vec<semver::Version>, per_bucket: usize) -> Vec<semver::Version> {
+    let mut counts: std::collections::BTreeMap<(u64, u64, u64), usize> =
+        std::collections::BTreeMap::new();
+    versions
+        .into_iter()
+        .filter(|v| {
+            let bucket = if v.major > 0 {
+                (v.major, 0, 0)
+            } else if v.minor > 0 {
+                (0, v.minor, 0)
+            } else {
+                (0, 0, v.patch)
+            };
+            let count = counts.entry(bucket).or_insert(0);
+            if *count < per_bucket {
+                *count += 1;
+                true
+            } else {
+                false
+            }
+        })
+        .collect()
 }
 
 /// `patched_sets`: the patched ranges of each advisory of the package.
-/// `vulnerable`: whether a version is affected by any vulnerability of the
-/// database (a fix must not move to a version another advisory affects).
+/// `database`: advisory database used to ensure candidate versions bring no
+/// unignored vulnerabilities.
 fn plan_package(
     root: &Path,
     package: &Package,
     patched_sets: &[Vec<String>],
-    vulnerable: &dyn Fn(&semver::Version) -> bool,
+    ignored: &BTreeSet<&str>,
+    database: Option<&AdvisoryDatabase>,
+    registry_cache: Option<&RegistryCache>,
     manifests: &mut Option<Vec<Manifest>>,
 ) -> Result<Step, ExitCode> {
     let spec = format!("{}@{}", package.name, package.version);
-    let pooled: Vec<String> = patched_sets.iter().flatten().cloned().collect();
-    let all = candidates(&pooled, &package.version);
+    let cached = registry_cache.and_then(|cache| cache.cached_versions(&package.name));
+    let all = cargoscope_core::fix_candidates(patched_sets, &package.version, cached.as_deref());
     if all.is_empty() {
         return Ok(Step::Blocked(
             "no fixed version is published for this advisory".to_owned(),
         ));
     }
-    // Only versions that fix every advisory of the package and bring none:
-    // quinn-proto 0.11.15 fixes one of seven and is affected by another.
-    let versions: Vec<semver::Version> = all
-        .into_iter()
-        .filter(|version| fixes_all(version, patched_sets) && !vulnerable(version))
-        .collect();
-    if versions.is_empty() {
+    // Only versions that fix every advisory of the package, are not yanked,
+    // and bring no unignored advisory.
+    let safe = cargoscope_advisory::safe_fix_candidates(
+        database,
+        package,
+        patched_sets,
+        ignored,
+        registry_cache,
+    );
+    if safe.is_empty() {
         return Ok(Step::Blocked(
             "no published version fixes every advisory of this package without another one"
                 .to_owned(),
         ));
     }
+    let versions = cap_per_semver(safe, 3);
 
     let mut last_error = String::new();
     for version in &versions {
@@ -1027,12 +1046,15 @@ pub fn run(
         eprintln!("warning: {warning}");
     }
 
-    let database = cargoscope_advisory::cache_dir()
-        .ok()
-        .and_then(|dir| cargoscope_advisory::AdvisoryDatabase::open(&dir).ok());
+    let cache_dir = cargoscope_advisory::cache_dir().ok();
+    let database = cache_dir
+        .as_deref()
+        .and_then(|dir| AdvisoryDatabase::open(dir).ok());
+    let registry_cache = cache_dir.as_deref().map(RegistryCache::open);
 
-    let registry = cargoscope_advisory::cache_dir()
-        .map(|dir| RegistryCache::open(&dir).info(&inventory))
+    let registry = registry_cache
+        .as_ref()
+        .map(|cache| cache.info(&inventory))
         .unwrap_or_default();
 
     // One step per vulnerable package, ignored advisories left out.
@@ -1069,41 +1091,40 @@ pub fn run(
             .filter(|other| other.ignored.is_some())
             .map(|other| other.id.as_str())
             .collect();
-        let vulnerable = |version: &semver::Version| {
-            database.as_ref().is_some_and(|database| {
-                let probe = Inventory {
-                    packages: vec![Package {
-                        version: version.to_string(),
-                        dependencies: Vec::new(),
-                        ..package.clone()
-                    }],
-                };
-                database.check(&probe).findings.iter().any(|found| {
-                    matches!(found.kind, AdvisoryKind::Vulnerability)
-                        && !ignored.contains(found.id.as_str())
-                })
-            })
-        };
-        let mut step = plan_package(root, package, &patched_sets, &vulnerable, &mut manifests)?;
+        let mut step = plan_package(
+            root,
+            package,
+            &patched_sets,
+            &ignored,
+            database.as_ref(),
+            registry_cache.as_ref(),
+            &mut manifests,
+        )?;
         if matches!(step, Step::Blocked(_))
             && let Some(through) = probe_parents(
                 root,
                 &inventory,
                 finding.package,
                 &patched_sets,
-                &vulnerable,
+                &ignored,
+                database.as_ref(),
+                registry_cache.as_ref(),
             )
         {
             step = through;
         }
         if let Step::Blocked(reason) = &step
-            && let Some(explained) = explain_blocked(
-                &inventory,
-                finding.package,
+            && let Some(fix) = cargoscope_advisory::safe_fix_candidates(
+                database.as_ref(),
+                &inventory.packages[finding.package],
                 &patched_sets,
-                reason,
-                &registry,
+                &ignored,
+                registry_cache.as_ref(),
             )
+            .into_iter()
+            .next()
+            && let Some(explained) =
+                explain_blocked(&inventory, finding.package, &fix, reason, &registry)
         {
             step = Step::Blocked(explained);
         }
