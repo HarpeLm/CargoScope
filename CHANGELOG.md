@@ -2,6 +2,14 @@
 
 All notable changes to CargoScope are documented in this file.
 
+## 0.11.0 (2026-11-22)
+
+- Skip `yanked` versions and versions carrying another active advisory in `cargoscope fix --advisories` and in `cargoscope scan` terminal/HTML fix recommendations, consulting the local crates.io cache and advisory database with mathematical lower-bound fallback when the cache is absent or stale.
+- Reduce static `unused` false positives from external (`Cargo.lock`) proc-macro crates by inspecting `quote!`/`quote_spanned!`/`parse_quote!` crate emissions when a direct provider dependency is referenced in source code (e.g., keeping proc-macro-emitted runtime/benchmark crates as `possibly-unused` while leaving genuinely unused `serde` as `likely-unused`).
+- `cargoscope fix --apply --verify`: runs `cargo check --workspace --all-targets` after applying manifest edits and automatically rolls back all modified `Cargo.toml` files if compilation fails.
+- Strict `--checks` gating for `unsafe`: `--checks` now includes `unsafe`, and `count_unsafe` plus the `UNSAFE CODE` HUD / HTML / text panels only run and render when `unsafe` is requested (or by default with all checks enabled).
+- Orphan `[workspace.dependencies]` detection and cleanup: `cargoscope scan` directly flags `[workspace.dependencies]` entries inherited by no workspace member (supporting `[workspace.metadata.cargoscope] ignore-unused`), and `cargoscope fix` removes them (including with `--only`), updating `docs/schema/report-v1.json`.
+
 ## 0.10.0 (2026-11-22)
 
 - `cargoscope fix --advisories`: when a fix is a breaking version that the crates pulling the package in do not accept, updates those crates within their range (`cargo update -p xcb`) if that moves the package to a fixed version. On halloy this fixes both quick-xml versions (xcb 1.7.0 → 1.7.1, wayland-scanner 0.31.10 → 0.31.11), where every update used to be refused. Packages that stay blocked get a plain reason (`xcb 1.7.0 requires quick-xml ^0.30.0, and the fix is 0.41.0`) with any newer release of the crates holding them back, instead of Cargo's error (`no matching package named crypto-bigint found` when elliptic-curve asks for 0.5); with nothing to update, the summary no longer suggests `--apply`. The scan, the HTML report and `why` mark such fixes `(via parent)` and count them for `fix --advisories`.
