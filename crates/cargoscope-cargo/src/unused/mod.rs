@@ -22,14 +22,17 @@ mod rules;
 mod sources;
 
 pub use self::features::find_unused_features;
-#[cfg(test)]
-use self::macros::*;
+pub(crate) use self::features::{
+    PrecomputedSignals, consume_feature_stream, find_unused_features_with_signals,
+};
 pub use self::macros::{
     WorkspaceMacros, build_dep_emitted, is_proc_macro, macro_references, proc_macro_generated,
     proc_macro_quoted,
 };
+use self::macros::{collect_macro_bodies, collect_proc_macro_tokens};
 use self::references::*;
 use self::rules::*;
+pub(crate) use self::sources::WorkspaceContext;
 use self::sources::*;
 
 /// Collects identifier tokens across all `.rs` source and build-script files
@@ -347,10 +350,11 @@ pub struct PackageToCheck<'a> {
 /// (a path dependency, or a crate unpacked in `$CARGO_HOME/registry/src`):
 /// its `[lib] name`, or else its package name with `-` read as `_`.
 /// `None` when the manifest is not available.
-fn library_name(
+fn cached_library_name(
     dependency: &DeclaredDependency,
     package: &PackageToCheck<'_>,
     inventory: &Inventory,
+    external_lib_names: Option<&BTreeMap<String, String>>,
 ) -> Option<String> {
     let lib_name = |manifest: &Path| -> Option<String> {
         let metadata = fs::symlink_metadata(manifest).ok()?;
@@ -376,6 +380,9 @@ fn library_name(
             package.dir
         };
         return lib_name(&base.join(path).join("Cargo.toml"));
+    }
+    if let Some(map) = external_lib_names {
+        return map.get(&dependency.package).cloned();
     }
     let cargo_home = std::env::var_os("CARGO_HOME")
         .map(PathBuf::from)
@@ -577,6 +584,82 @@ fn reachable_dependencies_of<'a>(
     collect_dependencies_of(inventory, package_name, false)
 }
 
+/// Single-pass extracted data from a workspace or path package's `.rs` files.
+#[derive(Debug, Default)]
+pub(crate) struct WorkspacePackageData {
+    sources: Sources,
+    code_refs: References,
+    build_refs: References,
+    pub(crate) macro_refs: BTreeSet<String>,
+    pub(crate) proc_macro_refs: BTreeSet<String>,
+    pub(crate) feature_signals: PrecomputedSignals,
+}
+
+#[must_use]
+pub(crate) fn analyze_package_sources(
+    dir: &Path,
+    manifest: &toml::Value,
+    workspace_ctx: Option<&WorkspaceContext>,
+    collect_refs_and_hints: bool,
+    collect_feature_hints: bool,
+    collect_macro_exports: bool,
+    collect_proc_macro: bool,
+) -> WorkspacePackageData {
+    let sources = collect_sources_with(dir, manifest, workspace_ctx);
+    let mut data = WorkspacePackageData::default();
+    if collect_feature_hints {
+        data.feature_signals.code.incomplete = sources.skipped > 0;
+        data.feature_signals.build.incomplete = sources.skipped > 0;
+    }
+
+    for file in &sources.code {
+        let Ok(text) = fs::read_to_string(file) else {
+            if collect_feature_hints {
+                data.feature_signals.code.incomplete = true;
+            }
+            continue;
+        };
+        let tokens = TokenStream::from_str(&text).ok();
+        if collect_macro_exports && let Some(ref ts) = tokens {
+            collect_macro_bodies(ts.clone(), &mut data.macro_refs);
+        }
+        if collect_proc_macro && let Some(ref ts) = tokens {
+            collect_proc_macro_tokens(ts.clone(), true, &mut data.proc_macro_refs);
+        }
+        if collect_feature_hints {
+            let generated = tokens
+                .as_ref()
+                .is_some_and(|ts| includes_generated_code(ts.clone()));
+            consume_feature_stream(tokens.clone(), generated, &mut data.feature_signals.code);
+        }
+        if collect_refs_and_hints {
+            scan_parsed_file(file, text, tokens, &mut data.code_refs);
+        }
+    }
+
+    if collect_refs_and_hints {
+        for file in &sources.build {
+            let Ok(text) = fs::read_to_string(file) else {
+                if collect_feature_hints {
+                    data.feature_signals.build.incomplete = true;
+                }
+                continue;
+            };
+            let tokens = TokenStream::from_str(&text).ok();
+            if collect_feature_hints {
+                let generated = tokens
+                    .as_ref()
+                    .is_some_and(|ts| includes_generated_code(ts.clone()));
+                consume_feature_stream(tokens.clone(), generated, &mut data.feature_signals.build);
+            }
+            scan_parsed_file(file, text, tokens, &mut data.build_refs);
+        }
+    }
+
+    data.sources = sources;
+    data
+}
+
 pub fn check_package(
     package: &PackageToCheck<'_>,
     workspace_dependencies: Option<&toml::Value>,
@@ -586,6 +669,50 @@ pub fn check_package(
     let sources = collect_sources(package.dir, package.manifest);
     let code_refs = scan_files(&sources.code);
     let build_refs = scan_files(&sources.build);
+    check_package_inner(
+        package,
+        workspace_dependencies,
+        inventory,
+        workspace_macros,
+        &sources,
+        &code_refs,
+        &build_refs,
+        None,
+    )
+}
+
+#[must_use]
+pub(crate) fn check_package_precomputed(
+    package: &PackageToCheck<'_>,
+    workspace_dependencies: Option<&toml::Value>,
+    inventory: &Inventory,
+    workspace_macros: &WorkspaceMacros,
+    precomputed: &WorkspacePackageData,
+    external_lib_names: &BTreeMap<String, String>,
+) -> (Vec<UnusedFinding>, Vec<String>) {
+    check_package_inner(
+        package,
+        workspace_dependencies,
+        inventory,
+        workspace_macros,
+        &precomputed.sources,
+        &precomputed.code_refs,
+        &precomputed.build_refs,
+        Some(external_lib_names),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_package_inner(
+    package: &PackageToCheck<'_>,
+    workspace_dependencies: Option<&toml::Value>,
+    inventory: &Inventory,
+    workspace_macros: &WorkspaceMacros,
+    sources: &Sources,
+    code_refs: &References,
+    build_refs: &References,
+    external_lib_names: Option<&BTreeMap<String, String>>,
+) -> (Vec<UnusedFinding>, Vec<String>) {
     let (ignored, mut warnings) = ignore_list(package.manifest);
     if sources.skipped > 0 {
         warnings.push(format!(
@@ -628,11 +755,17 @@ pub fn check_package(
         .map(|name| name.replace('-', "_"))
         .collect();
     let declared = declared_dependencies(package.manifest, workspace_dependencies);
-    let external_macro_targets =
-        external_macro_targets(inventory, &declared, package, &code_refs, workspace_macros);
+    let external_macro_targets = external_macro_targets(
+        inventory,
+        &declared,
+        package,
+        code_refs,
+        workspace_macros,
+        external_lib_names,
+    );
     let facts = PackageFacts {
-        sources: &sources,
-        code_refs: &code_refs,
+        sources,
+        code_refs,
         transitive_names: &transitive_names,
         build_tree: &build_tree,
         build_reads_files,
@@ -653,14 +786,14 @@ pub fn check_package(
         let known_library = if renamed {
             None
         } else {
-            library_name(dependency, package, inventory)
+            cached_library_name(dependency, package, inventory, external_lib_names)
         };
         let library_known = known_library.is_some();
         let ident = known_library.unwrap_or_else(|| dependency.key.replace('-', "_"));
         let (references, searched, searched_label) = match dependency.kind {
-            DependencyKind::Build => (&build_refs, sources.build.len(), "build script"),
+            DependencyKind::Build => (build_refs, sources.build.len(), "build script"),
             _ => (
-                &code_refs,
+                code_refs,
                 sources.code.len(),
                 "src/, tests/, benches/, examples/",
             ),
@@ -720,6 +853,7 @@ fn external_macro_targets(
     package: &PackageToCheck<'_>,
     code_refs: &References,
     workspace_macros: &WorkspaceMacros,
+    external_lib_names: Option<&BTreeMap<String, String>>,
 ) -> BTreeMap<String, Vec<(String, String)>> {
     let mut map: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     if workspace_macros.external_proc_macros.is_empty() {
@@ -741,7 +875,7 @@ fn external_macro_targets(
         let provider_ident = if renamed {
             None
         } else {
-            library_name(dep, package, inventory)
+            cached_library_name(dep, package, inventory, external_lib_names)
         }
         .unwrap_or_else(|| dep.key.replace('-', "_"));
         if !code_refs.contains(&provider_ident) {
