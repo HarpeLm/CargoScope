@@ -72,14 +72,17 @@ const FIX_USAGE: &str =
       fix), and say which dependency blocks the others. Runs cargo update,
       which may read the registry index; it compiles nothing.
   cargoscope fix --updates [PATH] [--breaking] [--dry-run | --apply] [--only NAMES]
+                 [--cooldown DAYS] [--cooldown-for CRATE=DAYS]
+                 [--versioning-strategy STRATEGY]
                  [--format text|markdown|json] [--color WHEN]
                  [--comment-command COMMENT --pr-body FILE]
-      Update direct dependencies to their newest SemVer-compatible version in
-      Cargo.lock, as Dependabot version updates do. With --breaking, try the
-      newest major version first, raising the requirement in Cargo.toml.
-      With --comment-command and --pr-body, interpret a PR comment such as
-      `/cargoscope rebase` or `/cargoscope ignore this major version`.
-      Needs the crates.io data of `cargoscope update`; compiles nothing.";
+      Update direct dependencies to their newest version outside the cooldown
+      window (default: 7 days, configurable per crate via `--cooldown-for` or
+      `[updates.cooldown.overrides]` / `.github/dependabot.yml`). With
+      --versioning-strategy (auto, lockfile-only, increase-if-necessary,
+      increase, widen) or --breaking, control how Cargo.toml constraints are
+      updated; also updates git and private registry dependencies when Cargo
+      can resolve them. Needs `cargoscope update` data; compiles nothing.";
 
 const SCAN_USAGE: &str = "  cargoscope scan [PATH] [--update] [--no-maintenance | --fast] [--format text|json|sarif|cyclonedx|html] [--output FILE] [--fail-on THRESHOLD] [--ignore-unlikely] [--rustsec-only] [--show-uncertain] [--verbose] [--precise] [--color WHEN]
       Report on a Cargo project, read-only and offline (unless --update is given).
@@ -472,17 +475,17 @@ fn execution_error(root: &Path, error: &dyn std::fmt::Display) -> ExitCode {
     ExitCode::from(2)
 }
 
-/// Unused-dependency findings of the project and their warnings, confirmed
+/// Unused-dependency findings and feature hints of the project, confirmed
 /// with rustc when `precise` (which compiles the project).
-fn find_unused_dependencies(
+fn find_unused_and_feature_hints(
     root: &Path,
     inventory: &Inventory,
     precise: bool,
-) -> Result<(Vec<UnusedFinding>, Vec<String>), ExitCode> {
-    let (unused, warnings) = cargoscope_cargo::find_unused(root, inventory)
+) -> Result<cargoscope_cargo::UnusedScan, ExitCode> {
+    let mut scan = cargoscope_cargo::find_unused_and_hints(root, inventory)
         .map_err(|error| execution_error(root, &error))?;
     if !precise {
-        return Ok((unused, warnings));
+        return Ok(scan);
     }
     eprintln!(
         "--precise: running cargo check with all targets and features. This compiles the project, so build scripts and proc macros of the project and its dependencies are executed."
@@ -491,11 +494,22 @@ fn find_unused_dependencies(
         cargoscope_cargo::project_packages(root).map_err(|error| execution_error(root, &error))?;
     let compiler =
         cargoscope_cargo::precise::run(root).map_err(|error| execution_error(root, &error))?;
-    let unused = cargoscope_cargo::precise::refine(
-        unused,
+    scan.unused = cargoscope_cargo::precise::refine(
+        scan.unused,
         &packages.packages,
         packages.workspace_dependencies.as_ref(),
         &compiler,
     );
-    Ok((unused, warnings))
+    Ok(scan)
+}
+
+/// Unused-dependency findings of the project and their warnings, confirmed
+/// with rustc when `precise` (which compiles the project).
+fn find_unused_dependencies(
+    root: &Path,
+    inventory: &Inventory,
+    precise: bool,
+) -> Result<(Vec<UnusedFinding>, Vec<String>), ExitCode> {
+    let scan = find_unused_and_feature_hints(root, inventory, precise)?;
+    Ok((scan.unused, scan.warnings))
 }
