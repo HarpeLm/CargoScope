@@ -77,6 +77,17 @@ struct PublishedVersion {
     published: Option<String>,
 }
 
+/// A cached crates.io release with its yank flag and parsed Unix timestamp.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseTime {
+    /// SemVer string of the release.
+    pub version: String,
+    /// Whether the release is yanked.
+    pub yanked: bool,
+    /// Publication timestamp in Unix seconds, when cached.
+    pub published_unix: Option<u64>,
+}
+
 impl PublishedVersion {
     /// The publication day, `YYYY-MM-DD`.
     fn date(&self) -> Option<String> {
@@ -518,6 +529,26 @@ impl RegistryCache {
             read_versions(&text)
                 .into_iter()
                 .map(|entry| CachedVersion {
+                    version: entry.version,
+                    yanked: entry.yanked,
+                })
+                .collect(),
+        )
+    }
+
+    /// Cached versions of `name` along with their yank state and Unix
+    /// publication timestamp (seconds), when recorded.
+    #[must_use]
+    pub fn version_timestamps(&self, name: &str) -> Option<Vec<ReleaseTime>> {
+        if !is_valid_name(name) {
+            return None;
+        }
+        let text = fs::read_to_string(self.root.join("versions").join(name)).ok()?;
+        Some(
+            read_versions(&text)
+                .into_iter()
+                .map(|entry| ReleaseTime {
+                    published_unix: entry.published.as_deref().and_then(crate::unix_seconds),
                     version: entry.version,
                     yanked: entry.yanked,
                 })
