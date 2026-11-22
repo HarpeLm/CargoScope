@@ -16,6 +16,7 @@ use cargoscope_core::{AdvisoryFinding, AdvisoryKind, AdvisoryRelevance, Inventor
 
 pub mod crate_files;
 pub mod crates_io;
+pub mod ecosystems;
 mod maintenance;
 pub mod osv;
 mod proxy;
