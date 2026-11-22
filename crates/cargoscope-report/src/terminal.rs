@@ -407,7 +407,9 @@ pub(crate) fn render_hud(project_root: &Path, report: &Report, options: TextOpti
         showed_any_section |= hud_outdated(&mut out, report, width, paint);
         showed_any_section |= hud_maintenance(&mut out, report, width, paint);
     }
-    showed_any_section |= hud_unsafe(&mut out, report, width, paint);
+    if report.checks.unsafe_code {
+        showed_any_section |= hud_unsafe(&mut out, report, width, paint);
+    }
     showed_any_section |= hud_audits(&mut out, report, width, paint);
     showed_any_section |= hud_weights(&mut out, report, width, paint);
     showed_any_section |= hud_duplicates(&mut out, report, width, paint);
