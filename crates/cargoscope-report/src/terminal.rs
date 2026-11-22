@@ -714,6 +714,27 @@ pub fn crate_fix(findings: &[&AdvisoryFinding], version: &str) -> (Option<semver
     (fixes_all, without_fix)
 }
 
+/// Uses the report's cache-resolved non-yanked fix version when available,
+/// falling back to [`crate_fix`] on the raw `patched` ranges.
+pub(crate) fn resolved_crate_fix(
+    report: &Report,
+    index: usize,
+    findings: &[&AdvisoryFinding],
+) -> (Option<semver::Version>, usize) {
+    let package = &report.inventory.packages[index];
+    let (raw, without_fix) = crate_fix(findings, &package.version);
+    let version = if without_fix == 0 {
+        report
+            .fix_versions
+            .get(&index)
+            .and_then(|v| semver::Version::parse(v).ok())
+            .or(raw)
+    } else {
+        raw
+    };
+    (version, without_fix)
+}
+
 /// The crates that have to accept `fix` before the package at `index` can
 /// move to it: when `fix` is outside the SemVer range of the resolved
 /// version, every non-workspace crate depending on it asks for that range,
@@ -846,8 +867,7 @@ fn hud_advisories(out: &mut String, report: &Report, width: usize, paint: Paint)
         let rows: Vec<_> = entries
             .iter()
             .map(|(index, findings)| {
-                let package = &report.inventory.packages[*index];
-                let (fix, without_fix) = crate_fix(findings, &package.version);
+                let (fix, without_fix) = resolved_crate_fix(report, *index, findings);
                 let blockers = fix
                     .as_ref()
                     .map(|version| fix_blockers(&report.inventory, *index, version))
@@ -1859,7 +1879,7 @@ pub(crate) fn next_steps(out: &mut String, report: &Report, verbose: bool, paint
         Vec::new();
     for (index, findings) in &vulnerable_crates(report) {
         let package = &report.inventory.packages[*index];
-        if let (Some(version), _) = crate_fix(findings, &package.version) {
+        if let (Some(version), _) = resolved_crate_fix(report, *index, findings) {
             let blockers = fix_blockers(&report.inventory, *index, &version);
             if blockers.is_empty()
                 || !blocker_updates(&report.inventory, &report.package_info, &blockers).is_empty()
