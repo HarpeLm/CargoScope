@@ -1018,6 +1018,48 @@ fn render_unused_section(
         }
         out.push_str("</ul>\n</details>\n");
     }
+    if !report.feature_hints.is_empty() {
+        let _ = writeln!(
+            out,
+            "<div class=\"panel\" style=\"margin-top:1rem\">\n<h3>Unused feature hints <span class=\"muted\">(informational)</span></h3>\n\
+<div class=\"table-wrap\"><table>\n<thead><tr>\
+<th>Dependency</th><th>Section and manifest</th><th>Flagged features</th><th>Hint</th>\
+</tr></thead>\n<tbody>"
+        );
+        for hint in &report.feature_hints {
+            let feats = hint
+                .features
+                .iter()
+                .map(|f| format!("<code>{}</code>", escape_html(f)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let suggestion = if hint.suggested.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " <span class=\"muted\">(try: {})</span>",
+                    hint.suggested
+                        .iter()
+                        .map(|s| format!("<code>{}</code>", escape_html(s)))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+            let _ = writeln!(
+                out,
+                "<tr class=\"filter-row\"><td><code>{}</code></td>\
+<td><code>[{}]</code> in <code>{}</code> <span class=\"muted\">({})</span></td>\
+<td>{feats}</td>\
+<td>{}{suggestion}</td></tr>",
+                escape_html(&hint.dependency),
+                escape_html(hint.kind.section()),
+                escape_html(&hint.manifest),
+                escape_html(&hint.declared_by),
+                escape_html(&hint.reason),
+            );
+        }
+        out.push_str("</tbody></table></div>\n</div>\n");
+    }
     out.push_str("</section>\n");
 }
 
@@ -2133,6 +2175,7 @@ mod tests {
         Report {
             inventory,
             unsafe_code: Vec::new(),
+            feature_hints: Vec::new(),
             checks: Checks::ALL,
             advisories: vec![
                 AdvisoryFinding {
