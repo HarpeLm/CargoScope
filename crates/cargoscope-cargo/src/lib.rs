@@ -15,6 +15,7 @@ pub mod config;
 pub mod crate_sources;
 pub mod deny;
 pub mod dependabot;
+pub mod ecosystem_updates;
 pub mod fix;
 pub mod licenses;
 pub mod locations;
