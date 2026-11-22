@@ -1273,7 +1273,9 @@ fn render_supply_chain_section(out: &mut String, report: &Report, now: Option<u6
 
     let (rows, counted) = crate::unsafe_rows(report);
     out.push_str("<div class=\"panel\">\n<h3>Unsafe code</h3>\n");
-    if counted == 0 {
+    if !report.checks.unsafe_code {
+        out.push_str("<p class=\"empty\">Not checked.</p>\n");
+    } else if counted == 0 {
         out.push_str(
             "<p class=\"empty\">No dependency sources on disk; run <code>cargo fetch</code>.</p>\n",
         );
