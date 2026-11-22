@@ -201,10 +201,11 @@ cargoscope fix . --apply               # edit Cargo.toml manifests with toml_edi
 cargoscope fix . --only rand,log       # restrict to specific dependencies
 cargoscope fix . --include-uncertain   # also include possibly-unused findings
 cargoscope fix . --precise --apply     # confirm with compiler before removing
+cargoscope fix . --apply --verify      # run `cargo check --workspace --all-targets` and roll back on failure
 cargo check                            # update Cargo.lock after applying
 ```
 
-Removes unused entries from `[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`, and `[target.'...']` tables while preserving formatting and unrelated comments; automatically strips `dep:<crate>`, `<crate>/feature`, and `<crate>?/feature` from `[features]`; and removes orphaned entries from `[workspace.dependencies]` once no member uses them anymore. Never invokes `cargo` unless `--precise` is passed.
+Removes unused entries from `[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`, and `[target.'...']` tables while preserving formatting and unrelated comments; automatically strips `dep:<crate>`, `<crate>/feature`, and `<crate>?/feature` from `[features]`; and removes orphaned entries from `[workspace.dependencies]` once no member uses them anymore. Never invokes `cargo` unless `--precise` or `--verify` is passed.
 
 ### Updating vulnerable packages (`--advisories`)
 
