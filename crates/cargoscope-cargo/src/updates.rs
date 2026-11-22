@@ -108,6 +108,113 @@ pub struct Group {
     pub update_types: Vec<UpdateType>,
 }
 
+/// Default anti-supply-chain cooldown window for `fix --updates` (7 days).
+pub const DEFAULT_COOLDOWN_DAYS: u64 = 7;
+
+/// How version constraints in `Cargo.toml` are updated (Dependabot's
+/// `versioning-strategy`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum VersioningStrategy {
+    /// CargoScope default: `lockfile-only` unless `--breaking`, in which case
+    /// requirements are raised when needed.
+    #[default]
+    Auto,
+    /// Only update `Cargo.lock` within existing `Cargo.toml` requirements.
+    LockfileOnly,
+    /// Update `Cargo.lock`, raising `Cargo.toml` only when the requirement blocks the upgrade.
+    IncreaseIfNecessary,
+    /// Always raise the `Cargo.toml` requirement to the target version, even when compatible.
+    Increase,
+    /// Widen `Cargo.toml` bounds (e.g. `>=1.0, <3.0`) to keep old compatibility while allowing the new line.
+    Widen,
+}
+
+impl VersioningStrategy {
+    /// Parses a strategy name from CLI, `cargoscope.toml`, or `.github/dependabot.yml`.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim() {
+            "auto" => Some(Self::Auto),
+            "lockfile-only" => Some(Self::LockfileOnly),
+            "increase-if-necessary" => Some(Self::IncreaseIfNecessary),
+            "increase" => Some(Self::Increase),
+            "widen" => Some(Self::Widen),
+            _ => None,
+        }
+    }
+
+    /// Machine-readable name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::LockfileOnly => "lockfile-only",
+            Self::IncreaseIfNecessary => "increase-if-necessary",
+            Self::Increase => "increase",
+            Self::Widen => "widen",
+        }
+    }
+}
+
+/// Anti-supply-chain cooldown rules before proposing newly published crate
+/// versions in `fix --updates`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CooldownConfig {
+    /// Default minimum age in days before proposing an update (default: 7).
+    pub default_days: u64,
+    /// Minimum age for major updates (`semver-major-days`).
+    pub semver_major_days: Option<u64>,
+    /// Minimum age for minor updates (`semver-minor-days`).
+    pub semver_minor_days: Option<u64>,
+    /// Minimum age for patch updates (`semver-patch-days`).
+    pub semver_patch_days: Option<u64>,
+    /// If non-empty, only crates matching these wildcard patterns get cooldown.
+    pub include: Vec<String>,
+    /// Wildcard patterns exempt from cooldown (`days = 0` unless overridden).
+    pub exclude: Vec<String>,
+    /// Per-dependency cooldown overrides `(pattern, days)` (first match wins).
+    pub overrides: Vec<(String, u64)>,
+}
+
+impl Default for CooldownConfig {
+    fn default() -> Self {
+        Self {
+            default_days: DEFAULT_COOLDOWN_DAYS,
+            semver_major_days: None,
+            semver_minor_days: None,
+            semver_patch_days: None,
+            include: Vec::new(),
+            exclude: Vec::new(),
+            overrides: Vec::new(),
+        }
+    }
+}
+
+impl CooldownConfig {
+    /// Effective cooldown in days for crate `name` and `update_type`.
+    #[must_use]
+    pub fn days_for(&self, name: &str, update_type: UpdateType) -> u64 {
+        if let Some((_, days)) = self
+            .overrides
+            .iter()
+            .find(|(pattern, _)| wildcard_match(pattern, name))
+        {
+            return *days;
+        }
+        if self.exclude.iter().any(|p| wildcard_match(p, name)) {
+            return 0;
+        }
+        if !self.include.is_empty() && !self.include.iter().any(|p| wildcard_match(p, name)) {
+            return 0;
+        }
+        match update_type {
+            UpdateType::Major => self.semver_major_days.unwrap_or(self.default_days),
+            UpdateType::Minor => self.semver_minor_days.unwrap_or(self.default_days),
+            UpdateType::Patch => self.semver_patch_days.unwrap_or(self.default_days),
+        }
+    }
+}
+
 /// The `[updates]` table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdatesConfig {
@@ -119,6 +226,18 @@ pub struct UpdatesConfig {
     pub open_pull_requests_limit: Option<usize>,
     /// Whether dev-dependencies are updated too.
     pub include_dev: bool,
+    /// Manifest requirement update strategy.
+    pub versioning_strategy: VersioningStrategy,
+    /// Release age cooldown rules (`default_days = 7`).
+    pub cooldown: CooldownConfig,
+    /// Default PR labels (also read from `.github/dependabot.yml`).
+    pub labels: Vec<String>,
+    /// Default PR reviewers (also read from `.github/dependabot.yml`).
+    pub reviewers: Vec<String>,
+    /// Default commit/PR title prefix (also read from `.github/dependabot.yml`).
+    pub commit_prefix: Option<String>,
+    /// Schedule interval from `.github/dependabot.yml`, if any.
+    pub schedule_interval: Option<String>,
 }
 
 impl Default for UpdatesConfig {
@@ -128,6 +247,12 @@ impl Default for UpdatesConfig {
             groups: Vec::new(),
             open_pull_requests_limit: None,
             include_dev: true,
+            versioning_strategy: VersioningStrategy::Auto,
+            cooldown: CooldownConfig::default(),
+            labels: Vec::new(),
+            reviewers: Vec::new(),
+            commit_prefix: None,
+            schedule_interval: None,
         }
     }
 }
@@ -239,6 +364,24 @@ fn update_types(table: &toml::Table, context: &str) -> Result<Vec<UpdateType>, S
         .collect()
 }
 
+fn parse_days_value(value: &toml::Value, context: &str) -> Result<u64, String> {
+    match value {
+        toml::Value::Integer(days) if *days >= 0 => {
+            u64::try_from(*days).map_err(|_| format!("[updates] {context}: days out of range"))
+        }
+        toml::Value::String(text) => {
+            let trimmed = text.trim();
+            let stripped = trimmed.strip_suffix('d').unwrap_or(trimmed).trim();
+            stripped.parse::<u64>().map_err(|_| {
+                format!("[updates] {context}: expected non-negative days (e.g. 7 or \"7d\"), not `{text}`")
+            })
+        }
+        _ => Err(format!(
+            "[updates] {context}: expected non-negative integer days (e.g. 7 or \"7d\")"
+        )),
+    }
+}
+
 /// Parses the `[updates]` table of a `cargoscope.toml`.
 ///
 /// # Errors
@@ -254,6 +397,11 @@ pub fn parse(table: &toml::Table) -> Result<UpdatesConfig, String> {
             "groups",
             "open-pull-requests-limit",
             "include-dev",
+            "versioning-strategy",
+            "cooldown",
+            "labels",
+            "reviewers",
+            "commit-prefix",
         ],
     )?;
     let mut config = UpdatesConfig::default();
@@ -270,6 +418,76 @@ pub fn parse(table: &toml::Table) -> Result<UpdatesConfig, String> {
         None => {}
         Some(toml::Value::Boolean(value)) => config.include_dev = *value,
         Some(_) => return Err("[updates] include-dev must be true or false".to_owned()),
+    }
+    match table.get("versioning-strategy") {
+        None => {}
+        Some(toml::Value::String(text)) => {
+            config.versioning_strategy = VersioningStrategy::parse(text).ok_or_else(|| {
+                format!(
+                    "[updates] versioning-strategy must be auto, lockfile-only, increase-if-necessary, increase, or widen, not `{text}`"
+                )
+            })?;
+        }
+        Some(_) => return Err("[updates] versioning-strategy must be a string".to_owned()),
+    }
+    if let Some(cd) = table.get("cooldown") {
+        match cd {
+            toml::Value::Table(cd_table) => {
+                check_keys(
+                    cd_table,
+                    "cooldown",
+                    &[
+                        "default",
+                        "default-days",
+                        "semver-major-days",
+                        "semver-minor-days",
+                        "semver-patch-days",
+                        "include",
+                        "exclude",
+                        "overrides",
+                    ],
+                )?;
+                if let Some(v) = cd_table
+                    .get("default-days")
+                    .or_else(|| cd_table.get("default"))
+                {
+                    config.cooldown.default_days = parse_days_value(v, "cooldown.default-days")?;
+                }
+                if let Some(v) = cd_table.get("semver-major-days") {
+                    config.cooldown.semver_major_days =
+                        Some(parse_days_value(v, "cooldown.semver-major-days")?);
+                }
+                if let Some(v) = cd_table.get("semver-minor-days") {
+                    config.cooldown.semver_minor_days =
+                        Some(parse_days_value(v, "cooldown.semver-minor-days")?);
+                }
+                if let Some(v) = cd_table.get("semver-patch-days") {
+                    config.cooldown.semver_patch_days =
+                        Some(parse_days_value(v, "cooldown.semver-patch-days")?);
+                }
+                config.cooldown.include = strings(cd_table, "include", "cooldown")?;
+                config.cooldown.exclude = strings(cd_table, "exclude", "cooldown")?;
+                if let Some(overrides) = cd_table.get("overrides") {
+                    let overrides = overrides
+                        .as_table()
+                        .ok_or("[updates] cooldown.overrides must be a table of crate = days")?;
+                    for (name, val) in overrides {
+                        let days = parse_days_value(val, &format!("cooldown.overrides.{name}"))?;
+                        config.cooldown.overrides.push((name.clone(), days));
+                    }
+                }
+            }
+            other => {
+                config.cooldown.default_days = parse_days_value(other, "cooldown")?;
+            }
+        }
+    }
+    config.labels = strings(table, "labels", "top")?;
+    config.reviewers = strings(table, "reviewers", "top")?;
+    match table.get("commit-prefix") {
+        None => {}
+        Some(toml::Value::String(prefix)) => config.commit_prefix = Some(prefix.clone()),
+        Some(_) => return Err("[updates] commit-prefix must be a string".to_owned()),
     }
     let entries = |key: &str| -> Result<Vec<&toml::Table>, String> {
         match table.get(key) {
@@ -374,26 +592,34 @@ pub fn from_toml(text: &str) -> Result<UpdatesConfig, String> {
     }
 }
 
-/// Reads `[updates]` from `project_root/cargoscope.toml`; the defaults when
-/// there is no such file or table.
+/// Reads `[updates]` from `project_root/cargoscope.toml`, falling back to
+/// `.github/dependabot.yml` (`package-ecosystem: "cargo"`) when
+/// `cargoscope.toml` is absent or defines no `[updates]` table.
 ///
 /// # Errors
 ///
 /// Returns a message naming the file for unreadable or invalid content.
 pub fn load(project_root: &Path) -> Result<UpdatesConfig, String> {
     let path = project_root.join(crate::config::FILE_NAME);
-    let Ok(metadata) = std::fs::symlink_metadata(&path) else {
-        return Ok(UpdatesConfig::default());
-    };
-    if !metadata.is_file() || metadata.len() > 1024 * 1024 {
-        return Err(format!(
-            "{} must be a regular file under 1 MiB",
-            path.display()
-        ));
+    if let Ok(metadata) = std::fs::symlink_metadata(&path) {
+        if !metadata.is_file() || metadata.len() > 1024 * 1024 {
+            return Err(format!(
+                "{} must be a regular file under 1 MiB",
+                path.display()
+            ));
+        }
+        let text = std::fs::read_to_string(&path)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        let value: toml::Table =
+            toml::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
+        if let Some(updates) = value.get("updates") {
+            let table = updates
+                .as_table()
+                .ok_or_else(|| format!("{}: [updates] must be a table", path.display()))?;
+            return parse(table).map_err(|error| format!("{}: {error}", path.display()));
+        }
     }
-    let text =
-        std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-    from_toml(&text).map_err(|error| format!("{}: {error}", path.display()))
+    Ok(crate::dependabot::load(project_root).unwrap_or_default())
 }
 
 /// Appends an ignore rule to `[updates] ignore` in `contents` (`cargoscope.toml`),
@@ -644,5 +870,75 @@ mod tests {
         let table: toml::Table = toml::from_str(&with_major).expect("valid TOML");
         let parsed = super::parse(table["updates"].as_table().unwrap()).expect("valid [updates]");
         assert_eq!(parsed.ignore.len(), 2);
+    }
+
+    #[test]
+    fn cooldown_defaults_to_7d_and_dependabot_fallback_works() {
+        let cfg = super::UpdatesConfig::default();
+        assert_eq!(cfg.cooldown.default_days, 7);
+        assert_eq!(cfg.cooldown.days_for("serde", super::UpdateType::Minor), 7);
+
+        let parsed = super::from_toml(
+            r#"
+[updates]
+versioning-strategy = "widen"
+labels = ["deps", "rust"]
+reviewers = ["alice"]
+commit-prefix = "chore(deps): "
+
+[updates.cooldown]
+default-days = 7
+semver-major-days = 14
+overrides = { serde = 1 }
+exclude = ["anyhow"]
+"#,
+        )
+        .expect("valid config");
+        assert_eq!(parsed.versioning_strategy, super::VersioningStrategy::Widen);
+        assert_eq!(
+            parsed.cooldown.days_for("serde", super::UpdateType::Major),
+            1
+        );
+        assert_eq!(
+            parsed.cooldown.days_for("anyhow", super::UpdateType::Major),
+            0
+        );
+        assert_eq!(
+            parsed.cooldown.days_for("tokio", super::UpdateType::Major),
+            14
+        );
+        assert_eq!(
+            parsed.cooldown.days_for("tokio", super::UpdateType::Patch),
+            7
+        );
+
+        let dir = std::env::temp_dir().join(format!("cargoscope-dep-load-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".github")).expect("mkdir");
+        std::fs::write(
+            dir.join(".github/dependabot.yml"),
+            r#"
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    versioning-strategy: "lockfile-only"
+    cooldown:
+      default-days: 5
+      include: ["tokio"]
+    labels: ["dependencies"]
+"#,
+        )
+        .expect("write dependabot.yml");
+        let loaded = super::load(&dir).expect("load dependabot fallback");
+        assert_eq!(
+            loaded.versioning_strategy,
+            super::VersioningStrategy::LockfileOnly
+        );
+        assert_eq!(loaded.cooldown.default_days, 5);
+        assert_eq!(loaded.labels, vec!["dependencies"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
