@@ -134,6 +134,7 @@ fn audit(
         warnings,
         direct_kinds: std::collections::BTreeMap::new(),
         unsafe_code: Vec::new(),
+        fix_versions: std::collections::BTreeMap::new(),
     };
     let rendered = match options.format {
         OutputFormat::Text => cargoscope_report::render_text(
