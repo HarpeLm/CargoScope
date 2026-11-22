@@ -19,7 +19,11 @@ use crate::{execution_error, find_unused_dependencies};
 #[derive(Debug, Default, PartialEq, Eq)]
 struct FixOptions {
     path: Option<PathBuf>,
+    /// Apply removals (`--apply`).
     apply: bool,
+    /// Run `cargo check --workspace --all-targets` after applying changes and
+    /// restore manifests if the build fails (`--verify`).
+    verify: bool,
     include_uncertain: bool,
     precise: bool,
     only: Option<Vec<String>>,
@@ -88,6 +92,7 @@ fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptio
         match argument.as_str() {
             "--apply" => options.apply = true,
             "--dry-run" => dry_run = true,
+            "--verify" => options.verify = true,
             "--include-uncertain" | "--show-uncertain" => options.include_uncertain = true,
             "--precise" => options.precise = true,
             "--advisories" => options.advisories = true,
@@ -128,6 +133,12 @@ fn parse_fix_options(arguments: impl Iterator<Item = String>) -> Result<FixOptio
     }
     if (options.advisories || options.updates) && options.precise {
         return Err("--advisories and --updates cannot be combined with --precise".to_owned());
+    }
+    if (options.advisories || options.updates) && options.verify {
+        return Err("--advisories and --updates cannot be combined with --verify".to_owned());
+    }
+    if options.verify && !options.apply {
+        return Err("--verify requires --apply".to_owned());
     }
     if (options.advisories || options.updates) && options.include_uncertain {
         return Err(
@@ -214,7 +225,14 @@ fn run_fix(options: &FixOptions) -> Result<ExitCode, ExitCode> {
     let mut removed = edit_manifests(root, &plan, &mut manifests, paint)?;
     removed +=
         remove_orphaned_workspace_dependencies(root, &inherited_before, &mut manifests, paint)?;
-    finish(&manifests, removed, options.apply, paint)?;
+    finish(
+        root,
+        &manifests,
+        removed,
+        options.apply,
+        options.verify,
+        paint,
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -368,11 +386,14 @@ fn remove_orphaned_workspace_dependencies(
 }
 
 /// Writes the edited manifests with `--apply`, or only says what a run with
-/// `--apply` would do.
+/// `--apply` would do. With `verify`, runs `cargo check --workspace
+/// --all-targets` afterwards and restores the original manifests on failure.
 fn finish(
+    root: &Path,
     manifests: &Manifests,
     removed: usize,
     apply: bool,
+    verify: bool,
     paint: Paint,
 ) -> Result<(), ExitCode> {
     let plural = if removed == 1 { "y" } else { "ies" };
@@ -383,18 +404,60 @@ fn finish(
         );
         return Ok(());
     }
-    let mut edited = 0;
+    let mut written: Vec<(&Path, &str)> = Vec::new();
     for (path, (original, current)) in manifests {
         if original != current {
             std::fs::write(path, current).map_err(|error| {
                 eprintln!("CargoScope could not write {}: {error}", path.display());
                 ExitCode::from(2)
             })?;
-            edited += 1;
+            written.push((path.as_path(), original.as_str()));
+        }
+    }
+    let edited = written.len();
+    if verify && edited > 0 {
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let output = std::process::Command::new(cargo)
+            .current_dir(root)
+            .args(["check", "--workspace", "--all-targets"])
+            .output();
+        match output {
+            Ok(out) if out.status.success() => {
+                println!(
+                    "\n{} Verified with `cargo check --workspace --all-targets`.",
+                    paint.green(&format!(
+                        "Removed {removed} dependenc{plural} from {edited} manifest(s)."
+                    ))
+                );
+                return Ok(());
+            }
+            Ok(out) => {
+                for (path, original) in &written {
+                    let _ = std::fs::write(path, original);
+                }
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                let tail: Vec<&str> = stderr.lines().rev().take(12).collect();
+                for line in tail.into_iter().rev() {
+                    eprintln!("{line}");
+                }
+                eprintln!(
+                    "CargoScope restored the modified manifest(s) because `cargo check --workspace --all-targets` failed. Re-run with `--precise` to ask rustc first."
+                );
+                return Err(ExitCode::from(2));
+            }
+            Err(error) => {
+                for (path, original) in &written {
+                    let _ = std::fs::write(path, original);
+                }
+                eprintln!(
+                    "CargoScope could not run `cargo check` ({error}); restored the modified manifest(s)."
+                );
+                return Err(ExitCode::from(2));
+            }
         }
     }
     println!(
-        "\n{} Run `cargo check` to update Cargo.lock and confirm the build.",
+        "\n{} Run `cargo check --all-targets` to update Cargo.lock and confirm the build.",
         paint.green(&format!(
             "Removed {removed} dependenc{plural} from {edited} manifest(s)."
         ))
@@ -456,5 +519,10 @@ mod tests {
         );
         assert!(parse(&["--advisories", "--include-uncertain"]).is_err());
         assert!(parse(&["--updates", "--include-uncertain"]).is_err());
+        let verified = parse(&["--apply", "--verify"]).expect("valid");
+        assert!(verified.apply && verified.verify);
+        assert!(parse(&["--verify"]).is_err());
+        assert!(parse(&["--advisories", "--apply", "--verify"]).is_err());
+        assert!(parse(&["--updates", "--apply", "--verify"]).is_err());
     }
 }
