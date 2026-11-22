@@ -15,6 +15,7 @@ pub(super) fn build_dependency_tree<'a>(
     inventory: &'a Inventory,
     package_name: &str,
     build_dependencies: &[&str],
+    build_dep_emitted: &BTreeMap<String, BTreeSet<String>>,
 ) -> BTreeSet<&'a str> {
     let mut names = BTreeSet::new();
     let Some(package) = inventory
@@ -24,35 +25,38 @@ pub(super) fn build_dependency_tree<'a>(
     else {
         return names;
     };
-    let mut stack: Vec<usize> = package
-        .dependencies
-        .iter()
-        .copied()
-        .filter(|&index| build_dependencies.contains(&inventory.packages[index].name.as_str()))
-        .collect();
-    // A lockfile edge Cargo leaves ambiguous (two `x 1.0.0`, one local, one
-    // from a registry) may be missing: look such names up directly.
-    for name in build_dependencies {
-        if !stack
+    for &build_dep in build_dependencies {
+        let mut stack: Vec<usize> = package
+            .dependencies
             .iter()
-            .any(|&index| inventory.packages[index].name == *name)
-        {
+            .copied()
+            .filter(|&index| inventory.packages[index].name == build_dep)
+            .collect();
+        // A lockfile edge Cargo leaves ambiguous (two `x 1.0.0`, one local, one
+        // from a registry) may be missing: look such names up directly.
+        if stack.is_empty() {
             stack.extend(
                 inventory
                     .packages
                     .iter()
                     .enumerate()
-                    .filter(|(_, candidate)| candidate.name == *name)
+                    .filter(|(_, candidate)| candidate.name == build_dep)
                     .map(|(index, _)| index),
             );
         }
-    }
-    let mut seen: BTreeSet<usize> = stack.iter().copied().collect();
-    while let Some(index) = stack.pop() {
-        names.insert(inventory.packages[index].name.as_str());
-        for &next in &inventory.packages[index].dependencies {
-            if seen.insert(next) {
-                stack.push(next);
+        let mut seen: BTreeSet<usize> = stack.iter().copied().collect();
+        let emitted = build_dep_emitted.get(build_dep);
+        while let Some(index) = stack.pop() {
+            let candidate = inventory.packages[index].name.as_str();
+            if emitted.is_none_or(|set| {
+                candidate == build_dep || set.contains(&candidate.replace('-', "_"))
+            }) {
+                names.insert(candidate);
+            }
+            for &next in &inventory.packages[index].dependencies {
+                if seen.insert(next) {
+                    stack.push(next);
+                }
             }
         }
     }
@@ -431,7 +435,7 @@ pub(super) fn rule_test_files_missing(
             "published package copy (Cargo.toml.orig present): test files are often excluded from it"
                 .to_owned(),
         )
-    } else if !sources.has_test_files && !sources.git_checkout {
+    } else if !sources.has_test_files && !sources.git_checkout && !sources.in_workspace {
         Some(
             "no tests/, benches/ or examples/ found: test files may be missing from this copy"
                 .to_owned(),
