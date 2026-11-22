@@ -1,6 +1,6 @@
 # Command Reference
 
-Detailed usage for every CargoScope command and report section. See [docs/policy.md](policy.md) for `cargoscope.toml` and `deny.toml` policy rules, [docs/github-action.md](github-action.md) for CI and automated pull requests, and [docs/compatibility.md](compatibility.md) for `1.x` stability guarantees.
+Detailed usage for every CargoScope command and report section. See [docs/policy.md](policy.md) for `cargoscope.toml` and `deny.toml` policy rules, [docs/github-action.md](github-action.md) for the GitHub Action, [docs/github-app.md](github-app.md) for the 1-click hosted GitHub App (`cargoscope-bot[bot]`), and [docs/compatibility.md](compatibility.md) for `1.x` stability guarantees.
 
 ## Contents
 
