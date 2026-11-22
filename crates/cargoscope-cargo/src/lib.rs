@@ -217,9 +217,36 @@ pub fn project_ident_tokens(project_root: &Path) -> BTreeSet<String> {
     let Ok(ProjectPackages { packages, .. }) = project_packages(project_root) else {
         return BTreeSet::new();
     };
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism()
+        .map_or(4, usize::from)
+        .min(16)
+        .min(packages.len().max(1));
     let mut idents = BTreeSet::new();
-    for (dir, _, manifest) in &packages {
-        unused::collect_package_idents(dir, manifest, &mut idents);
+    let per_worker = std::sync::Mutex::new(Vec::<BTreeSet<String>>::new());
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                let mut local = BTreeSet::new();
+                while let Some((dir, _, manifest)) =
+                    packages.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+                {
+                    unused::collect_package_idents(dir, manifest, &mut local);
+                }
+                if !local.is_empty() {
+                    per_worker
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(local);
+                }
+            });
+        }
+    });
+    for set in per_worker
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    {
+        idents.extend(set);
     }
     idents
 }
@@ -260,12 +287,16 @@ fn find_unused_inner(
     inventory: &Inventory,
     collect_hints: bool,
 ) -> Result<UnusedScan, ScanError> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Mutex, PoisonError};
+
     let ProjectPackages {
         packages,
         workspace_dependencies,
         mut warnings,
     } = project_packages(project_root)?;
     let workspace_dependencies = workspace_dependencies.as_ref();
+    let ws_ctx = unused::WorkspaceContext::for_root(project_root);
 
     let mut build_dep_names: BTreeSet<String> = BTreeSet::new();
     for (_, _, manifest) in &packages {
@@ -278,10 +309,18 @@ fn find_unused_inner(
 
     // Path dependencies inside the workspace are implicit members (bevy's
     // `crates/bevy_extract/macros`): their macros count too.
+    let member_count = packages.len();
     let mut macro_packages: Vec<(std::path::PathBuf, toml::Value)> = packages
         .iter()
         .map(|(dir, _, manifest)| (dir.clone(), manifest.clone()))
         .collect();
+    let mut known_canon: BTreeSet<std::path::PathBuf> = macro_packages
+        .iter()
+        .filter_map(|(dir, _)| dir.canonicalize().ok())
+        .collect();
+    let canonical_root = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf());
     let mut index = 0;
     while index < macro_packages.len() && macro_packages.len() < 4_096 {
         let (dir, manifest) = macro_packages[index].clone();
@@ -296,15 +335,10 @@ fn find_unused_inner(
                 dir.as_path()
             };
             let candidate = base.join(path);
-            let known = macro_packages
-                .iter()
-                .any(|(known, _)| known.canonicalize().ok() == candidate.canonicalize().ok());
-            let inside = candidate
-                .canonicalize()
-                .ok()
-                .zip(project_root.canonicalize().ok())
-                .is_some_and(|(candidate, root)| candidate.starts_with(root));
-            if known || !inside {
+            let Ok(canon) = candidate.canonicalize() else {
+                continue;
+            };
+            if !canon.starts_with(&canonical_root) || !known_canon.insert(canon) {
                 continue;
             }
             let Ok(contents) = read_manifest(&candidate.join("Cargo.toml")) else {
@@ -316,57 +350,127 @@ fn find_unused_inner(
         }
     }
 
+    let threads = std::thread::available_parallelism()
+        .map_or(4, usize::from)
+        .min(16);
+
+    // Inspect external packages AND workspace/macro packages concurrently:
+    // external scanning depends only on `inventory` and `build_dep_names`,
+    // while workspace scanning depends only on `macro_packages`.
+    let mut external_lib_names: BTreeMap<String, String> = BTreeMap::new();
     let mut workspace_macros = unused::WorkspaceMacros::default();
-    for (dir, manifest) in &macro_packages {
+    let mut pkg_data: Vec<Option<unused::WorkspacePackageData>> =
+        (0..macro_packages.len()).map(|_| None).collect();
+    let pkg_next = AtomicUsize::new(0);
+    let pkg_slots = Mutex::new(&mut pkg_data);
+
+    std::thread::scope(|scope| {
+        let ext_handle = scope.spawn(|| {
+            collect_external_packages(project_root, inventory, &build_dep_names, threads)
+        });
+
+        for _ in 0..threads.min(macro_packages.len()).max(1) {
+            scope.spawn(|| {
+                while let Some(i) = {
+                    let i = pkg_next.fetch_add(1, Ordering::Relaxed);
+                    (i < macro_packages.len()).then_some(i)
+                } {
+                    let (dir, manifest) = &macro_packages[i];
+                    let is_member = i < member_count;
+                    let has_name = manifest
+                        .get("package")
+                        .and_then(|package| package.get("name"))
+                        .and_then(toml::Value::as_str)
+                        .is_some();
+                    let is_pm = has_name && unused::is_proc_macro(manifest);
+                    let analyzed = unused::analyze_package_sources(
+                        dir,
+                        manifest,
+                        Some(&ws_ctx),
+                        is_member,
+                        is_member && collect_hints,
+                        has_name,
+                        is_pm,
+                    );
+                    pkg_slots.lock().unwrap_or_else(PoisonError::into_inner)[i] = Some(analyzed);
+                }
+            });
+        }
+
+        let (ext_macros, lib_names) = ext_handle.join().unwrap_or_default();
+        workspace_macros = ext_macros;
+        external_lib_names = lib_names;
+    });
+
+    for ((_, manifest), data) in macro_packages.iter().zip(pkg_data.iter()) {
+        let Some(data) = data.as_ref() else {
+            continue;
+        };
         if let Some(name) = manifest
             .get("package")
             .and_then(|package| package.get("name"))
             .and_then(toml::Value::as_str)
         {
-            let names = unused::macro_references(dir, manifest);
-            if !names.is_empty() {
+            if !data.macro_refs.is_empty() {
                 workspace_macros
                     .macro_rules
-                    .insert(name.replace('-', "_"), names);
+                    .insert(name.replace('-', "_"), data.macro_refs.clone());
             }
             if unused::is_proc_macro(manifest) {
-                workspace_macros.proc_macros.insert(
-                    name.replace('-', "_"),
-                    unused::proc_macro_generated(dir, manifest),
-                );
+                workspace_macros
+                    .proc_macros
+                    .insert(name.replace('-', "_"), data.proc_macro_refs.clone());
             }
         }
     }
-    collect_external_packages(
-        project_root,
-        inventory,
-        &build_dep_names,
-        &mut workspace_macros,
-    );
 
     let member_warnings = warnings.clone();
+    let check_next = AtomicUsize::new(0);
+    let mut member_results: Vec<Option<(Vec<UnusedFinding>, Vec<String>)>> =
+        (0..member_count).map(|_| None).collect();
+    let member_slots = Mutex::new(&mut member_results);
+    std::thread::scope(|scope| {
+        for _ in 0..threads.min(member_count).max(1) {
+            scope.spawn(|| {
+                while let Some(i) = {
+                    let i = check_next.fetch_add(1, Ordering::Relaxed);
+                    (i < member_count).then_some(i)
+                } {
+                    let (dir, label, manifest) = &packages[i];
+                    let Some(precomputed) = pkg_data[i].as_ref() else {
+                        continue;
+                    };
+                    let name = manifest
+                        .get("package")
+                        .and_then(|package| package.get("name"))
+                        .and_then(toml::Value::as_str)
+                        .unwrap_or("unknown");
+                    let res = unused::check_package_precomputed(
+                        &unused::PackageToCheck {
+                            name,
+                            dir,
+                            manifest_label: label,
+                            manifest,
+                            workspace_root: project_root,
+                        },
+                        workspace_dependencies,
+                        inventory,
+                        &workspace_macros,
+                        precomputed,
+                        &external_lib_names,
+                    );
+                    member_slots.lock().unwrap_or_else(PoisonError::into_inner)[i] = Some(res);
+                }
+            });
+        }
+    });
+
     let mut findings = Vec::new();
-    for (dir, label, manifest) in &packages {
-        let name = manifest
-            .get("package")
-            .and_then(|package| package.get("name"))
-            .and_then(toml::Value::as_str)
-            .unwrap_or("unknown");
-        let (mut package_findings, package_warnings) = unused::check_package(
-            &unused::PackageToCheck {
-                name,
-                dir,
-                manifest_label: label,
-                manifest,
-                workspace_root: project_root,
-            },
-            workspace_dependencies,
-            inventory,
-            &workspace_macros,
-        );
+    for (mut package_findings, package_warnings) in member_results.into_iter().flatten() {
         findings.append(&mut package_findings);
         warnings.extend(package_warnings);
     }
+
     let (mut ws_findings, ws_warnings) = unused::orphan_workspace_dependencies(
         project_root,
         &packages,
@@ -376,7 +480,18 @@ fn find_unused_inner(
     findings.append(&mut ws_findings);
     warnings.extend(ws_warnings);
     let feature_hints = if collect_hints {
-        unused::find_unused_features(project_root, &packages, workspace_dependencies, &findings)
+        let precomputed_signals: Vec<unused::PrecomputedSignals> = pkg_data
+            .into_iter()
+            .take(member_count)
+            .map(|d| d.map_or_else(Default::default, |x| x.feature_signals))
+            .collect();
+        unused::find_unused_features_with_signals(
+            project_root,
+            &packages,
+            workspace_dependencies,
+            &findings,
+            Some(precomputed_signals),
+        )
     } else {
         Vec::new()
     };
@@ -387,54 +502,126 @@ fn find_unused_inner(
     })
 }
 
-/// Inspects on-disk registry/git packages in `inventory`:
+#[derive(Default)]
+struct ExternalPackageInfo {
+    name: String,
+    lib_name: Option<String>,
+    proc_macro_quoted: Option<BTreeSet<String>>,
+    build_emitted: Option<BTreeSet<String>>,
+}
+
+/// Inspects on-disk registry/git packages in `inventory` in parallel:
 /// - `proc-macro` crates for `quote!` path emissions (`external_proc_macros`)
 /// - `build-dependencies` for emitted runtime `crate::` paths (`build_dep_emitted`)
+/// - `[lib] name` mappings (`external_lib_names`) so `check_package` needs no extra I/O
 fn collect_external_packages(
     project_root: &Path,
     inventory: &Inventory,
     build_dep_names: &BTreeSet<String>,
-    macros: &mut unused::WorkspaceMacros,
-) {
+    threads: usize,
+) -> (unused::WorkspaceMacros, BTreeMap<String, String>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Mutex, PoisonError};
+
     let dirs = crate_sources::resolve_package_dirs(project_root, inventory);
-    for (package, dir) in inventory.packages.iter().zip(dirs) {
-        if package.source.is_none() {
-            continue;
+    let ext_jobs: Vec<(usize, &cargoscope_core::Package, std::path::PathBuf)> = inventory
+        .packages
+        .iter()
+        .zip(dirs)
+        .enumerate()
+        .filter_map(|(idx, (package, dir))| {
+            package.source.as_ref()?;
+            Some((idx, package, dir?))
+        })
+        .collect();
+
+    let mut per_job: Vec<Option<ExternalPackageInfo>> = (0..ext_jobs.len()).map(|_| None).collect();
+    let next = AtomicUsize::new(0);
+    let slots = Mutex::new(&mut per_job);
+    std::thread::scope(|scope| {
+        for _ in 0..threads.min(ext_jobs.len()).max(1) {
+            scope.spawn(|| {
+                while let Some(job_idx) = {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    (i < ext_jobs.len()).then_some(i)
+                } {
+                    let (_, package, dir) = &ext_jobs[job_idx];
+                    let need_build = build_dep_names.contains(&package.name);
+                    let manifest_path = dir.join("Cargo.toml");
+                    let Ok(contents) = fs::read_to_string(&manifest_path) else {
+                        continue;
+                    };
+                    let maybe_proc_macro =
+                        contents.contains("proc-macro") || contents.contains("proc_macro");
+                    let maybe_lib = contents.contains("lib");
+                    if !need_build && !maybe_proc_macro && !maybe_lib {
+                        slots.lock().unwrap_or_else(PoisonError::into_inner)[job_idx] =
+                            Some(ExternalPackageInfo {
+                                name: package.name.clone(),
+                                lib_name: Some(package.name.replace('-', "_")),
+                                proc_macro_quoted: None,
+                                build_emitted: None,
+                            });
+                        continue;
+                    }
+                    let Ok(manifest) = toml::from_str::<toml::Value>(&contents) else {
+                        continue;
+                    };
+                    let explicit_lib = manifest
+                        .get("lib")
+                        .and_then(|lib| lib.get("name"))
+                        .and_then(toml::Value::as_str)
+                        .map(str::to_owned);
+                    let manifest_pkg_name = manifest
+                        .get("package")
+                        .and_then(|pkg| pkg.get("name"))
+                        .and_then(toml::Value::as_str);
+                    let lib_name = manifest_pkg_name
+                        .map(|pkg| explicit_lib.unwrap_or_else(|| pkg.replace('-', "_")));
+                    let proc_macro_quoted = if maybe_proc_macro && unused::is_proc_macro(&manifest)
+                    {
+                        let quoted = unused::proc_macro_quoted(dir, &manifest);
+                        (!quoted.is_empty()).then_some(quoted)
+                    } else {
+                        None
+                    };
+                    let build_emitted = need_build
+                        .then(|| unused::build_dep_emitted(dir, &manifest))
+                        .filter(|s| !s.is_empty());
+                    slots.lock().unwrap_or_else(PoisonError::into_inner)[job_idx] =
+                        Some(ExternalPackageInfo {
+                            name: package.name.clone(),
+                            lib_name,
+                            proc_macro_quoted,
+                            build_emitted,
+                        });
+                }
+            });
         }
-        let Some(dir) = dir else {
-            continue;
-        };
-        let need_build = build_dep_names.contains(&package.name);
-        let manifest_path = dir.join("Cargo.toml");
-        let Ok(contents) = fs::read_to_string(&manifest_path) else {
-            continue;
-        };
-        let maybe_proc_macro = contents.contains("proc-macro") || contents.contains("proc_macro");
-        if !need_build && !maybe_proc_macro {
-            continue;
+    });
+
+    let mut macros = unused::WorkspaceMacros::default();
+    let mut lib_names = BTreeMap::new();
+    for info in per_job.into_iter().flatten() {
+        if let Some(lib_name) = info.lib_name {
+            lib_names.entry(info.name.clone()).or_insert(lib_name);
         }
-        let Ok(manifest) = toml::from_str::<toml::Value>(&contents) else {
-            continue;
-        };
-        if maybe_proc_macro && unused::is_proc_macro(&manifest) {
-            let quoted = unused::proc_macro_quoted(&dir, &manifest);
-            if !quoted.is_empty() {
-                macros
-                    .external_proc_macros
-                    .entry(package.name.replace('-', "_"))
-                    .or_default()
-                    .extend(quoted);
-            }
+        if let Some(quoted) = info.proc_macro_quoted {
+            macros
+                .external_proc_macros
+                .entry(info.name.replace('-', "_"))
+                .or_default()
+                .extend(quoted);
         }
-        if need_build {
-            let emitted = unused::build_dep_emitted(&dir, &manifest);
+        if let Some(emitted) = info.build_emitted {
             macros
                 .build_dep_emitted
-                .entry(package.name.clone())
+                .entry(info.name)
                 .or_default()
                 .extend(emitted);
         }
     }
+    (macros, lib_names)
 }
 
 fn read_manifest(path: &Path) -> Result<String, ScanError> {
